@@ -166,7 +166,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
-        panel.level = .floating
+        panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         
@@ -245,6 +245,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         print("[VoiceFlow] Showing settings window")
         NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.level = .normal // Reset level in case it was changed
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
 

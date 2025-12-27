@@ -150,8 +150,45 @@ struct GeneralSettingsView: View {
                     .padding(4)
                 }
 
-                // permissions section ...
-                
+                // Permissions Section
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Permissions")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        PermissionRow(
+                            name: "Microphone",
+                            isGranted: appState.isMicrophoneGranted,
+                            onRequest: { appState.requestMicrophonePermission() },
+                            settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+                        )
+
+                        PermissionRow(
+                            name: "Accessibility (Typing)",
+                            isGranted: appState.isAccessibilityGranted,
+                            onRequest: { appState.checkAccessibilityPermission(silent: false) },
+                            settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                        )
+
+                        PermissionRow(
+                            name: "Speech Recognition",
+                            isGranted: appState.isSpeechGranted,
+                            onRequest: { appState.requestSpeechPermission() },
+                            settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
+                        )
+                        
+                        Divider()
+                        
+                        Button("Refresh All Permissions") {
+                            appState.checkMicrophonePermission()
+                            appState.checkSpeechPermission()
+                            appState.recheckAccessibilityPermission()
+                        }
+                        .font(.system(size: 11))
+                    }
+                    .padding(4)
+                }
+
                 // Startup Settings
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {

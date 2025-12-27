@@ -186,6 +186,8 @@ class AppState: ObservableObject {
         loadLaunchMode()
         loadDictationProvider()
         loadDictationHistory()
+        
+        // Initial silent permission checks
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
         checkSpeechPermission()
@@ -364,9 +366,17 @@ class AppState: ObservableObject {
     }
 
     func setMode(_ mode: MicrophoneMode) {
-        // Check permissions before enabling active modes
-        if (mode == .on || mode == .sleep) && !isAccessibilityGranted {
-             checkAccessibilityPermission(silent: false)
+        // Check and request permissions before enabling active modes
+        if mode == .on || mode == .sleep {
+            if !isAccessibilityGranted {
+                checkAccessibilityPermission(silent: false)
+            }
+            if !isMicrophoneGranted {
+                requestMicrophonePermission()
+            }
+            if !isSpeechGranted {
+                requestSpeechPermission()
+            }
         }
 
         let previousMode = microphoneMode
@@ -697,21 +707,41 @@ class AppState: ObservableObject {
 
 
     private func handleLiveDictationTurn(_ turn: TranscriptTurn) {
-        guard !turn.isFormatted else {
-            if turn.endOfTurn {
-                typeText(" ", appendSpace: false)
-            }
+        // If it's a formatted turn (Cloud model with formatting ON), we use word-level isFinal
+        if turn.isFormatted {
+            let finalWords = turn.words.filter { $0.isFinal == true }.map { $0.text }
+            guard finalWords.count > typedFinalWordCount else { return }
+            let newWords = finalWords[typedFinalWordCount...]
+            let prefix = typedFinalWordCount > 0 ? " " : ""
+            let textToType = prefix + newWords.joined(separator: " ")
+            logDebug("Live typing delta (formatted): \"\(textToType)\"")
+            typeText(textToType, appendSpace: false)
+            typedFinalWordCount = finalWords.count
             return
         }
 
-        let finalWords = turn.words.filter { $0.isFinal == true }.map { $0.text }
-        guard finalWords.count > typedFinalWordCount else { return }
-        let newWords = finalWords[typedFinalWordCount...]
-        let prefix = typedFinalWordCount > 0 ? " " : ""
-        let textToType = prefix + newWords.joined(separator: " ")
-        logDebug("Live typing delta: \"\(textToType)\"")
-        typeText(textToType, appendSpace: false)
-        typedFinalWordCount = finalWords.count
+        // If it's unformatted (Live Dictation mode), the turn itself signals finality
+        if turn.endOfTurn {
+            // This is a FinalTranscript
+            let allWords = turn.words.map { $0.text }
+            guard allWords.count > typedFinalWordCount else {
+                typedFinalWordCount = 0 // Reset for next utterance
+                return
+            }
+            let newWords = allWords[typedFinalWordCount...]
+            let prefix = typedFinalWordCount > 0 ? " " : ""
+            let textToType = prefix + newWords.joined(separator: " ")
+            logDebug("Live typing delta (final): \"\(textToType)\"")
+            typeText(textToType, appendSpace: false)
+            typedFinalWordCount = 0 // Reset after final
+        } else {
+            // This is a PartialTranscript
+            // We can type words that are "stable" but AssemblyAI PartialTranscripts 
+            // don't always have a stable word count.
+            // For now, let's wait for FinalTranscript in live mode or 
+            // implement a rolling delta if partials become too slow.
+            // IMPROVEMENT: Implement a better rolling delta for partials if needed.
+        }
     }
 
     private struct PendingCommandMatch {

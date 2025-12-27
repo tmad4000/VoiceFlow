@@ -161,6 +161,34 @@ class AssemblyAIService: NSObject, ObservableObject {
                 self?.isConnected = false
             }
 
+        case "PartialTranscript", "FinalTranscript":
+            let transcript = message["text"] as? String ?? ""
+            let isFinal = type == "FinalTranscript"
+            
+            var words: [TranscriptWord] = []
+            if let wordDictionaries = message["words"] as? [[String: Any]] {
+                words = wordDictionaries.compactMap { word in
+                    let text = word["text"] as? String
+                    guard let text else { return nil }
+                    let startTime = (word["start"] as? Double) ?? (word["start"] as? NSNumber)?.doubleValue
+                    let endTime = (word["end"] as? Double) ?? (word["end"] as? NSNumber)?.doubleValue
+                    return TranscriptWord(text: text, isFinal: isFinal, startTime: startTime, endTime: endTime)
+                }
+            }
+
+            let turn = TranscriptTurn(
+                transcript: transcript,
+                words: words,
+                endOfTurn: isFinal,
+                isFormatted: false,
+                turnOrder: nil,
+                utterance: transcript
+            )
+
+            DispatchQueue.main.async { [weak self] in
+                self?.latestTurn = turn
+            }
+
         case "Error":
             if let error = message["error"] as? String {
                 DispatchQueue.main.async { [weak self] in
