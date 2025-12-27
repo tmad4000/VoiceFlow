@@ -16,6 +16,7 @@ class AppleSpeechService: NSObject, ObservableObject {
     private var transcribeMode = true
     private var lastTranscript = ""
     private var turnOrder = 0
+    private var lastAddsPunctuation = true
     
     func setTranscribeMode(_ enabled: Bool) {
         transcribeMode = enabled
@@ -54,7 +55,8 @@ class AppleSpeechService: NSObject, ObservableObject {
         recognitionRequest.append(buffer)
     }
     
-    func startRecognition() {
+    func startRecognition(addsPunctuation: Bool) {
+        lastAddsPunctuation = addsPunctuation
         guard let speechRecognizer = speechRecognizer, speechRecognizer.isAvailable else {
             errorMessage = "Speech recognizer not available"
             return
@@ -65,6 +67,7 @@ class AppleSpeechService: NSObject, ObservableObject {
         guard let recognitionRequest = recognitionRequest else { return }
         
         recognitionRequest.shouldReportPartialResults = true
+        recognitionRequest.addsPunctuation = addsPunctuation
         
         if speechRecognizer.supportsOnDeviceRecognition == true {
             recognitionRequest.requiresOnDeviceRecognition = true
@@ -132,8 +135,9 @@ class AppleSpeechService: NSObject, ObservableObject {
     func forceEndUtterance() {
         recognitionRequest?.endAudio()
         // We'll need to restart it after it finishes
+        let addsPunctuation = lastAddsPunctuation
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.startRecognition()
+            self?.startRecognition(addsPunctuation: addsPunctuation)
         }
     }
 }

@@ -442,6 +442,7 @@ class AppState: ObservableObject {
 
         // Start services
         assemblyAIService?.setTranscribeMode(transcribeMode)
+        assemblyAIService?.setFormatTurns(!liveDictationEnabled)
         assemblyAIService?.connect()
         audioCaptureManager?.startCapture()
     }
@@ -479,15 +480,14 @@ class AppState: ObservableObject {
         }
 
         // Connect audio level for visualization
-        audioCaptureManager?.onAudioLevel = { [weak self] level in
-            self?.audioLevel = level
-        }
-
-        appleSpeechService?.setTranscribeMode(transcribeMode)
-        appleSpeechService?.startRecognition()
-        audioCaptureManager?.startCapture()
-        
-        // For Apple speech, we consider it "connected" if the manager is capturing
+                audioCaptureManager?.onAudioLevel = { [weak self] level in
+                    self?.audioLevel = level
+                }
+                
+                appleSpeechService?.setTranscribeMode(transcribeMode)
+                appleSpeechService?.startRecognition(addsPunctuation: !liveDictationEnabled)
+                audioCaptureManager?.startCapture()
+                // For Apple speech, we consider it "connected" if the manager is capturing
         isConnected = true 
     }
 
@@ -531,7 +531,11 @@ class AppState: ObservableObject {
             
             // Handle dictation if behavior allows
             if activeBehavior != .command {
-                handleDictationTurn(turn)
+                if liveDictationEnabled {
+                    handleLiveDictationTurn(turn)
+                } else {
+                    handleDictationTurn(turn)
+                }
             }
         case .off:
             break
@@ -1031,8 +1035,16 @@ class AppState: ObservableObject {
     }
 
     func saveLiveDictationEnabled(_ value: Bool) {
+        let previousValue = liveDictationEnabled
         liveDictationEnabled = value
         UserDefaults.standard.set(value, forKey: "live_dictation_enabled")
+        
+        if previousValue != value && microphoneMode != .off {
+            logDebug("Live dictation changed: Restarting services")
+            let currentMode = microphoneMode
+            stopListening()
+            setMode(currentMode)
+        }
     }
 
     private func loadUtteranceSettings() {

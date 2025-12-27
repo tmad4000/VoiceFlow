@@ -33,18 +33,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        print("[VoiceFlow] App launched")
+        NSLog("[VoiceFlow] App launched - applicationDidFinishLaunching called")
 
         // Create status bar item
+        NSLog("[VoiceFlow] Creating status bar item...")
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        NSLog("[VoiceFlow] statusItem created: \(statusItem != nil), button: \(statusItem?.button != nil)")
+
         if let button = statusItem?.button {
             if let image = NSImage(systemSymbolName: "mic.slash.fill", accessibilityDescription: "VoiceFlow") {
                 button.image = image
+                NSLog("[VoiceFlow] Set SF Symbol image on button")
             } else {
                 button.title = "🎤"
+                NSLog("[VoiceFlow] SF Symbol failed, set emoji title")
             }
+        } else {
+            NSLog("[VoiceFlow] ERROR: statusItem.button is nil!")
         }
-        print("[VoiceFlow] Status bar item created: \(statusItem != nil)")
+        NSLog("[VoiceFlow] Status bar setup complete")
 
         // Subscribe to mode changes to update icon
         appState.$microphoneMode

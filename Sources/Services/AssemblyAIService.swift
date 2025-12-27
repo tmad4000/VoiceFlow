@@ -37,6 +37,7 @@ class AssemblyAIService: NSObject, ObservableObject {
     @Published var errorMessage: String?
 
     private var transcribeMode = true
+    private var formatTurns = true
     private var utteranceConfig: UtteranceConfig = .default
 
     init(apiKey: String) {
@@ -46,6 +47,10 @@ class AssemblyAIService: NSObject, ObservableObject {
 
     func setTranscribeMode(_ enabled: Bool) {
         transcribeMode = enabled
+    }
+
+    func setFormatTurns(_ enabled: Bool) {
+        formatTurns = enabled
     }
 
     func setUtteranceConfig(_ config: UtteranceConfig) {
@@ -58,7 +63,7 @@ class AssemblyAIService: NSObject, ObservableObject {
         var urlComponents = URLComponents(string: endpoint)!
         urlComponents.queryItems = [
             URLQueryItem(name: "sample_rate", value: "16000"),
-            URLQueryItem(name: "format_turns", value: "true"),
+            URLQueryItem(name: "format_turns", value: String(formatTurns)),
             URLQueryItem(name: "end_of_turn_confidence_threshold", value: String(utteranceConfig.confidenceThreshold)),
             URLQueryItem(name: "min_end_of_turn_silence_when_confident", value: String(utteranceConfig.silenceThresholdMs)),
             URLQueryItem(name: "max_turn_silence", value: String(utteranceConfig.maxTurnSilenceMs))
