@@ -42,6 +42,15 @@ struct FloatingPanelView: View {
                     }
                 }
 
+                // Settings button
+                Button(action: openSettings) {
+                    Image(systemName: "gear")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Open settings")
+
                 // Close/hide button
                 Button(action: hidePanel) {
                     Image(systemName: "xmark")
@@ -128,6 +137,14 @@ struct FloatingPanelView: View {
             appState.hidePanelWindow()
         }
     }
+
+    private func openSettings() {
+        NotificationCenter.default.post(name: .openSettings, object: nil)
+    }
+}
+
+extension Notification.Name {
+    static let openSettings = Notification.Name("openSettings")
 }
 
 private struct ModeSelectionView: View {
@@ -149,41 +166,34 @@ private struct ModeSelectionView: View {
 
     private var onModePill: some View {
         let isSelected = appState.microphoneMode == .on
+        let color = isSelected ? Color.green : Color.secondary
+        
         return HStack(spacing: 0) {
-            ModeButton(mode: .on, isSelected: isSelected, compact: true) {
+            ModeButton(mode: .on, isSelected: isSelected, compact: true, plain: true) {
                 appState.setMode(.on)
             }
+            .padding(.trailing, -4) // Pull arrow closer
             
-            if isSelected {
-                Divider()
-                    .frame(height: 12)
-                    .background(Color.green.opacity(0.3))
-                
-                Menu {
+            Menu {
+                Picker("Behavior", selection: Binding(
+                    get: { appState.activeBehavior },
+                    set: { appState.saveActiveBehavior($0) }
+                )) {
                     ForEach(ActiveBehavior.allCases) { behavior in
-                        Button {
-                            appState.saveActiveBehavior(behavior)
-                        } label: {
-                            HStack {
-                                Text(behavior.rawValue)
-                                Spacer()
-                                Image(systemName: behavior.icon)
-                                if appState.activeBehavior == behavior {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
+                        Label(behavior.rawValue, systemImage: behavior.icon)
+                            .tag(behavior)
                     }
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 7, weight: .bold))
-                        .foregroundColor(Color.green.opacity(0.8))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 4)
                 }
-                .buttonStyle(.plain)
-                .frame(width: 16)
+                .pickerStyle(.inline)
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundColor(color.opacity(isSelected ? 0.8 : 0.5))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 4)
             }
+            .buttonStyle(.plain)
+            .frame(width: 16)
         }
         .background(isSelected ? Color.green.opacity(0.15) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 6))

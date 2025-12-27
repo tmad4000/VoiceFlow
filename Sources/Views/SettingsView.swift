@@ -314,12 +314,30 @@ struct GeneralSettingsView: View {
                         Text("isMicGranted: \(appState.isMicrophoneGranted ? "true" : "false")")
                         Text("isA11yGranted: \(appState.isAccessibilityGranted ? "true" : "false")")
 
-                        Button("Refresh") {
-                            appState.checkMicrophonePermission()
-                            appState.recheckAccessibilityPermission()
+                        HStack(spacing: 8) {
+                            Button("Refresh") {
+                                appState.checkMicrophonePermission()
+                                appState.recheckAccessibilityPermission()
+                            }
+                            .font(.system(size: 11))
+
+                            Button("Reset Accessibility") {
+                                resetAccessibilityPermission()
+                            }
+                            .font(.system(size: 11))
+                            .help("Runs: tccutil reset Accessibility \(Bundle.main.bundleIdentifier ?? "")")
+
+                            Button("Open Settings") {
+                                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                            }
+                            .font(.system(size: 11))
                         }
-                        .font(.system(size: 11))
                         .padding(.top, 4)
+
+                        Text("Reset command: tccutil reset Accessibility \(Bundle.main.bundleIdentifier ?? "")")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .textSelection(.enabled)
                     }
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
@@ -407,6 +425,20 @@ struct GeneralSettingsView: View {
             get: { Double(appState.customSilenceThresholdMs) },
             set: { appState.saveCustomSilenceThreshold(Int($0)) }
         )
+    }
+
+    private func resetAccessibilityPermission() {
+        guard let bundleId = Bundle.main.bundleIdentifier else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        process.arguments = ["reset", "Accessibility", bundleId]
+        try? process.run()
+        process.waitUntilExit()
+
+        // Refresh status after reset
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            appState.recheckAccessibilityPermission()
+        }
     }
 }
 
@@ -536,7 +568,7 @@ struct VoiceCommandRow: View {
                 Text("\"\(command.phrase)\"")
                     .font(.system(size: 13, weight: .medium))
 
-                Text(command.shortcut.description)
+                Text(command.replacementText ?? command.shortcut?.description ?? "")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
@@ -556,11 +588,18 @@ struct VoiceCommandRow: View {
 struct AddCommandSheet: View {
     @Environment(\.dismiss) var dismiss
     @State private var phrase: String = ""
+    @State private var replacementText: String = ""
     @State private var selectedKey: String = "A"
     @State private var useCommand = false
     @State private var useShift = false
     @State private var useOption = false
     @State private var useControl = false
+    @State private var type: CommandType = .shortcut
+
+    enum CommandType: String, CaseIterable {
+        case shortcut = "Shortcut"
+        case snippet = "Snippet"
+    }
 
     let onSave: (VoiceCommand) -> Void
 
@@ -575,21 +614,33 @@ struct AddCommandSheet: View {
             Text("Add Voice Command")
                 .font(.headline)
 
+            Picker("Type", selection: $type) {
+                ForEach(CommandType.allCases, id: \.self) { type in
+                    Text(type.rawValue).tag(type)
+                }
+            }
+            .pickerStyle(.segmented)
+
             Form {
                 TextField("Phrase", text: $phrase)
                     .textFieldStyle(.roundedBorder)
 
-                Picker("Key", selection: $selectedKey) {
-                    ForEach(availableKeys, id: \.self) { key in
-                        Text(key).tag(key)
+                if type == .snippet {
+                    TextField("Replacement Text", text: $replacementText)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    Picker("Key", selection: $selectedKey) {
+                        ForEach(availableKeys, id: \.self) { key in
+                            Text(key).tag(key)
+                        }
                     }
-                }
 
-                HStack {
-                    Toggle("⌘", isOn: $useCommand)
-                    Toggle("⇧", isOn: $useShift)
-                    Toggle("⌥", isOn: $useOption)
-                    Toggle("⌃", isOn: $useControl)
+                    HStack {
+                        Toggle("⌘", isOn: $useCommand)
+                        Toggle("⇧", isOn: $useShift)
+                        Toggle("⌥", isOn: $useOption)
+                        Toggle("⌃", isOn: $useControl)
+                    }
                 }
             }
 
@@ -605,7 +656,7 @@ struct AddCommandSheet: View {
                     onSave(command)
                     dismiss()
                 }
-                .disabled(phrase.isEmpty)
+                .disabled(phrase.isEmpty || (type == .snippet && replacementText.isEmpty))
             }
         }
         .padding()
@@ -613,16 +664,20 @@ struct AddCommandSheet: View {
     }
 
     func createCommand() -> VoiceCommand {
-        var modifiers = KeyboardModifiers()
-        if useCommand { modifiers.insert(.command) }
-        if useShift { modifiers.insert(.shift) }
-        if useOption { modifiers.insert(.option) }
-        if useControl { modifiers.insert(.control) }
+        if type == .snippet {
+            return VoiceCommand(phrase: phrase, shortcut: nil, replacementText: replacementText)
+        } else {
+            var modifiers = KeyboardModifiers()
+            if useCommand { modifiers.insert(.command) }
+            if useShift { modifiers.insert(.shift) }
+            if useOption { modifiers.insert(.option) }
+            if useControl { modifiers.insert(.control) }
 
-        let keyCode = keyCodeForString(selectedKey)
-        let shortcut = KeyboardShortcut(keyCode: keyCode, modifiers: modifiers)
+            let keyCode = keyCodeForString(selectedKey)
+            let shortcut = KeyboardShortcut(keyCode: keyCode, modifiers: modifiers)
 
-        return VoiceCommand(phrase: phrase, shortcut: shortcut)
+            return VoiceCommand(phrase: phrase, shortcut: shortcut, replacementText: nil)
+        }
     }
 
     func keyCodeForString(_ key: String) -> UInt16 {

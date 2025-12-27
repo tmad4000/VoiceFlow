@@ -38,9 +38,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Create status bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "mic.slash.fill", accessibilityDescription: "VoiceFlow")
+            if let image = NSImage(systemSymbolName: "mic.slash.fill", accessibilityDescription: "VoiceFlow") {
+                button.image = image
+            } else {
+                button.title = "🎤"
+            }
         }
-        print("[VoiceFlow] Status bar item created")
+        print("[VoiceFlow] Status bar item created: \(statusItem != nil)")
 
         // Subscribe to mode changes to update icon
         appState.$microphoneMode
@@ -96,6 +100,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.setPanelVisible(self.appState.isPanelVisible)
         }
+
+        // Listen for open settings notification from panel
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(openSettings),
+            name: Notification.Name("openSettings"),
+            object: nil
+        )
     }
 
     func showPanelWindow() {

@@ -5,6 +5,7 @@ import AppKit
 import Carbon.HIToolbox
 import ApplicationServices
 import AVFoundation
+import Speech
 import os.log
 
 private let logger = Logger(subsystem: "com.voiceflow", category: "app")
@@ -89,6 +90,7 @@ class AppState: ObservableObject {
     @Published var audioLevel: Float = 0.0
     @Published var isAccessibilityGranted: Bool = false
     @Published var isMicrophoneGranted: Bool = false
+    @Published var isSpeechGranted: Bool = false
     @Published var utteranceMode: UtteranceMode = .balanced
     @Published var customConfidenceThreshold: Double = 0.7
     @Published var customSilenceThresholdMs: Int = 160
@@ -96,6 +98,7 @@ class AppState: ObservableObject {
     @Published var lastCommandName: String? = nil
     @Published var isCommandFlashActive: Bool = false
     @Published var debugLog: [String] = []
+    @Published var isOffline: Bool = false
     @Published var launchMode: MicrophoneMode = .sleep
 
     /// Built-in system commands for reference in UI
@@ -115,6 +118,8 @@ class AppState: ObservableObject {
 
     private var audioCaptureManager: AudioCaptureManager?
     private var assemblyAIService: AssemblyAIService?
+    private var appleSpeechService: AppleSpeechService?
+    private var networkMonitor = NetworkMonitor()
     private var cancellables = Set<AnyCancellable>()
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
@@ -150,13 +155,35 @@ class AppState: ObservableObject {
         loadLaunchMode()
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
+        checkSpeechPermission()
         
+        // Monitor network status
+        networkMonitor.$isConnected
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] connected in
+                guard let self = self else { return }
+                let wasOffline = self.isOffline
+                self.isOffline = !connected
+                
+                if wasOffline != self.isOffline {
+                    if self.isOffline {
+                        self.logDebug("Offline: Switching to Mac Speech Model")
+                    } else {
+                        self.logDebug("Online: AssemblyAI available")
+                    }
+                    
+                    // If we are currently listening, we need to restart to switch services
+                    if self.microphoneMode != .off {
+                        let currentMode = self.microphoneMode
+                        self.logDebug("Restarting services due to network change")
+                        self.stopListening()
+                        self.setMode(currentMode)
+                    }
+                }
+            }
+            .store(in: &cancellables)
+
         // Start in the preferred launch mode
-        // Small delay to ensure everything is initialized
-        let initialMode = launchMode
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.setMode(initialMode)
-        }
     }
 
     func checkAccessibilityPermission(silent: Bool = true) {
@@ -206,11 +233,31 @@ class AppState: ObservableObject {
         }
     }
 
+    func checkSpeechPermission() {
+        let status = SFSpeechRecognizer.authorizationStatus()
+        print("[VoiceFlow] Speech recognition auth status: \(status.rawValue)")
+        switch status {
+        case .authorized:
+            isSpeechGranted = true
+        default:
+            isSpeechGranted = false
+        }
+    }
+
     func requestMicrophonePermission() {
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             DispatchQueue.main.async {
                 self?.isMicrophoneGranted = granted
                 logger.info("Microphone permission request result: \(granted ? "granted" : "denied")")
+            }
+        }
+    }
+
+    func requestSpeechPermission() {
+        SFSpeechRecognizer.requestAuthorization { [weak self] status in
+            DispatchQueue.main.async {
+                self?.isSpeechGranted = status == .authorized
+                logger.info("Speech permission request result: \(status.rawValue)")
             }
         }
     }
@@ -308,18 +355,32 @@ class AppState: ObservableObject {
                 startListening(transcribeMode: true)
             } else {
                 assemblyAIService?.setTranscribeMode(true)
+                appleSpeechService?.setTranscribeMode(true)
             }
         case .sleep:
             if previousMode == .off {
                 startListening(transcribeMode: false)
             } else {
                 assemblyAIService?.setTranscribeMode(false)
+                appleSpeechService?.setTranscribeMode(false)
             }
         }
     }
 
     private func startListening(transcribeMode: Bool) {
         logDebug("Starting services (transcribeMode: \(transcribeMode))")
+        
+        // Always need AudioCaptureManager
+        audioCaptureManager = AudioCaptureManager()
+        
+        if isOffline {
+            startAppleSpeech(transcribeMode: transcribeMode)
+        } else {
+            startAssemblyAI(transcribeMode: transcribeMode)
+        }
+    }
+
+    private func startAssemblyAI(transcribeMode: Bool) {
         guard !apiKey.isEmpty else {
             errorMessage = "Please set your AssemblyAI API key in Settings"
             logDebug("Error: API key missing")
@@ -331,9 +392,8 @@ class AppState: ObservableObject {
         forceEndRequestedAt = nil
         lastTypedTurnOrder = -1
 
-        // Initialize services
+        // Initialize service
         assemblyAIService = AssemblyAIService(apiKey: apiKey)
-        audioCaptureManager = AudioCaptureManager()
 
         // Configure utterance detection
         let utteranceConfig = UtteranceConfig(
@@ -386,12 +446,59 @@ class AppState: ObservableObject {
         audioCaptureManager?.startCapture()
     }
 
+    private func startAppleSpeech(transcribeMode: Bool) {
+        logDebug("Using Apple Speech Recognition (Offline Mode)")
+        errorMessage = nil
+        forceEndPending = false
+        forceEndRequestedAt = nil
+        lastTypedTurnOrder = -1
+
+        appleSpeechService = AppleSpeechService()
+        
+        appleSpeechService?.$latestTurn
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] turn in
+                guard let turn else { return }
+                self?.handleTurn(turn)
+            }
+            .store(in: &cancellables)
+
+        appleSpeechService?.$errorMessage
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] error in
+                self?.errorMessage = error
+                if let error = error {
+                    self?.logDebug("Apple Speech Error: \(error)")
+                }
+            }
+            .store(in: &cancellables)
+
+        // Connect audio output to Apple Speech Service
+        audioCaptureManager?.onAudioData = { [weak self] data in
+            self?.appleSpeechService?.sendAudio(data)
+        }
+
+        // Connect audio level for visualization
+        audioCaptureManager?.onAudioLevel = { [weak self] level in
+            self?.audioLevel = level
+        }
+
+        appleSpeechService?.setTranscribeMode(transcribeMode)
+        appleSpeechService?.startRecognition()
+        audioCaptureManager?.startCapture()
+        
+        // For Apple speech, we consider it "connected" if the manager is capturing
+        isConnected = true 
+    }
+
     private func stopListening() {
         logDebug("Stopping services")
         audioCaptureManager?.stopCapture()
         assemblyAIService?.disconnect()
+        appleSpeechService?.disconnect()
         audioCaptureManager = nil
         assemblyAIService = nil
+        appleSpeechService = nil
         cancellables.removeAll()
         isConnected = false
         audioLevel = 0.0
@@ -492,18 +599,16 @@ class AppState: ObservableObject {
     private func preprocessDictation(_ text: String) -> String {
         var processed = text
         
-        // 1. Handle "say " prefix (escape mode)
-        // Check for "say " at the beginning (case insensitive, allowing for multiple spaces)
+        // 1. Handle "say" prefix (escape mode)
+        // Use regex to find "say" at the beginning, ignoring optional trailing punctuation and whitespace
         var isLiteral = false
-        let lower = processed.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        if lower.hasPrefix("say ") {
+        let sayPattern = "^say[\\.,?!]?\\s*"
+        if let regex = try? NSRegularExpression(pattern: sayPattern, options: [.caseInsensitive]),
+           let match = regex.firstMatch(in: processed, options: [], range: NSRange(location: 0, length: processed.utf16.count)) {
             isLiteral = true
-            // Find the index of the first space and drop everything before it
-            if let firstSpaceIndex = processed.firstIndex(of: " ") {
-                processed = String(processed[processed.index(after: firstSpaceIndex)...]).trimmingCharacters(in: .whitespaces)
-            }
-        } else if lower == "say" {
-            // Just the word "say"
+            // Remove the "say" prefix and the following whitespace/punctuation
+            processed = (processed as NSString).substring(from: match.range.length)
+        } else if processed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "say" {
             isLiteral = true
             processed = ""
         }
@@ -521,15 +626,22 @@ class AppState: ObservableObject {
             }
         }
 
-        // 3. Handle "new line" replacement
+        // 3. Handle inline text replacements (only if not literal)
         if !isLiteral {
             // Replace various forms of "new line" (case-insensitive)
-            // Use a regex-like approach to handle "new line" and "newline" with any capitalization
-            let patterns = ["new line", "newline"]
-            for pattern in patterns {
+            let newlinePatterns = ["new line", "newline"]
+            for pattern in newlinePatterns {
                 let range = NSRange(processed.startIndex..<processed.endIndex, in: processed)
                 let regex = try? NSRegularExpression(pattern: "(?i)\(pattern)", options: [])
                 processed = regex?.stringByReplacingMatches(in: processed, options: [], range: range, withTemplate: "\n") ?? processed
+            }
+            
+            // Replace various forms of "spacebar" (case-insensitive)
+            let spacePatterns = ["spacebar", "space bar"]
+            for pattern in spacePatterns {
+                let range = NSRange(processed.startIndex..<processed.endIndex, in: processed)
+                let regex = try? NSRegularExpression(pattern: "(?i)\(pattern)", options: [])
+                processed = regex?.stringByReplacingMatches(in: processed, options: [], range: range, withTemplate: " ") ?? processed
             }
             
             // 4. (REMOVED) Strip trailing punctuation
@@ -577,12 +689,14 @@ class AppState: ObservableObject {
         guard !normalizedTokens.isEmpty else { return }
         
         // If the first word is "say", skip command processing for this utterance
-        // Also check if the transcript starts with "say" to be safe
+        // Also check if the transcript starts with "say" (robustly with regex)
         let firstToken = normalizedTokens.first?.token
-        let transcriptStartsWaySay = turn.transcript.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("say ") || 
-                                     turn.transcript.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "say"
+        let sayPattern = "^say[\\.,?!]?(\\s|$)"
+        let regex = try? NSRegularExpression(pattern: sayPattern, options: [.caseInsensitive])
+        let transcript = turn.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isSayMatch = regex?.firstMatch(in: transcript, options: [], range: NSRange(location: 0, length: transcript.utf16.count)) != nil
                                      
-        if firstToken == "say" || transcriptStartsWaySay {
+        if firstToken == "say" || isSayMatch {
             logger.debug("Utterance starts with 'say', skipping command processing")
             return
         }
@@ -670,7 +784,11 @@ class AppState: ObservableObject {
                         isStable: isStable,
                         haltsProcessing: false,
                         action: { [weak self] in
-                            self?.executeKeyboardShortcut(command.shortcut)
+                            if let text = command.replacementText, !text.isEmpty {
+                                self?.typeText(text, appendSpace: true)
+                            } else if let shortcut = command.shortcut {
+                                self?.executeKeyboardShortcut(shortcut)
+                            }
                             self?.triggerCommandFlash(name: command.phrase)
                         }
                     ))
@@ -855,10 +973,14 @@ class AppState: ObservableObject {
         let source = CGEventSource(stateID: .hidSystemState)
 
         var flags: CGEventFlags = []
-        if shortcut.modifiers.contains(.control) { flags.insert(.maskControl) }
-        if shortcut.modifiers.contains(.option) { flags.insert(.maskAlternate) }
-        if shortcut.modifiers.contains(.shift) { flags.insert(.maskShift) }
-        if shortcut.modifiers.contains(.command) { flags.insert(.maskCommand) }
+        var flagNames: [String] = []
+        if shortcut.modifiers.contains(.control) { flags.insert(.maskControl); flagNames.append("Control") }
+        if shortcut.modifiers.contains(.option) { flags.insert(.maskAlternate); flagNames.append("Option") }
+        if shortcut.modifiers.contains(.shift) { flags.insert(.maskShift); flagNames.append("Shift") }
+        if shortcut.modifiers.contains(.command) { flags.insert(.maskCommand); flagNames.append("Command") }
+
+        let keyName = KeyboardShortcut.keyCodeToString(shortcut.keyCode)
+        logDebug("Sending Event: \(flagNames.joined(separator: "+")) + \(keyName) (code: \(shortcut.keyCode))")
 
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: shortcut.keyCode, keyDown: true)
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: shortcut.keyCode, keyDown: false)
@@ -997,6 +1119,7 @@ class AppState: ObservableObject {
         
         if !wasPending {
             assemblyAIService?.forceEndUtterance()
+            appleSpeechService?.forceEndUtterance()
         }
         
         DispatchQueue.main.asyncAfter(deadline: .now() + forceEndTimeoutSeconds) { [weak self] in

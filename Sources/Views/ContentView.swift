@@ -5,6 +5,18 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if appState.isOffline {
+                HStack {
+                    Image(systemName: "wifi.slash")
+                    Text("Offline: Using Mac Speech Recognition")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+                .background(Color.orange.opacity(0.8))
+                .foregroundColor(.white)
+            }
+
             // Header with mode controls
             ModeControlBar()
                 .padding(.horizontal, 16)
@@ -53,10 +65,11 @@ struct ModeButton: View {
     let mode: MicrophoneMode
     let isSelected: Bool
     var compact: Bool = false
+    var plain: Bool = false
     let action: () -> Void
 
     var backgroundColor: Color {
-        guard isSelected else { return Color.clear }
+        guard isSelected && !plain else { return Color.clear }
         switch mode {
         case .off: return Color.gray.opacity(0.3)
         case .on: return Color.green.opacity(0.3)
@@ -87,10 +100,10 @@ struct ModeButton: View {
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
 
-                if mode == .on && isSelected {
+                if mode == .on {
                     Image(systemName: appState.activeBehavior.icon)
                         .font(.system(size: compact ? 8 : 11, weight: .bold))
-                        .foregroundColor(iconColor.opacity(0.8))
+                        .foregroundColor(iconColor.opacity(isSelected ? 0.8 : 0.4))
                 }
             }
             .foregroundColor(iconColor)
@@ -100,7 +113,7 @@ struct ModeButton: View {
             .cornerRadius(compact ? 6 : 8)
             .overlay(
                 RoundedRectangle(cornerRadius: compact ? 6 : 8)
-                    .stroke(isSelected ? iconColor.opacity(0.5) : Color.clear, lineWidth: 1)
+                    .stroke(isSelected && !plain ? iconColor.opacity(0.5) : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -195,6 +208,9 @@ struct StatusBar: View {
     }
 
     var statusColor: Color {
+        if appState.isOffline && appState.microphoneMode != .off {
+            return .orange
+        }
         switch appState.microphoneMode {
         case .off: return .gray
         case .on, .sleep: return appState.isConnected ? .green : .orange
@@ -202,6 +218,9 @@ struct StatusBar: View {
     }
 
     var statusText: String {
+        if appState.isOffline && appState.microphoneMode != .off {
+            return "Offline (Mac Speech)"
+        }
         switch appState.microphoneMode {
         case .off: return "Microphone off"
         case .on: return appState.isConnected ? "Transcribing" : "Connecting..."

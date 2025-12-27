@@ -1,12 +1,17 @@
 import Foundation
 import Carbon.HIToolbox
 
-/// A voice command that maps a spoken phrase to a keyboard shortcut
+/// A voice command that maps a spoken phrase to a keyboard shortcut or text replacement
 struct VoiceCommand: Codable, Identifiable, Equatable, Hashable {
     var id = UUID()
     var phrase: String
-    var shortcut: KeyboardShortcut
+    var shortcut: KeyboardShortcut?
+    var replacementText: String?
     var isEnabled: Bool = true
+
+    var isSnippet: Bool {
+        replacementText != nil && !replacementText!.isEmpty
+    }
 
     static let defaults: [VoiceCommand] = [
         VoiceCommand(phrase: "tab back", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Tab), modifiers: [.control, .shift])),
