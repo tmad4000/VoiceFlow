@@ -186,15 +186,15 @@ t=0.1s  Turn (end_of_turn=false): words="tab"           → No match (looking fo
 t=0.2s  Turn (end_of_turn=false): words="tab ba"        → No match
 t=0.3s  Turn (end_of_turn=false): words="tab back"      → MATCH! Execute Ctrl+Shift+Tab
 t=0.4s  Turn (end_of_turn=false): words="tab back"      → Already executed, skip
-t=0.5s  Turn (end_of_turn=true):  transcript="tab back" → Reset executed commands set
+t=0.5s  Turn (end_of_turn=true):  transcript="tab back" → Reset per-utterance execution state
 t=0.6s  Turn (end_of_turn=true, turn_is_formatted=true): "Tab back." → Ignore for commands
 ```
 
 **Expected behavior:** Command executes exactly once at t=0.3s
 
 **Implementation requirement:**
-- Track `executedCommandsThisUtterance: Set<String>`
-- Add command phrase to set when executed
+- Track `lastExecutedEndWordIndexByCommand: [CommandID: Int]` (or a set of executed word-span ranges)
+- When a command matches words at indices `[start...end]`, execute **only if** `end > lastExecutedEndWordIndexByCommand[command]`
 - Clear set on the first `end_of_turn=true` for that utterance
 - Ignore `turn_is_formatted=true` for command detection to avoid double-fire
 
@@ -252,6 +252,7 @@ This prevents accidental triggers if you say a command phrase in normal speech -
 - Check for "voiceflow" prefix → execute immediately
 - Otherwise, wait for pause/end_of_turn before executing
 - Ignore `turn_is_formatted=true` for command detection (avoid double-fire)
+- Match commands against tokenized `words` (not raw substring) and use word indices for dedupe
 - Configurable pause duration (default 500ms) if not relying purely on endpointing
 
 ---
@@ -266,14 +267,34 @@ t=0.1s  Turn (end_of_turn=false): words="undo that"           → MATCH! Execute
 t=0.2s  Turn (end_of_turn=false): words="undo that redo"      → "undo that" already executed, skip
 t=0.3s  Turn (end_of_turn=false): words="undo that redo that"  → "undo that" skip, "redo that" MATCH! Execute Cmd+Shift+Z
 t=0.4s  Turn (end_of_turn=false): words="undo that redo that"  → Both already executed, skip
-t=0.6s  Turn (end_of_turn=true):  transcript="undo that redo that" → Reset executed set
+t=0.6s  Turn (end_of_turn=true):  transcript="undo that redo that" → Reset per-utterance execution state
 ```
 
 **Expected behavior:** Both commands execute exactly once, in order
 
 **Implementation requirement:**
 - Check ALL registered commands against each unformatted Turn
-- Track each command separately in the executed set
+- Allow multiple occurrences of the **same command** in one utterance by using word-span or end-index dedupe (not a simple Set<String>)
+
+---
+
+### Story 3b: Repeated Commands in One Utterance
+
+**User intent:** Chain commands, including repeats, in a single utterance
+
+**Example utterance:**
+> "copy that tab back, paste that tab back, paste that"
+
+**Expected behavior (order matters):**
+1) Execute "copy that"
+2) Execute "tab back"
+3) Execute "paste that"
+4) Execute "tab back"
+5) Execute "paste that"
+
+**Implementation requirement:**
+- Detect matches by **word span** (or end-word index), not just by command phrase
+- Permit a repeated command when its matched end index is **after** the last executed end index for that command
 
 ---
 
@@ -351,13 +372,13 @@ t=0.8s  Turn (end_of_turn=true, turn_is_formatted=true): "I need to send an emai
 ```
 --- First utterance ---
 t=0.1s  Turn (end_of_turn=false): words="copy"  → MATCH! Execute Cmd+C
-t=0.3s  Turn (end_of_turn=true):  transcript="copy" → Reset executed set
+t=0.3s  Turn (end_of_turn=true):  transcript="copy" → Reset per-utterance execution state
 
 --- Pause (user doing something) ---
 
 --- Second utterance ---
 t=2.0s  Turn (end_of_turn=false): words="paste" → MATCH! Execute Cmd+V
-t=2.2s  Turn (end_of_turn=true):  transcript="paste" → Reset executed set
+t=2.2s  Turn (end_of_turn=true):  transcript="paste" → Reset per-utterance execution state
 ```
 
 **Expected behavior:** Each command executes once, Turn events provide natural boundaries
@@ -409,7 +430,7 @@ t=0.3s  Turn (end_of_turn=false): words="undo no wait redo"  → "undo" already 
 ### Issue 1: Command Multi-Fire (SOLVED in design)
 
 **Problem:** Turn updates repeat cumulative hypotheses, so the same command can match multiple times
-**Solution:** Track executed commands per utterance, reset on first `end_of_turn=true`, and ignore `turn_is_formatted=true` for command detection
+**Solution:** Track executed commands by **word span/end index** per utterance (not just phrase), reset on first `end_of_turn=true`, and ignore `turn_is_formatted=true` for command detection
 
 ### Issue 2: Substring False Positives (RESOLVED)
 
@@ -446,15 +467,16 @@ Turn 2: transcript="hello"   → If pasted: screen shows "helhello" (WRONG)
 - Command detection on unformatted Turn updates (Wake mode)
 - Text pasting on `end_of_turn=true` (formatted if enabled) in On mode
 - Real-time panel display from `words`
-- Command deduplication per utterance (reset on end_of_turn)
+- Command deduplication by word span/end index per utterance (reset on end_of_turn)
 - Word-boundary command matching
+- Multi-command utterances supported, including repeated commands
 
 ### Backlog (Future Versions)
 - [ ] Paste on Turn updates with delta tracking
 - [ ] Command correction ("cancel", "no wait")
 - [ ] Customizable command confirmation delay
 - [ ] Word-level visual feedback (final vs non-final highlighting)
-- [ ] Command chaining ("copy paste" as two commands)
+- [ ] Macro commands / user-defined sequences (e.g., "wrap selection" → copy + new tab + paste)
 
 ---
 
