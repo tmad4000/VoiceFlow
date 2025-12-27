@@ -181,47 +181,48 @@ t=0.7s  Turn: "Tab back."        → Reset executed commands set
 
 ---
 
-### Story 2: Substring False Positive - "photocopy" contains "copy"
+### Story 2: Command Design - Explicit Phrases (RESOLVED)
 
-**User intent:** Dictate the word "photocopy" (NOT execute copy command)
+**Design decision:** Commands use explicit, unambiguous phrases like "copy that" instead of single words like "copy".
 
-**Timeline:**
-```
-t=0.1s  Partial: "photo"         → No match
-t=0.2s  Partial: "photoco"       → No match
-t=0.3s  Partial: "photocopy"     → Contains "copy" - FALSE POSITIVE RISK
-```
+**Benefits:**
+- "copy that" won't appear naturally in dictation
+- No false positives from words like "photocopy" or "escape artist"
+- Consistent pattern users can learn
+- Simple substring matching is now safe
 
-**Bad behavior (substring match):** Executes Cmd+C when user said "photocopy"
+**Default command phrases:**
+- "copy that" → Cmd+C
+- "paste that" → Cmd+V
+- "undo that" → Cmd+Z
+- "redo that" → Cmd+Shift+Z
+- "select all" → Cmd+A
+- "save that" → Cmd+S
+- "tab back" → Ctrl+Shift+Tab
+- "tab forward" → Ctrl+Tab
+- "new tab" → Cmd+T
+- "close tab" → Cmd+W
+- "go back" → Cmd+←
+- "go forward" → Cmd+→
+- "microphone on" / "start dictation" → Switch to On mode
+- "microphone off" / "stop dictation" → Switch to Off mode
+- "quit voiceflow" → Quit app
 
-**Expected behavior:** No command executed
-
-**Implementation requirement:**
-- Use word-boundary matching, not `.contains()`
-- Regex: `\b{phrase}\b` or split into words and match exactly
-
-**Other false positive examples:**
-- "escape artist" → should NOT trigger Escape key
-- "I'll copy that later" → "copy" is valid here, but "copy that" is not the command "copy"
-- "undo the damage" → "undo" is a word but maybe user means it literally?
-
-**Design decision needed:**
-- Exact word match only? (`transcript.split(" ").contains("copy")`)
-- Or allow "copy that" to trigger "copy"? (substring within word boundaries)
+**Implementation:** Simple `.contains(phrase)` matching is sufficient since phrases are unambiguous.
 
 ---
 
-### Story 3: Multiple Commands in One Utterance - "undo redo"
+### Story 3: Multiple Commands in One Utterance - "undo that redo that"
 
 **User intent:** Undo, then redo (two separate actions)
 
 **Timeline:**
 ```
-t=0.1s  Partial: "undo"          → MATCH! Execute Cmd+Z
-t=0.2s  Partial: "undo re"       → "undo" already executed, skip
-t=0.3s  Partial: "undo redo"     → "undo" skip, "redo" MATCH! Execute Cmd+Shift+Z
-t=0.4s  Partial: "undo redo"     → Both already executed, skip
-t=0.6s  Turn: "Undo. Redo."      → Reset executed set
+t=0.1s  Partial: "undo that"          → MATCH! Execute Cmd+Z
+t=0.2s  Partial: "undo that redo"     → "undo that" already executed, skip
+t=0.3s  Partial: "undo that redo that" → "undo that" skip, "redo that" MATCH! Execute Cmd+Shift+Z
+t=0.4s  Partial: "undo that redo that" → Both already executed, skip
+t=0.6s  Turn: "Undo that. Redo that." → Reset executed set
 ```
 
 **Expected behavior:** Both commands execute exactly once, in order
@@ -365,15 +366,12 @@ t=0.3s  Partial: "undo no wait redo"  → "undo" already done, "redo" MATCH! Exe
 **Problem:** Partials repeat full text, causing same command to match multiple times
 **Solution:** Track executed commands per utterance, reset on Turn
 
-### Issue 2: Substring False Positives (NEEDS DESIGN DECISION)
+### Issue 2: Substring False Positives (RESOLVED)
 
-**Problem:** "photocopy" contains "copy", "escape artist" contains "escape"
-**Options:**
-1. **Exact word match:** Split transcript into words, match exactly
-2. **Word boundary regex:** `\bcopy\b` matches "copy" but not "photocopy"
-3. **Phrase boundary:** Match only if command phrase appears as complete words
+**Problem:** Single-word commands like "copy" could match "photocopy"
+**Solution:** Use explicit multi-word phrases like "copy that" instead of single words.
 
-**Recommendation:** Use word boundary matching (option 2)
+These phrases are unambiguous and won't appear in natural dictation, so simple `.contains()` matching is safe.
 
 ### Issue 3: "Paste on Partial" Duplication (DEFERRED TO BACKLOG)
 
