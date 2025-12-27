@@ -130,8 +130,8 @@ class AppState: ObservableObject {
 
     private struct PendingCommandMatch {
         let key: String
-        let startIndex: Int
-        let endIndex: Int
+        let startWordIndex: Int
+        let endWordIndex: Int
         let isPrefixed: Bool
         let isStable: Bool
         let haltsProcessing: Bool
@@ -141,6 +141,7 @@ class AppState: ObservableObject {
     private func processVoiceCommands(_ turn: TranscriptTurn) {
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         guard !normalizedTokens.isEmpty else { return }
+        let tokenStrings = normalizedTokens.map { $0.token }
 
         var matches: [PendingCommandMatch] = []
 
@@ -153,15 +154,18 @@ class AppState: ObservableObject {
 
         for systemCommand in systemCommands {
             let phraseTokens = tokenizePhrase(systemCommand.phrase)
-            for range in findMatches(phraseTokens: phraseTokens, in: normalizedTokens) {
-                let startIndex = range.lowerBound
-                let endIndex = range.upperBound - 1
-                let isPrefixed = startIndex > 0 && normalizedTokens[startIndex - 1] == commandPrefixToken
-                let isStable = isPrefixed || isStableMatch(words: turn.words, range: range)
+            for range in findMatches(phraseTokens: phraseTokens, in: tokenStrings) {
+                let startTokenIndex = range.lowerBound
+                let endTokenIndex = range.upperBound - 1
+                let startWordIndex = normalizedTokens[startTokenIndex].wordIndex
+                let endWordIndex = normalizedTokens[endTokenIndex].wordIndex
+                let isPrefixed = startTokenIndex > 0 && normalizedTokens[startTokenIndex - 1].token == commandPrefixToken
+                let wordIndices = normalizedTokens[range].map { $0.wordIndex }
+                let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
                 matches.append(PendingCommandMatch(
                     key: systemCommand.key,
-                    startIndex: startIndex,
-                    endIndex: endIndex,
+                    startWordIndex: startWordIndex,
+                    endWordIndex: endWordIndex,
                     isPrefixed: isPrefixed,
                     isStable: isStable,
                     haltsProcessing: systemCommand.haltsProcessing,
@@ -172,16 +176,19 @@ class AppState: ObservableObject {
 
         for command in voiceCommands where command.isEnabled {
             let phraseTokens = tokenizePhrase(command.phrase)
-            for range in findMatches(phraseTokens: phraseTokens, in: normalizedTokens) {
-                let startIndex = range.lowerBound
-                let endIndex = range.upperBound - 1
-                let isPrefixed = startIndex > 0 && normalizedTokens[startIndex - 1] == commandPrefixToken
-                let isStable = isPrefixed || isStableMatch(words: turn.words, range: range)
+            for range in findMatches(phraseTokens: phraseTokens, in: tokenStrings) {
+                let startTokenIndex = range.lowerBound
+                let endTokenIndex = range.upperBound - 1
+                let startWordIndex = normalizedTokens[startTokenIndex].wordIndex
+                let endWordIndex = normalizedTokens[endTokenIndex].wordIndex
+                let isPrefixed = startTokenIndex > 0 && normalizedTokens[startTokenIndex - 1].token == commandPrefixToken
+                let wordIndices = normalizedTokens[range].map { $0.wordIndex }
+                let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
                 let key = "user.\(command.id.uuidString)"
                 matches.append(PendingCommandMatch(
                     key: key,
-                    startIndex: startIndex,
-                    endIndex: endIndex,
+                    startWordIndex: startWordIndex,
+                    endWordIndex: endWordIndex,
                     isPrefixed: isPrefixed,
                     isStable: isStable,
                     haltsProcessing: false,
@@ -191,19 +198,19 @@ class AppState: ObservableObject {
         }
 
         matches.sort {
-            if $0.startIndex == $1.startIndex {
-                return $0.endIndex > $1.endIndex
+            if $0.startWordIndex == $1.startWordIndex {
+                return $0.endWordIndex > $1.endWordIndex
             }
-            return $0.startIndex < $1.startIndex
+            return $0.startWordIndex < $1.startWordIndex
         }
 
         for match in matches {
             guard match.isStable else { continue }
             let lastEndIndex = lastExecutedEndWordIndexByCommand[match.key] ?? -1
-            guard match.endIndex > lastEndIndex else { continue }
+            guard match.endWordIndex > lastEndIndex else { continue }
 
             match.action()
-            lastExecutedEndWordIndexByCommand[match.key] = match.endIndex
+            lastExecutedEndWordIndexByCommand[match.key] = match.endWordIndex
             currentUtteranceHadCommand = true
 
             if match.haltsProcessing {
@@ -225,8 +232,20 @@ class AppState: ObservableObject {
         text.lowercased().trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
     }
 
-    private func normalizedWordTokens(from words: [TranscriptWord]) -> [String] {
-        words.map { normalizeToken($0.text) }
+    private struct NormalizedToken {
+        let token: String
+        let wordIndex: Int
+    }
+
+    private func normalizedWordTokens(from words: [TranscriptWord]) -> [NormalizedToken] {
+        var tokens: [NormalizedToken] = []
+        tokens.reserveCapacity(words.count)
+        for (index, word) in words.enumerated() {
+            let token = normalizeToken(word.text)
+            guard !token.isEmpty else { continue }
+            tokens.append(NormalizedToken(token: token, wordIndex: index))
+        }
+        return tokens
     }
 
     private func tokenizePhrase(_ phrase: String) -> [String] {
@@ -235,8 +254,8 @@ class AppState: ObservableObject {
             .filter { !$0.isEmpty }
     }
 
-    private func isStableMatch(words: [TranscriptWord], range: Range<Int>) -> Bool {
-        for index in range {
+    private func isStableMatch(words: [TranscriptWord], wordIndices: [Int]) -> Bool {
+        for index in wordIndices {
             if words.indices.contains(index), words[index].isFinal == false {
                 return false
             }
