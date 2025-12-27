@@ -69,4 +69,29 @@ class WindowManager: ObservableObject {
         // Activate the target application
         targetApp.activate()
     }
+    
+    func focusApp(named query: String) {
+        let apps = NSWorkspace.shared.runningApplications
+        let lowerQuery = query.lowercased().trimmingCharacters(in: .whitespaces)
+        
+        // 1. Try exact match
+        if let exactMatch = apps.first(where: { $0.localizedName?.lowercased() == lowerQuery }) {
+            exactMatch.activate()
+            return
+        }
+        
+        // 2. Try prefix match
+        if let prefixMatch = apps.first(where: { $0.localizedName?.lowercased().hasPrefix(lowerQuery) == true }) {
+            prefixMatch.activate()
+            return
+        }
+        
+        // 3. Try contains match
+        if let containsMatch = apps.first(where: { $0.localizedName?.lowercased().contains(lowerQuery) == true }) {
+            containsMatch.activate()
+            return
+        }
+        
+        logger.warning("No running app found matching: \(query)")
+    }
 }

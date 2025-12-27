@@ -116,8 +116,13 @@ class AppState: ObservableObject {
     @Published var isCommandFlashActive: Bool = false
     @Published var debugLog: [String] = []
     @Published var dictationHistory: [String] = []
+    @Published var vocabularyPrompt: String = ""
+    @Published var ideaFlowShortcut: KeyboardShortcut? = nil
+    @Published var ideaFlowURL: String = ""
     @Published var isOffline: Bool = false
     @Published var dictationProvider: DictationProvider = .auto
+    @Published var sleepTimerEnabled: Bool = true
+    @Published var sleepTimerMinutes: Double = 15
     @Published var launchMode: MicrophoneMode = .sleep
 
     /// Built-in system commands for reference in UI
@@ -132,7 +137,10 @@ class AppState: ObservableObject {
         ("submit dictation", "Force finalize and type current speech"),
         ("send dictation", "Force finalize and type current speech"),
         ("window recent", "Switch to previous application"),
-        ("window recent 2", "Switch to 2nd most recent application")
+        ("window recent 2", "Switch to 2nd most recent application"),
+        ("focus [app]", "Switch to a running application by name"),
+        ("spell [text]", "Type characters one-by-one without spaces"),
+        ("save to idea flow", "Copy last dictation and open Idea Flow")
     ]
 
     var panelVisibilityHandler: ((Bool) -> Void)?
@@ -143,6 +151,7 @@ class AppState: ObservableObject {
     private var networkMonitor = NetworkMonitor()
     private var windowManager = WindowManager()
     private var cancellables = Set<AnyCancellable>()
+    private var sleepTimer: Timer?
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
     private let commandPrefixToken = "voiceflow"
@@ -186,8 +195,9 @@ class AppState: ObservableObject {
         loadLaunchMode()
         loadDictationProvider()
         loadDictationHistory()
-        
-        // Initial silent permission checks
+        loadVocabularyPrompt()
+        loadIdeaFlowSettings()
+        loadSleepTimerSettings()
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
         checkSpeechPermission()
@@ -383,6 +393,12 @@ class AppState: ObservableObject {
         microphoneMode = mode
         logDebug("Mode changed: \(previousMode.rawValue) -> \(mode.rawValue)")
 
+        if mode == .on {
+            resetSleepTimer()
+        } else {
+            stopSleepTimer()
+        }
+
         // Clear UI state when waking up or switching active modes
         if previousMode == .sleep && mode == .on {
             currentTranscript = ""
@@ -490,6 +506,7 @@ class AppState: ObservableObject {
         // Start services
         assemblyAIService?.setTranscribeMode(transcribeMode)
         assemblyAIService?.setFormatTurns(!liveDictationEnabled)
+        assemblyAIService?.setVocabularyPrompt(vocabularyPrompt)
         assemblyAIService?.connect()
         audioCaptureManager?.startCapture()
     }
@@ -552,6 +569,11 @@ class AppState: ObservableObject {
     }
 
     private func handleTurn(_ turn: TranscriptTurn) {
+        // Reset sleep timer on any speech detection
+        if microphoneMode == .on {
+            resetSleepTimer()
+        }
+        
         let fallbackTranscript = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
         if !turn.words.isEmpty {
             currentWords = turn.words
@@ -666,6 +688,19 @@ class AppState: ObservableObject {
             processed = ""
         }
         
+        // 1b. Handle "spell" prefix
+        if !isLiteral && processed.lowercased().hasPrefix("spell ") {
+            return "" // Handled by processVoiceCommands
+        }
+        
+        if !isLiteral && processed.lowercased().hasPrefix("focus ") {
+            return "" // Handled by processVoiceCommands
+        }
+        
+        if !isLiteral && processed.lowercased().hasPrefix("save to idea flow") {
+            return "" // Handled by processVoiceCommands
+        }
+        
         // 2. Handle trailing mode-switch commands if they are at the very end
         // This allows "Hello world microphone off" to just type "Hello world"
         if !isLiteral {
@@ -776,6 +811,30 @@ class AppState: ObservableObject {
             return
         }
 
+        // Voice Spelling Mode
+        let lowerTranscript = turn.transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if lowerTranscript.hasPrefix("spell ") {
+            let textToSpell = String(turn.transcript.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+            if !textToSpell.isEmpty && turn.endOfTurn {
+                logDebug("Voice Spelling: \"\(textToSpell)\"")
+                // Type character by character without adding spaces
+                typeText(textToSpell.replacingOccurrences(of: " ", with: ""), appendSpace: false)
+                triggerCommandFlash(name: "Spell")
+                return
+            }
+        }
+
+        // Voice App Focusing
+        if lowerTranscript.hasPrefix("focus ") {
+            let appName = String(turn.transcript.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+            if !appName.isEmpty && turn.endOfTurn {
+                logDebug("Focusing App: \"\(appName)\"")
+                windowManager.focusApp(named: appName)
+                triggerCommandFlash(name: "Focus")
+                return
+            }
+        }
+
         let tokenStrings = normalizedTokens.map { $0.token }
 
         var matches: [PendingCommandMatch] = []
@@ -812,7 +871,8 @@ class AppState: ObservableObject {
                 (phrase: "send dictation", key: "system.force_end_utterance", name: "Send", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void),
                 (phrase: "window recent", key: "system.window_recent", name: "Previous Window", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 1) } as () -> Void),
                 (phrase: "window recent 2", key: "system.window_recent_2", name: "Previous Window 2", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 2) } as () -> Void),
-                (phrase: "window recent two", key: "system.window_recent_2", name: "Previous Window 2", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 2) } as () -> Void)
+                (phrase: "window recent two", key: "system.window_recent_2", name: "Previous Window 2", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 2) } as () -> Void),
+                (phrase: "save to idea flow", key: "system.save_ideaflow", name: "Idea Flow", haltsProcessing: true, action: { [weak self] in self?.saveToIdeaFlow() } as () -> Void)
             ])
         }
 
@@ -910,6 +970,31 @@ class AppState: ObservableObject {
     private func executeMatch(_ match: PendingCommandMatch) {
         logDebug("Executing command: \(match.key)")
         match.action()
+        
+        // Add to dictation history with a command marker
+        // Try to find a human-readable name for the command
+        let commandName: String
+        if match.key.hasPrefix("system.") {
+            commandName = match.key.replacingOccurrences(of: "system.", with: "").replacingOccurrences(of: "_", with: " ").capitalized
+        } else {
+            // For user commands, find the phrase
+            if let command = voiceCommands.first(where: { "user.\($0.id.uuidString)" == match.key }) {
+                commandName = command.phrase
+            } else {
+                commandName = "User Command"
+            }
+        }
+        
+        let historyEntry = "[Command] \(commandName)"
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.dictationHistory.insert(historyEntry, at: 0)
+            if self.dictationHistory.count > 100 {
+                self.dictationHistory.removeLast()
+            }
+            self.saveDictationHistory()
+        }
+
         lastExecutedEndWordIndexByCommand[match.key] = match.endWordIndex
         currentUtteranceHadCommand = true
         if match.key.hasPrefix("user.") {
@@ -1227,6 +1312,55 @@ class AppState: ObservableObject {
         }
     }
 
+    private func loadSleepTimerSettings() {
+        sleepTimerEnabled = UserDefaults.standard.object(forKey: "sleep_timer_enabled") as? Bool ?? true
+        let storedMinutes = UserDefaults.standard.double(forKey: "sleep_timer_minutes")
+        if storedMinutes > 0 {
+            sleepTimerMinutes = storedMinutes
+        }
+    }
+
+    func saveSleepTimerEnabled(_ value: Bool) {
+        sleepTimerEnabled = value
+        UserDefaults.standard.set(value, forKey: "sleep_timer_enabled")
+        if value {
+            resetSleepTimer()
+        } else {
+            stopSleepTimer()
+        }
+    }
+
+    func saveSleepTimerMinutes(_ value: Double) {
+        sleepTimerMinutes = value
+        UserDefaults.standard.set(value, forKey: "sleep_timer_minutes")
+        if sleepTimerEnabled {
+            resetSleepTimer()
+        }
+    }
+
+    private func resetSleepTimer() {
+        stopSleepTimer()
+        guard sleepTimerEnabled && microphoneMode == .on else { return }
+        
+        let seconds = sleepTimerMinutes * 60
+        sleepTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleSleepTimerTimeout()
+            }
+        }
+    }
+
+    private func stopSleepTimer() {
+        sleepTimer?.invalidate()
+        sleepTimer = nil
+    }
+
+    private func handleSleepTimerTimeout() {
+        guard microphoneMode == .on else { return }
+        logDebug("Inactivity timeout: Switching to Sleep mode")
+        setMode(.sleep)
+    }
+
     private func loadDictationHistory() {
         if let history = UserDefaults.standard.stringArray(forKey: "dictation_history") {
             dictationHistory = history
@@ -1235,6 +1369,43 @@ class AppState: ObservableObject {
 
     func saveDictationHistory() {
         UserDefaults.standard.set(dictationHistory, forKey: "dictation_history")
+    }
+
+    private func loadVocabularyPrompt() {
+        vocabularyPrompt = UserDefaults.standard.string(forKey: "vocabulary_prompt") ?? ""
+    }
+
+    func saveVocabularyPrompt(_ value: String) {
+        let previous = vocabularyPrompt
+        vocabularyPrompt = value
+        UserDefaults.standard.set(value, forKey: "vocabulary_prompt")
+        
+        if previous != value && microphoneMode != .off && !effectiveIsOffline {
+            logDebug("Vocabulary prompt changed: Restarting services")
+            restartServicesIfActive()
+        }
+    }
+
+    private func loadIdeaFlowSettings() {
+        if let data = UserDefaults.standard.data(forKey: "ideaflow_shortcut"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            ideaFlowShortcut = shortcut
+        }
+        ideaFlowURL = UserDefaults.standard.string(forKey: "ideaflow_url") ?? ""
+    }
+
+    func saveIdeaFlowShortcut(_ shortcut: KeyboardShortcut?) {
+        ideaFlowShortcut = shortcut
+        if let shortcut = shortcut, let data = try? JSONEncoder().encode(shortcut) {
+            UserDefaults.standard.set(data, forKey: "ideaflow_shortcut")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "ideaflow_shortcut")
+        }
+    }
+
+    func saveIdeaFlowURL(_ url: String) {
+        ideaFlowURL = url
+        UserDefaults.standard.set(url, forKey: "ideaflow_url")
     }
 
     private func loadLaunchMode() {
@@ -1299,6 +1470,40 @@ class AppState: ObservableObject {
         // 3. Clear state after a short delay to ensure no double-typing from the server response
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             self?.resetUtteranceState()
+        }
+    }
+
+    func saveToIdeaFlow() {
+        // Find the latest non-command history entry
+        guard let latestNote = dictationHistory.first(where: { !$0.hasPrefix("[Command]") }) else {
+            logDebug("Idea Flow: No dictation found to save")
+            return
+        }
+        
+        logDebug("Idea Flow: Saving note \"\(latestNote.prefix(20))...\"")
+        
+        // 1. Copy to clipboard
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(latestNote, forType: .string)
+        
+        // 2. Open URL or execute shortcut
+        if let urlString = ideaFlowURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+           let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+        } else if let shortcut = ideaFlowShortcut {
+            executeKeyboardShortcut(shortcut)
+        } else {
+            // Fallback: search for IdeaFlow app
+            let apps = NSWorkspace.shared.runningApplications
+            if let ideaFlow = apps.first(where: { $0.localizedName?.contains("IdeaFlow") == true }) {
+                ideaFlow.activate()
+                // Wait briefly for app to focus then paste
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.executeKeyboardShortcut(KeyboardShortcut(keyCode: UInt16(kVK_ANSI_V), modifiers: [.command]))
+                }
+            } else {
+                logDebug("Idea Flow: App not found and no URL/Shortcut configured")
+            }
         }
     }
 }

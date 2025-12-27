@@ -38,6 +38,7 @@ class AssemblyAIService: NSObject, ObservableObject {
 
     private var transcribeMode = true
     private var formatTurns = true
+    private var vocabularyPrompt: String?
     private var utteranceConfig: UtteranceConfig = .default
 
     init(apiKey: String) {
@@ -51,6 +52,10 @@ class AssemblyAIService: NSObject, ObservableObject {
 
     func setFormatTurns(_ enabled: Bool) {
         formatTurns = enabled
+    }
+
+    func setVocabularyPrompt(_ prompt: String?) {
+        vocabularyPrompt = prompt
     }
 
     func setUtteranceConfig(_ config: UtteranceConfig) {
@@ -68,6 +73,10 @@ class AssemblyAIService: NSObject, ObservableObject {
             URLQueryItem(name: "min_end_of_turn_silence_when_confident", value: String(utteranceConfig.silenceThresholdMs)),
             URLQueryItem(name: "max_turn_silence", value: String(utteranceConfig.maxTurnSilenceMs))
         ]
+
+        if let prompt = vocabularyPrompt, !prompt.isEmpty {
+            urlComponents.queryItems?.append(URLQueryItem(name: "keyterms_prompt", value: prompt))
+        }
 
         guard let url = urlComponents.url else {
             errorMessage = "Invalid WebSocket URL"

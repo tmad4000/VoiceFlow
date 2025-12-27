@@ -211,6 +211,29 @@ struct GeneralSettingsView: View {
                         Text("The mode VoiceFlow will enter when first launched.")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
+                        
+                        Divider()
+                        
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("Auto-Sleep", isOn: sleepTimerEnabledBinding)
+                                .font(.system(size: 13))
+                            
+                            Text("Automatically switch from On to Sleep mode after inactivity.")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                            
+                            if appState.sleepTimerEnabled {
+                                SliderRow(
+                                    "Inactivity Timeout",
+                                    subtitle: "Minutes of silence before sleeping.",
+                                    value: sleepTimerMinutesBinding,
+                                    range: 1...60,
+                                    step: 1,
+                                    unit: " min"
+                                )
+                                .padding(.leading, 16)
+                            }
+                        }
                     }
                     .padding(4)
                 }
@@ -256,6 +279,38 @@ struct GeneralSettingsView: View {
                             step: 50,
                             unit: " ms"
                         )
+                    }
+                    .padding(4)
+                }
+
+                // Vocabulary Section
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Vocabulary")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        TextField("Custom words or phrases...", text: vocabularyPromptBinding)
+                            .textFieldStyle(.roundedBorder)
+
+                        Text("Comma-separated words or phrases to improve recognition of technical terms, names, or jargon (Online mode only).")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(4)
+                }
+
+                // Idea Flow Section
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Idea Flow Integration")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        TextField("Optional URL (e.g., ideaflow://)", text: ideaFlowURLBinding)
+                            .textFieldStyle(.roundedBorder)
+
+                        Text("Configure how to trigger Idea Flow when saying \"save to idea flow\".")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
                     }
                     .padding(4)
                 }
@@ -472,6 +527,20 @@ struct GeneralSettingsView: View {
         )
     }
 
+    private var sleepTimerEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { appState.sleepTimerEnabled },
+            set: { appState.saveSleepTimerEnabled($0) }
+        )
+    }
+
+    private var sleepTimerMinutesBinding: Binding<Double> {
+        Binding(
+            get: { appState.sleepTimerMinutes },
+            set: { appState.saveSleepTimerMinutes($0) }
+        )
+    }
+
     private var dictationProviderBinding: Binding<DictationProvider> {
         Binding(
             get: { appState.dictationProvider },
@@ -490,6 +559,20 @@ struct GeneralSettingsView: View {
         Binding(
             get: { appState.liveDictationEnabled },
             set: { appState.saveLiveDictationEnabled($0) }
+        )
+    }
+
+    private var vocabularyPromptBinding: Binding<String> {
+        Binding(
+            get: { appState.vocabularyPrompt },
+            set: { appState.saveVocabularyPrompt($0) }
+        )
+    }
+
+    private var ideaFlowURLBinding: Binding<String> {
+        Binding(
+            get: { appState.ideaFlowURL },
+            set: { appState.saveIdeaFlowURL($0) }
         )
     }
 
