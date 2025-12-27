@@ -1048,8 +1048,14 @@ class AppState: ObservableObject {
     }
 
     func saveAPIKey(_ key: String) {
+        let previous = apiKey
         apiKey = key
         UserDefaults.standard.set(key, forKey: "assemblyai_api_key")
+        
+        if previous != key && microphoneMode != .off {
+            logDebug("API Key changed: Restarting services")
+            restartServicesIfActive()
+        }
     }
 
     private func loadVoiceCommands() {
@@ -1086,10 +1092,15 @@ class AppState: ObservableObject {
         
         if previousValue != value && microphoneMode != .off {
             logDebug("Live dictation changed: Restarting services")
-            let currentMode = microphoneMode
-            stopListening()
-            setMode(currentMode)
+            restartServicesIfActive()
         }
+    }
+
+    private func restartServicesIfActive() {
+        guard microphoneMode != .off else { return }
+        let currentMode = microphoneMode
+        stopListening()
+        startListening(transcribeMode: currentMode == .on)
     }
 
     private func loadUtteranceSettings() {
@@ -1165,9 +1176,7 @@ class AppState: ObservableObject {
         
         if previous != provider && microphoneMode != .off {
             logDebug("Dictation provider changed: \(previous.rawValue) -> \(provider.rawValue)")
-            let currentMode = microphoneMode
-            stopListening()
-            setMode(currentMode)
+            restartServicesIfActive()
         }
     }
 
