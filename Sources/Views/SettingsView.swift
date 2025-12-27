@@ -345,14 +345,34 @@ struct GeneralSettingsView: View {
                 }
 
                 // About
-                HStack {
-                    let bundleName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "VoiceFlow"
-                    let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
-                    Text("\(bundleName) v\(bundleVersion)")
-                        .font(.system(size: 11))
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        let bundleName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "VoiceFlow"
+                        let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
+                        Text("\(bundleName) v\(bundleVersion)")
+                            .font(.system(size: 11, weight: .semibold))
+                        Spacer()
+                    }
+                    
+                    Text("Installed at: \(Bundle.main.bundlePath)")
+                        .font(.system(size: 9, design: .monospaced))
                         .foregroundColor(.secondary)
-                    Spacer()
+                        .textSelection(.enabled)
+                    
+                    Divider()
+                        .padding(.vertical, 4)
+                    
+                    HStack {
+                        Spacer()
+                        Button(role: .destructive) {
+                            NSApp.terminate(nil)
+                        } label: {
+                            Label("Quit VoiceFlow", systemImage: "power")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                    }
                 }
+                .padding(.top, 8)
             }
             .padding(16)
         }
