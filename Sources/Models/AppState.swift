@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CoreGraphics
+import AppKit
 
 /// Main application state management
 @MainActor
@@ -11,6 +12,8 @@ class AppState: ObservableObject {
     @Published var errorMessage: String?
     @Published var apiKey: String = ""
     @Published var voiceCommands: [VoiceCommand] = VoiceCommand.defaults
+    @Published var isPanelVisible: Bool = true
+    @Published var currentWords: [TranscriptWord] = []
 
     private var audioCaptureManager: AudioCaptureManager?
     private var assemblyAIService: AssemblyAIService?
@@ -19,6 +22,7 @@ class AppState: ObservableObject {
     private var currentUtteranceHadCommand = false
     private let commandPrefixToken = "voiceflow"
     private let expectsFormattedTurns = true
+    private weak var panelWindow: NSWindow?
 
     init() {
         loadAPIKey()
@@ -104,8 +108,10 @@ class AppState: ObservableObject {
 
     private func handleTurn(_ turn: TranscriptTurn) {
         if !turn.words.isEmpty {
+            currentWords = turn.words
             currentTranscript = assembleDisplayText(from: turn.words)
         } else if !turn.transcript.isEmpty {
+            currentWords = []
             currentTranscript = turn.transcript
         }
 
@@ -222,6 +228,46 @@ class AppState: ObservableObject {
     private func resetUtteranceState() {
         lastExecutedEndWordIndexByCommand.removeAll()
         currentUtteranceHadCommand = false
+    }
+
+    func configurePanelWindow(_ window: NSWindow) {
+        window.identifier = NSUserInterfaceItemIdentifier("voiceflow.panel")
+        window.isReleasedWhenClosed = false
+        window.isMovableByWindowBackground = true
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = true
+        window.level = .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panelWindow = window
+
+        if isPanelVisible {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            window.orderOut(nil)
+        }
+    }
+
+    func showPanelWindow() {
+        guard let window = panelWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "voiceflow.panel" }) else {
+            return
+        }
+        isPanelVisible = true
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func hidePanelWindow() {
+        guard let window = panelWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "voiceflow.panel" }) else {
+            return
+        }
+        isPanelVisible = false
+        window.orderOut(nil)
     }
 
     private func assembleDisplayText(from words: [TranscriptWord]) -> String {

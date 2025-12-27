@@ -6,28 +6,40 @@ struct VoiceFlowApp: App {
     @StateObject private var appState = AppState()
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra {
+            MenuBarView()
+                .environmentObject(appState)
+        } label: {
+            Image(systemName: appState.microphoneMode.icon)
+                .foregroundStyle(menuBarIconColor)
+        }
+
+        Window("VoiceFlow", id: "panel") {
+            FloatingPanelView()
                 .environmentObject(appState)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
-        .commands {
-            CommandGroup(replacing: .newItem) {}
-        }
+        .defaultPosition(.topTrailing)
 
         Settings {
             SettingsView()
                 .environmentObject(appState)
         }
     }
+
+    private var menuBarIconColor: Color {
+        switch appState.microphoneMode {
+        case .off: return .secondary
+        case .on: return .green
+        case .wake: return .orange
+        }
+    }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Make app appear in Dock and be activatable
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.setActivationPolicy(.accessory)
 
         // Request microphone permission on launch
         AVCaptureDevice.requestAccess(for: .audio) { granted in
@@ -38,7 +50,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return true
+        return false
     }
 }
 
