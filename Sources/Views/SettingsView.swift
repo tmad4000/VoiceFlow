@@ -216,7 +216,7 @@ struct GeneralSettingsView: View {
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
 
-                        // Mode picker as menu (cleaner for 5 options)
+                        // Mode picker as menu (cleaner for multiple options)
                         HStack {
                             Text("Mode")
                                 .font(.system(size: 13))
@@ -268,8 +268,8 @@ struct GeneralSettingsView: View {
                                     "Confidence",
                                     subtitle: "Higher = waits longer for certainty",
                                     value: confidenceThresholdBinding,
-                                    range: 0.3...0.95,
-                                    step: 0.05,
+                                    range: 0.3...0.99,
+                                    step: 0.01,
                                     formatAsInt: false
                                 )
 
@@ -277,8 +277,8 @@ struct GeneralSettingsView: View {
                                     "Silence",
                                     subtitle: "Minimum pause (ms) after confident end",
                                     value: silenceThresholdBinding,
-                                    range: 50...800,
-                                    step: 10,
+                                    range: 50...3000,
+                                    step: 25,
                                     unit: " ms"
                                 )
                             }
@@ -343,6 +343,7 @@ struct GeneralSettingsView: View {
         case .balanced: return "scale.3d"
         case .patient: return "tortoise"
         case .dictation: return "doc.text"
+        case .extraLong: return "hourglass"
         case .custom: return "slider.horizontal.3"
         }
     }
@@ -353,6 +354,7 @@ struct GeneralSettingsView: View {
         case .balanced: return "Balanced (160ms) ✓"
         case .patient: return "Patient (400ms)"
         case .dictation: return "Dictation (560ms)"
+        case .extraLong: return "Extra Long (2000ms)"
         case .custom: return "Custom"
         }
     }

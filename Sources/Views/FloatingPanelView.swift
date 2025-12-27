@@ -73,9 +73,6 @@ struct FloatingPanelView: View {
         .frame(minWidth: 360, maxWidth: 520)
         .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(PanelWindowConfigurator { window in
-            appState.configurePanelWindow(window)
-        })
         .overlay(alignment: .bottom) {
             if showingHideToast {
                 ToastView(message: "Panel hidden. Click menu bar icon to show.")
@@ -102,14 +99,7 @@ struct FloatingPanelView: View {
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            if let window = NSApp.windows.first(where: { $0.level == .floating }) {
-                window.orderOut(nil)
-            }
-            // Notify AppDelegate
-            if let appDelegate = NSApp.delegate as? AppDelegate {
-                appDelegate.isPanelVisible = false
-                appDelegate.showHideMenuItem?.title = "Show Panel"
-            }
+            appState.hidePanelWindow()
         }
     }
 }
@@ -214,35 +204,6 @@ private struct TranscriptWordsText: View {
                 .italic(word.isFinal == false)
             return partial + segment
         }
-    }
-}
-
-struct PanelWindowConfigurator: NSViewRepresentable {
-    let configure: (NSWindow) -> Void
-
-    func makeNSView(context: Context) -> NSView {
-        let view = PassThroughView()
-        DispatchQueue.main.async {
-            if let window = view.window {
-                configure(window)
-            }
-        }
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async {
-            if let window = view.window {
-                configure(window)
-            }
-        }
-    }
-}
-
-/// NSView that doesn't intercept mouse events
-private class PassThroughView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        return nil  // Pass all clicks through
     }
 }
 

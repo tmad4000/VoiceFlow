@@ -15,6 +15,7 @@ enum UtteranceMode: String, CaseIterable, Codable {
     case balanced = "balanced"
     case patient = "patient"
     case dictation = "dictation"
+    case extraLong = "extra_long"
     case custom = "custom"
 
     var displayName: String {
@@ -23,6 +24,7 @@ enum UtteranceMode: String, CaseIterable, Codable {
         case .balanced: return "Balanced"
         case .patient: return "Patient"
         case .dictation: return "Dictation"
+        case .extraLong: return "Extra Long"
         case .custom: return "Custom"
         }
     }
@@ -33,6 +35,7 @@ enum UtteranceMode: String, CaseIterable, Codable {
         case .balanced: return "Good for most uses"
         case .patient: return "Allows natural pauses"
         case .dictation: return "Long-form with thinking pauses"
+        case .extraLong: return "Maximum pause length for deep dictation"
         case .custom: return "Manual configuration"
         }
     }
@@ -44,6 +47,7 @@ enum UtteranceMode: String, CaseIterable, Codable {
         case .balanced: return 0.7
         case .patient: return 0.8
         case .dictation: return 0.85
+        case .extraLong: return 0.95
         case .custom: return 0.7
         }
     }
@@ -55,6 +59,7 @@ enum UtteranceMode: String, CaseIterable, Codable {
         case .balanced: return 160
         case .patient: return 400
         case .dictation: return 560
+        case .extraLong: return 2000
         case .custom: return 160
         }
     }
@@ -80,6 +85,8 @@ class AppState: ObservableObject {
     @Published var customConfidenceThreshold: Double = 0.7
     @Published var customSilenceThresholdMs: Int = 160
 
+    var panelVisibilityHandler: ((Bool) -> Void)?
+
     private var audioCaptureManager: AudioCaptureManager?
     private var assemblyAIService: AssemblyAIService?
     private var cancellables = Set<AnyCancellable>()
@@ -87,8 +94,6 @@ class AppState: ObservableObject {
     private var currentUtteranceHadCommand = false
     private let commandPrefixToken = "voiceflow"
     private let expectsFormattedTurns = true
-    private weak var panelWindow: NSWindow?
-    private var didSetInitialPanelVisibility = false
     private var pendingCommandExecutions = Set<PendingExecutionKey>()
     private var lastCommandExecutionTime: Date?
     private let cancelWindowSeconds: TimeInterval = 2
@@ -557,61 +562,14 @@ class AppState: ObservableObject {
         executeKeyboardShortcut(undoShortcut)
     }
 
-    func configurePanelWindow(_ window: NSWindow) {
-        window.identifier = NSUserInterfaceItemIdentifier("voiceflow.panel")
-        window.isReleasedWhenClosed = false
-        window.isMovableByWindowBackground = true
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.styleMask.insert(.fullSizeContentView)
-        window.styleMask.insert(.nonactivatingPanel)
-        window.standardWindowButton(.closeButton)?.isHidden = true
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        window.standardWindowButton(.zoomButton)?.isHidden = true
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        window.hasShadow = true
-        window.level = .floating
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        window.hidesOnDeactivate = false
-        panelWindow = window
-        wrapContentViewForFirstMouseIfNeeded(window)
-
-        if !didSetInitialPanelVisibility {
-            if isPanelVisible {
-                window.makeKeyAndOrderFront(nil)
-            } else {
-                window.orderOut(nil)
-            }
-            didSetInitialPanelVisibility = true
-        }
-    }
-
-    private func wrapContentViewForFirstMouseIfNeeded(_ window: NSWindow) {
-        guard let contentView = window.contentView,
-              !(contentView is FirstMouseContainerView) else {
-            return
-        }
-
-        let container = FirstMouseContainerView(wrapping: contentView)
-        window.contentView = container
-    }
-
     func showPanelWindow() {
         isPanelVisible = true
-        guard let window = panelWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "voiceflow.panel" }) else {
-            return
-        }
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        panelVisibilityHandler?(true)
     }
 
     func hidePanelWindow() {
         isPanelVisible = false
-        guard let window = panelWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "voiceflow.panel" }) else {
-            return
-        }
-        window.orderOut(nil)
+        panelVisibilityHandler?(false)
     }
 
     private func assembleDisplayText(from words: [TranscriptWord]) -> String {
@@ -807,31 +765,5 @@ class AppState: ObservableObject {
             }
         }
         assemblyAIService?.forceEndUtterance()
-    }
-}
-
-private final class FirstMouseContainerView: NSView {
-    private let wrappedView: NSView
-
-    init(wrapping view: NSView) {
-        self.wrappedView = view
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        wrappedView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(wrappedView)
-        NSLayoutConstraint.activate([
-            wrappedView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            wrappedView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            wrappedView.topAnchor.constraint(equalTo: topAnchor),
-            wrappedView.bottomAnchor.constraint(equalTo: bottomAnchor)
-        ])
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
     }
 }

@@ -8,12 +8,10 @@ struct VoiceFlowApp: App {
 
     var body: some Scene {
         WindowGroup {
-            FloatingPanelView()
-                .environmentObject(appDelegate.appState)
+            HiddenWindowView()
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
-        .defaultPosition(.topTrailing)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
@@ -28,8 +26,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var onMenuItem: NSMenuItem?
     var wakeMenuItem: NSMenuItem?
     var showHideMenuItem: NSMenuItem?
-    var isPanelVisible = true
     var settingsWindow: NSWindow?
+    private var panelWindow: FloatingPanelWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -78,40 +76,84 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("[VoiceFlow] Microphone permission: \(granted ? "granted" : "denied")")
         }
 
+        configurePanelWindow()
+        appState.panelVisibilityHandler = { [weak self] visible in
+            self?.setPanelVisible(visible)
+        }
+
         // Show the panel window after a brief delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.showPanelWindow()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            self.setPanelVisible(self.appState.isPanelVisible)
         }
     }
 
     func showPanelWindow() {
-        if let window = NSApp.windows.first(where: { $0.contentView?.subviews.first != nil }),
-           let screen = NSScreen.main {
-            window.level = .floating
-            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            // Center horizontally, near top of screen
-            let panelWidth = window.frame.width
-            let x = (screen.frame.width - panelWidth) / 2 + screen.frame.origin.x
-            let y = screen.frame.maxY - 80
-            window.setFrameOrigin(NSPoint(x: x, y: y))
-            window.makeKeyAndOrderFront(nil)
+        setPanelVisible(true)
+    }
+
+    private func configurePanelWindow() {
+        let panel = FloatingPanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 220),
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingController = NSHostingController(
+            rootView: FloatingPanelView()
+                .environmentObject(appState)
+        )
+        panel.contentViewController = hostingController
+        hostingController.view.layoutSubtreeIfNeeded()
+        let fittingSize = hostingController.view.fittingSize
+        if fittingSize.width > 0, fittingSize.height > 0 {
+            panel.setContentSize(fittingSize)
+        }
+
+        panel.identifier = NSUserInterfaceItemIdentifier("voiceflow.panel")
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.isFloatingPanel = true
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.closeButton)?.isHidden = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+
+        panelWindow = panel
+    }
+
+    private func setPanelVisible(_ visible: Bool) {
+        guard let panelWindow else { return }
+        appState.isPanelVisible = visible
+        showHideMenuItem?.title = visible ? "Hide Panel" : "Show Panel"
+
+        if visible {
+            positionPanelWindow(panelWindow)
+            panelWindow.makeKeyAndOrderFront(nil)
+        } else {
+            panelWindow.orderOut(nil)
         }
     }
 
+    private func positionPanelWindow(_ window: NSWindow) {
+        guard let screen = NSScreen.main else { return }
+        let panelWidth = window.frame.width
+        let x = (screen.frame.width - panelWidth) / 2 + screen.frame.origin.x
+        let y = screen.frame.maxY - 80
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
     @objc func togglePanel() {
-        if isPanelVisible {
-            // Hide panel
-            if let window = NSApp.windows.first(where: { $0.level == .floating }) {
-                window.orderOut(nil)
-            }
-            isPanelVisible = false
-            showHideMenuItem?.title = "Show Panel"
-        } else {
-            // Show panel
-            showPanelWindow()
-            isPanelVisible = true
-            showHideMenuItem?.title = "Hide Panel"
-        }
+        setPanelVisible(!appState.isPanelVisible)
     }
 
     @objc func setModeOff() {
