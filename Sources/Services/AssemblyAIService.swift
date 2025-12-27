@@ -1,6 +1,22 @@
 import Foundation
 import Starscream
 
+struct TranscriptWord {
+    let text: String
+    let isFinal: Bool?
+    let startTime: Double?
+    let endTime: Double?
+}
+
+struct TranscriptTurn {
+    let transcript: String
+    let words: [TranscriptWord]
+    let endOfTurn: Bool
+    let isFormatted: Bool
+    let turnOrder: Int?
+    let utterance: String?
+}
+
 /// WebSocket client for AssemblyAI real-time streaming transcription
 class AssemblyAIService: NSObject, ObservableObject {
     private let apiKey: String
@@ -8,11 +24,10 @@ class AssemblyAIService: NSObject, ObservableObject {
     private let endpoint = "wss://streaming.assemblyai.com/v3/ws"
 
     @Published var isConnected = false
-    @Published var transcript = ""
+    @Published var latestTurn: TranscriptTurn?
     @Published var errorMessage: String?
 
     private var transcribeMode = true
-    private var pendingTranscript = ""
 
     init(apiKey: String) {
         self.apiKey = apiKey
@@ -73,10 +88,35 @@ class AssemblyAIService: NSObject, ObservableObject {
             print("Session started: \(message["id"] ?? "unknown")")
 
         case "Turn":
-            if let text = message["transcript"] as? String, !text.isEmpty {
-                DispatchQueue.main.async { [weak self] in
-                    self?.transcript = text
+            let transcript = message["transcript"] as? String ?? ""
+            let endOfTurn = message["end_of_turn"] as? Bool ?? false
+            let isFormatted = message["turn_is_formatted"] as? Bool ?? false
+            let turnOrder = message["turn_order"] as? Int
+            let utterance = message["utterance"] as? String
+
+            var words: [TranscriptWord] = []
+            if let wordDictionaries = message["words"] as? [[String: Any]] {
+                words = wordDictionaries.compactMap { word in
+                    let text = (word["text"] as? String) ?? (word["word"] as? String)
+                    guard let text else { return nil }
+                    let isFinal = (word["word_is_final"] as? Bool) ?? (word["is_final"] as? Bool)
+                    let startTime = (word["start"] as? Double) ?? (word["start"] as? NSNumber)?.doubleValue
+                    let endTime = (word["end"] as? Double) ?? (word["end"] as? NSNumber)?.doubleValue
+                    return TranscriptWord(text: text, isFinal: isFinal, startTime: startTime, endTime: endTime)
                 }
+            }
+
+            let turn = TranscriptTurn(
+                transcript: transcript,
+                words: words,
+                endOfTurn: endOfTurn,
+                isFormatted: isFormatted,
+                turnOrder: turnOrder,
+                utterance: utterance
+            )
+
+            DispatchQueue.main.async { [weak self] in
+                self?.latestTurn = turn
             }
 
         case "Termination":

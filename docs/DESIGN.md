@@ -253,6 +253,7 @@ This prevents accidental triggers if you say a command phrase in normal speech -
 - Otherwise, wait for pause/end_of_turn before executing
 - Ignore `turn_is_formatted=true` for command detection (avoid double-fire)
 - Match commands against tokenized `words` (not raw substring) and use word indices for dedupe
+- For non-prefixed commands, require matched words to be `word_is_final=true` (or use a short stability window)
 - Configurable pause duration (default 500ms) if not relying purely on endpointing
 
 ---
@@ -282,8 +283,10 @@ t=0.6s  Turn (end_of_turn=true):  transcript="undo that redo that" → Reset per
 
 **User intent:** Chain commands, including repeats, in a single utterance
 
-**Example utterance:**
-> "copy that tab back, paste that tab back, paste that"
+**Example utterance (commas = human-readable separators):**
+> "copy that, tab back, paste that, tab back, paste that"
+
+**Parsing note:** Do not rely on commas or punctuation; unformatted Turns often omit them. Treat commas as optional and use word-sequence matches + pause/endpointing for boundaries.
 
 **Expected behavior (order matters):**
 1) Execute "copy that"

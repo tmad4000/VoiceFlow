@@ -15,6 +15,10 @@ class AppState: ObservableObject {
     private var audioCaptureManager: AudioCaptureManager?
     private var assemblyAIService: AssemblyAIService?
     private var cancellables = Set<AnyCancellable>()
+    private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
+    private var currentUtteranceHadCommand = false
+    private let commandPrefixToken = "voiceflow"
+    private let expectsFormattedTurns = true
 
     init() {
         loadAPIKey()
@@ -63,10 +67,11 @@ class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
-        assemblyAIService?.$transcript
+        assemblyAIService?.$latestTurn
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] transcript in
-                self?.handleTranscript(transcript)
+            .sink { [weak self] turn in
+                guard let turn else { return }
+                self?.handleTurn(turn)
             }
             .store(in: &cancellables)
 
@@ -97,48 +102,159 @@ class AppState: ObservableObject {
         isConnected = false
     }
 
-    private func handleTranscript(_ transcript: String) {
-        guard !transcript.isEmpty else { return }
+    private func handleTurn(_ turn: TranscriptTurn) {
+        if !turn.words.isEmpty {
+            currentTranscript = assembleDisplayText(from: turn.words)
+        } else if !turn.transcript.isEmpty {
+            currentTranscript = turn.transcript
+        }
 
-        if microphoneMode == .wake {
-            // In wake mode, check for voice commands
-            processVoiceCommand(transcript)
+        if microphoneMode == .wake, !turn.isFormatted {
+            processVoiceCommands(turn)
         } else if microphoneMode == .on {
-            // In on mode, update transcript and type it out
-            currentTranscript = transcript
-            typeText(transcript)
+            handleDictationTurn(turn)
+        }
+
+        if turn.endOfTurn {
+            resetUtteranceState()
         }
     }
 
-    private func processVoiceCommand(_ transcript: String) {
-        let lowercased = transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    private func handleDictationTurn(_ turn: TranscriptTurn) {
+        guard !currentUtteranceHadCommand else { return }
 
-        // Check for built-in mode commands
-        if lowercased.contains("microphone on") || lowercased.contains("start dictation") {
-            setMode(.on)
-            return
-        }
+        let shouldType = turn.isFormatted || (!expectsFormattedTurns && turn.endOfTurn)
+        guard shouldType, !turn.transcript.isEmpty else { return }
+        typeText(turn.transcript)
+    }
 
-        if lowercased.contains("microphone off") || lowercased.contains("stop dictation") {
-            setMode(.off)
-            return
-        }
+    private struct PendingCommandMatch {
+        let key: String
+        let startIndex: Int
+        let endIndex: Int
+        let isPrefixed: Bool
+        let isStable: Bool
+        let haltsProcessing: Bool
+        let action: () -> Void
+    }
 
-        // Check custom voice commands
-        for command in voiceCommands {
-            if lowercased.contains(command.phrase.lowercased()) {
-                executeKeyboardShortcut(command.shortcut)
-                return
+    private func processVoiceCommands(_ turn: TranscriptTurn) {
+        let normalizedTokens = normalizedWordTokens(from: turn.words)
+        guard !normalizedTokens.isEmpty else { return }
+
+        var matches: [PendingCommandMatch] = []
+
+        let systemCommands: [(phrase: String, key: String, haltsProcessing: Bool, action: () -> Void)] = [
+            ("microphone on", "system.microphone_on", true, { [weak self] in self?.setMode(.on) }),
+            ("start dictation", "system.start_dictation", true, { [weak self] in self?.setMode(.on) }),
+            ("microphone off", "system.microphone_off", true, { [weak self] in self?.setMode(.off) }),
+            ("stop dictation", "system.stop_dictation", true, { [weak self] in self?.setMode(.off) })
+        ]
+
+        for systemCommand in systemCommands {
+            let phraseTokens = tokenizePhrase(systemCommand.phrase)
+            for range in findMatches(phraseTokens: phraseTokens, in: normalizedTokens) {
+                let startIndex = range.lowerBound
+                let endIndex = range.upperBound - 1
+                let isPrefixed = startIndex > 0 && normalizedTokens[startIndex - 1] == commandPrefixToken
+                let isStable = isPrefixed || isStableMatch(words: turn.words, range: range)
+                matches.append(PendingCommandMatch(
+                    key: systemCommand.key,
+                    startIndex: startIndex,
+                    endIndex: endIndex,
+                    isPrefixed: isPrefixed,
+                    isStable: isStable,
+                    haltsProcessing: systemCommand.haltsProcessing,
+                    action: systemCommand.action
+                ))
             }
         }
 
-        // Show unrecognized command briefly
-        currentTranscript = "Command: \(transcript)"
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            if self?.currentTranscript == "Command: \(transcript)" {
-                self?.currentTranscript = ""
+        for command in voiceCommands where command.isEnabled {
+            let phraseTokens = tokenizePhrase(command.phrase)
+            for range in findMatches(phraseTokens: phraseTokens, in: normalizedTokens) {
+                let startIndex = range.lowerBound
+                let endIndex = range.upperBound - 1
+                let isPrefixed = startIndex > 0 && normalizedTokens[startIndex - 1] == commandPrefixToken
+                let isStable = isPrefixed || isStableMatch(words: turn.words, range: range)
+                let key = "user.\(command.id.uuidString)"
+                matches.append(PendingCommandMatch(
+                    key: key,
+                    startIndex: startIndex,
+                    endIndex: endIndex,
+                    isPrefixed: isPrefixed,
+                    isStable: isStable,
+                    haltsProcessing: false,
+                    action: { [weak self] in self?.executeKeyboardShortcut(command.shortcut) }
+                ))
             }
         }
+
+        matches.sort {
+            if $0.startIndex == $1.startIndex {
+                return $0.endIndex > $1.endIndex
+            }
+            return $0.startIndex < $1.startIndex
+        }
+
+        for match in matches {
+            guard match.isStable else { continue }
+            let lastEndIndex = lastExecutedEndWordIndexByCommand[match.key] ?? -1
+            guard match.endIndex > lastEndIndex else { continue }
+
+            match.action()
+            lastExecutedEndWordIndexByCommand[match.key] = match.endIndex
+            currentUtteranceHadCommand = true
+
+            if match.haltsProcessing {
+                break
+            }
+        }
+    }
+
+    private func resetUtteranceState() {
+        lastExecutedEndWordIndexByCommand.removeAll()
+        currentUtteranceHadCommand = false
+    }
+
+    private func assembleDisplayText(from words: [TranscriptWord]) -> String {
+        words.map { $0.text }.joined(separator: " ")
+    }
+
+    private func normalizeToken(_ text: String) -> String {
+        text.lowercased().trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+    }
+
+    private func normalizedWordTokens(from words: [TranscriptWord]) -> [String] {
+        words.map { normalizeToken($0.text) }
+    }
+
+    private func tokenizePhrase(_ phrase: String) -> [String] {
+        phrase.split(whereSeparator: { $0.isWhitespace })
+            .map { normalizeToken(String($0)) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func isStableMatch(words: [TranscriptWord], range: Range<Int>) -> Bool {
+        for index in range {
+            if words.indices.contains(index), words[index].isFinal == false {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func findMatches(phraseTokens: [String], in tokens: [String]) -> [Range<Int>] {
+        guard !phraseTokens.isEmpty, tokens.count >= phraseTokens.count else { return [] }
+        var ranges: [Range<Int>] = []
+        let lastStart = tokens.count - phraseTokens.count
+        for startIndex in 0...lastStart {
+            let window = tokens[startIndex..<(startIndex + phraseTokens.count)]
+            if Array(window) == phraseTokens {
+                ranges.append(startIndex..<(startIndex + phraseTokens.count))
+            }
+        }
+        return ranges
     }
 
     private func typeText(_ text: String) {
