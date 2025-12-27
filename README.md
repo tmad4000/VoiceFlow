@@ -5,6 +5,7 @@ A native macOS speech recognition app designed for users with Repetitive Strain 
 ## Features
 
 - **Real-time Speech-to-Text**: Dictate text directly into any application
+- **Live Dictation (Optional)**: Type words as they become final for lower latency
 - **Three Microphone Modes**:
   - **Off**: Microphone completely disabled
   - **On**: Active transcription mode - speak and text appears

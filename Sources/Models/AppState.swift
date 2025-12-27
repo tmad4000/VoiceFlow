@@ -16,6 +16,7 @@ class AppState: ObservableObject {
     @Published var isPanelVisible: Bool = true
     @Published var currentWords: [TranscriptWord] = []
     @Published var commandDelayMs: Double = 0
+    @Published var liveDictationEnabled: Bool = false
 
     private var audioCaptureManager: AudioCaptureManager?
     private var assemblyAIService: AssemblyAIService?
@@ -29,11 +30,13 @@ class AppState: ObservableObject {
     private var lastCommandExecutionTime: Date?
     private let cancelWindowSeconds: TimeInterval = 2
     private let undoShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command])
+    private var typedFinalWordCount = 0
 
     init() {
         loadAPIKey()
         loadVoiceCommands()
         loadCommandDelay()
+        loadLiveDictationEnabled()
     }
 
     func setMode(_ mode: MicrophoneMode) {
@@ -135,10 +138,30 @@ class AppState: ObservableObject {
 
     private func handleDictationTurn(_ turn: TranscriptTurn) {
         guard !currentUtteranceHadCommand else { return }
+        if liveDictationEnabled {
+            handleLiveDictationTurn(turn)
+            return
+        }
 
         let shouldType = turn.isFormatted || (!expectsFormattedTurns && turn.endOfTurn)
         guard shouldType, !turn.transcript.isEmpty else { return }
-        typeText(turn.transcript)
+        typeText(turn.transcript, appendSpace: true)
+    }
+
+    private func handleLiveDictationTurn(_ turn: TranscriptTurn) {
+        guard !turn.isFormatted else {
+            if turn.endOfTurn {
+                typeText(" ", appendSpace: false)
+            }
+            return
+        }
+
+        let finalWords = turn.words.filter { $0.isFinal == true }.map { $0.text }
+        guard finalWords.count > typedFinalWordCount else { return }
+        let newWords = finalWords[typedFinalWordCount...]
+        let prefix = typedFinalWordCount > 0 ? " " : ""
+        typeText(prefix + newWords.joined(separator: " "), appendSpace: false)
+        typedFinalWordCount = finalWords.count
     }
 
     private struct PendingCommandMatch {
@@ -244,6 +267,7 @@ class AppState: ObservableObject {
         lastExecutedEndWordIndexByCommand.removeAll()
         currentUtteranceHadCommand = false
         pendingCommandExecutions.removeAll()
+        typedFinalWordCount = 0
     }
 
     private func executeMatch(_ match: PendingCommandMatch) {
@@ -371,11 +395,12 @@ class AppState: ObservableObject {
         return ranges
     }
 
-    private func typeText(_ text: String) {
+    private func typeText(_ text: String, appendSpace: Bool) {
         // Use CGEvent to type text into the active application
         let source = CGEventSource(stateID: .hidSystemState)
 
-        for char in text + " " {
+        let output = appendSpace ? text + " " : text
+        for char in output {
             if let unicodeScalar = char.unicodeScalars.first {
                 let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
                 let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
@@ -441,5 +466,14 @@ class AppState: ObservableObject {
     func saveCommandDelay(_ value: Double) {
         commandDelayMs = value
         UserDefaults.standard.set(value, forKey: "command_delay_ms")
+    }
+
+    private func loadLiveDictationEnabled() {
+        liveDictationEnabled = UserDefaults.standard.bool(forKey: "live_dictation_enabled")
+    }
+
+    func saveLiveDictationEnabled(_ value: Bool) {
+        liveDictationEnabled = value
+        UserDefaults.standard.set(value, forKey: "live_dictation_enabled")
     }
 }

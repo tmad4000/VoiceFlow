@@ -476,9 +476,9 @@ Turn 2: transcript="hello"   → If pasted: screen shows "helhello" (WRONG)
 - Command correction phrases: "cancel that", "no wait" (best-effort undo)
 - Configurable command delay for non-prefixed commands
 - Word-level visual feedback (final vs non-final highlighting)
+- Live dictation option: type finalized words incrementally (punctuation may be deferred)
 
 ### Backlog (Future Versions)
-- [ ] Paste on Turn updates with delta tracking
 - [ ] Macro commands / user-defined sequences (e.g., "wrap selection" → copy + new tab + paste)
 
 ---

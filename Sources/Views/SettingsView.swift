@@ -103,6 +103,19 @@ struct GeneralSettingsView: View {
                     }
                 }
             }
+
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Live Dictation")
+                        .font(.headline)
+
+                    Toggle("Type words as they become final", isOn: liveDictationBinding)
+
+                    Text("When enabled, text appears faster but without formatted punctuation.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
         }
         .padding()
     }
@@ -111,6 +124,13 @@ struct GeneralSettingsView: View {
         Binding(
             get: { appState.commandDelayMs },
             set: { appState.saveCommandDelay($0) }
+        )
+    }
+
+    private var liveDictationBinding: Binding<Bool> {
+        Binding(
+            get: { appState.liveDictationEnabled },
+            set: { appState.saveLiveDictationEnabled($0) }
         )
     }
 }
