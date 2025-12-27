@@ -215,6 +215,10 @@ class AppState: ObservableObject {
             .store(in: &cancellables)
 
         // Start in the preferred launch mode
+        let initialMode = launchMode
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.setMode(initialMode)
+        }
     }
 
     func checkAccessibilityPermission(silent: Bool = true) {
@@ -1198,7 +1202,16 @@ class AppState: ObservableObject {
     func forceEndUtterance() {
         logger.info("Force end utterance requested (connected=\(self.isConnected ? "true" : "false"))")
         
-        // Reset state locally so we are ready for the next turn even if the server is slow
+        // 1. Immediately type whatever is currently in the buffer if it's not empty
+        if !currentTranscript.isEmpty {
+            let processed = preprocessDictation(currentTranscript)
+            logDebug("Force pushing buffer: \"\(processed.prefix(20))...\"")
+            typeText(processed, appendSpace: true)
+            currentTranscript = ""
+            currentWords = []
+        }
+
+        // 2. Reset state locally so we are ready for the next turn
         let wasPending = forceEndPending
         forceEndPending = true
         forceEndRequestedAt = Date()
@@ -1208,13 +1221,9 @@ class AppState: ObservableObject {
             appleSpeechService?.forceEndUtterance()
         }
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + forceEndTimeoutSeconds) { [weak self] in
-            guard let self else { return }
-            if self.forceEndPending, let requestedAt = self.forceEndRequestedAt,
-               Date().timeIntervalSince(requestedAt) >= self.forceEndTimeoutSeconds {
-                logger.info("Force end request timed out without end-of-turn")
-                self.resetUtteranceState()
-            }
+        // 3. Clear state after a short delay to ensure no double-typing from the server response
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.resetUtteranceState()
         }
     }
 }

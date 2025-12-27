@@ -50,19 +50,27 @@ struct FloatingPanelView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Open settings")
-
-                // Close/hide button
-                Button(action: hidePanel) {
+                
+                // Close menu button
+                Menu {
+                    Button(action: hidePanel) {
+                        Label("Hide Panel", systemImage: "minus")
+                    }
+                    Button(role: .destructive, action: quitApp) {
+                        Label("Quit VoiceFlow", systemImage: "power")
+                    }
+                } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.secondary)
                 }
-                .buttonStyle(.plain)
-                .help("Hide panel (access from menu bar)")
+                .menuStyle(.borderlessButton)
+                .frame(width: 20)
+                .help("Hide or Quit")
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 4)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(Color.black.opacity(0.05))
 
             Divider()
                 .padding(.horizontal, 10)
@@ -140,6 +148,10 @@ struct FloatingPanelView: View {
 
     private func openSettings() {
         NotificationCenter.default.post(name: .openSettings, object: nil)
+    }
+
+    private func quitApp() {
+        NSApp.terminate(nil)
     }
 }
 
