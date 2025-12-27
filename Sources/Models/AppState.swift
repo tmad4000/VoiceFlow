@@ -612,6 +612,9 @@ class AppState: ObservableObject {
 
         guard shouldType, !textToType.isEmpty else {
             logger.debug("Not typing: shouldType=\(shouldType), isEmpty=\(textToType.isEmpty)")
+            if shouldType && textToType.isEmpty {
+                logDebug("Skipping type: text is empty")
+            }
             return
         }
 
@@ -620,6 +623,7 @@ class AppState: ObservableObject {
         }
 
         let processedText = preprocessDictation(textToType)
+        logDebug("Initiating type action for turn \(turn.turnOrder ?? -1): \"\(processedText.prefix(20))...\"")
         typeText(processedText, appendSpace: true)
         
         if let turnOrder = turn.turnOrder {
@@ -700,7 +704,9 @@ class AppState: ObservableObject {
         guard finalWords.count > typedFinalWordCount else { return }
         let newWords = finalWords[typedFinalWordCount...]
         let prefix = typedFinalWordCount > 0 ? " " : ""
-        typeText(prefix + newWords.joined(separator: " "), appendSpace: false)
+        let textToType = prefix + newWords.joined(separator: " ")
+        logDebug("Live typing delta: \"\(textToType)\"")
+        typeText(textToType, appendSpace: false)
         typedFinalWordCount = finalWords.count
     }
 
@@ -976,14 +982,17 @@ class AppState: ObservableObject {
     private func typeText(_ text: String, appendSpace: Bool) {
         // Check accessibility first
         guard AXIsProcessTrusted() else {
-            logger.error("Cannot type - accessibility permission not granted")
+            let msg = "Cannot type - Accessibility permission NOT granted"
+            logger.error("\(msg)")
+            logDebug("Error: \(msg)")
             return
         }
 
         let output = appendSpace ? text + " " : text
-        logDebug("Typing: \"\(output.replacingOccurrences(of: "\n", with: "\\n"))\"")
+        logDebug("Posting CGKEvents for: \"\(output.replacingOccurrences(of: "\n", with: "\\n"))\" (\(output.count) chars)")
 
         let source = CGEventSource(stateID: .hidSystemState)
+        var eventsPosted = 0
         for char in output {
             if char == "\n" {
                 let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
@@ -1003,8 +1012,10 @@ class AppState: ObservableObject {
 
                 keyDown?.post(tap: .cghidEventTap)
                 keyUp?.post(tap: .cghidEventTap)
+                eventsPosted += 1
             }
         }
+        logger.debug("Successfully posted \(eventsPosted) character events")
     }
 
     private func executeKeyboardShortcut(_ shortcut: KeyboardShortcut) {
