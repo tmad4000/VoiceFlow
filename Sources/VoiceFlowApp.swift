@@ -14,13 +14,16 @@ struct VoiceFlowApp: App {
                 .foregroundStyle(menuBarIconColor)
         }
 
-        Window("VoiceFlow", id: "panel") {
+        WindowGroup {
             FloatingPanelView()
                 .environmentObject(appState)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .defaultPosition(.topTrailing)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+        }
 
         Settings {
             SettingsView()

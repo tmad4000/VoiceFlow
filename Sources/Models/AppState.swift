@@ -327,19 +327,19 @@ class AppState: ObservableObject {
     }
 
     func showPanelWindow() {
+        isPanelVisible = true
         guard let window = panelWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "voiceflow.panel" }) else {
             return
         }
-        isPanelVisible = true
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func hidePanelWindow() {
+        isPanelVisible = false
         guard let window = panelWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "voiceflow.panel" }) else {
             return
         }
-        isPanelVisible = false
         window.orderOut(nil)
     }
 
