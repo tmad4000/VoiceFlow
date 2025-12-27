@@ -5,10 +5,10 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if appState.isOffline {
+            if appState.effectiveIsOffline {
                 HStack {
-                    Image(systemName: "wifi.slash")
-                    Text("Offline: Using Mac Speech Recognition")
+                    Image(systemName: appState.isOffline ? "wifi.slash" : "internaldrive")
+                    Text(appState.isOffline ? "Offline: Using Mac Speech Recognition" : "Offline Mode: Using Mac Speech Recognition")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .frame(maxWidth: .infinity)
@@ -208,7 +208,7 @@ struct StatusBar: View {
     }
 
     var statusColor: Color {
-        if appState.isOffline && appState.microphoneMode != .off {
+        if appState.effectiveIsOffline && appState.microphoneMode != .off {
             return .orange
         }
         switch appState.microphoneMode {
@@ -218,7 +218,7 @@ struct StatusBar: View {
     }
 
     var statusText: String {
-        if appState.isOffline && appState.microphoneMode != .off {
+        if appState.effectiveIsOffline && appState.microphoneMode != .off {
             return "Offline (Mac Speech)"
         }
         switch appState.microphoneMode {

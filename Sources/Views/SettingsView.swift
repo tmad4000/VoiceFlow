@@ -179,10 +179,28 @@ struct GeneralSettingsView: View {
                         Text("Dictation")
                             .font(.system(size: 13, weight: .semibold))
 
+                        HStack {
+                            Text("Provider")
+                                .font(.system(size: 13))
+                            Spacer()
+                            Picker("", selection: dictationProviderBinding) {
+                                ForEach(DictationProvider.allCases) { provider in
+                                    Text(provider.displayName).tag(provider)
+                                }
+                            }
+                            .frame(width: 180)
+                        }
+
+                        Text("Choose between cloud-based AssemblyAI (higher quality) or local Mac speech recognition.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Divider()
+
                         Toggle("Live Dictation", isOn: liveDictationBinding)
                             .font(.system(size: 13))
 
-                        Text("Type words as they become final (faster, but no punctuation).")
+                        Text("Type words as they become final (lower latency, but disables punctuation).")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
 
@@ -409,6 +427,13 @@ struct GeneralSettingsView: View {
         Binding(
             get: { appState.launchMode },
             set: { appState.saveLaunchMode($0) }
+        )
+    }
+
+    private var dictationProviderBinding: Binding<DictationProvider> {
+        Binding(
+            get: { appState.dictationProvider },
+            set: { appState.saveDictationProvider($0) }
         )
     }
 

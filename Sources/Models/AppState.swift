@@ -74,6 +74,23 @@ enum UtteranceMode: String, CaseIterable, Codable {
     }
 }
 
+/// Dictation provider options
+enum DictationProvider: String, CaseIterable, Codable, Identifiable {
+    case auto = "auto"
+    case online = "online"
+    case offline = "offline"
+
+    var id: String { rawValue }
+    
+    var displayName: String {
+        switch self {
+        case .auto: return "Auto (Network Aware)"
+        case .online: return "Online (AssemblyAI)"
+        case .offline: return "Offline (Mac Speech)"
+        }
+    }
+}
+
 /// Main application state management
 @MainActor
 class AppState: ObservableObject {
@@ -99,6 +116,7 @@ class AppState: ObservableObject {
     @Published var isCommandFlashActive: Bool = false
     @Published var debugLog: [String] = []
     @Published var isOffline: Bool = false
+    @Published var dictationProvider: DictationProvider = .auto
     @Published var launchMode: MicrophoneMode = .sleep
 
     /// Built-in system commands for reference in UI
@@ -145,6 +163,15 @@ class AppState: ObservableObject {
         utteranceMode == .custom ? customSilenceThresholdMs : utteranceMode.silenceThresholdMs
     }
 
+    /// Whether the app should use the offline provider based on settings and connectivity
+    var effectiveIsOffline: Bool {
+        switch dictationProvider {
+        case .auto: return isOffline
+        case .online: return false
+        case .offline: return true
+        }
+    }
+
     init() {
         loadAPIKey()
         loadVoiceCommands()
@@ -153,6 +180,7 @@ class AppState: ObservableObject {
         loadUtteranceSettings()
         loadActiveBehavior()
         loadLaunchMode()
+        loadDictationProvider()
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
         checkSpeechPermission()
@@ -162,14 +190,14 @@ class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] connected in
                 guard let self = self else { return }
-                let wasOffline = self.isOffline
+                let wasEffectiveOffline = self.effectiveIsOffline
                 self.isOffline = !connected
                 
-                if wasOffline != self.isOffline {
-                    if self.isOffline {
-                        self.logDebug("Offline: Switching to Mac Speech Model")
+                if wasEffectiveOffline != self.effectiveIsOffline {
+                    if self.effectiveIsOffline {
+                        self.logDebug("Network change: Switching to Mac Speech Model")
                     } else {
-                        self.logDebug("Online: AssemblyAI available")
+                        self.logDebug("Network change: AssemblyAI available")
                     }
                     
                     // If we are currently listening, we need to restart to switch services
@@ -373,7 +401,7 @@ class AppState: ObservableObject {
         // Always need AudioCaptureManager
         audioCaptureManager = AudioCaptureManager()
         
-        if isOffline {
+        if effectiveIsOffline {
             startAppleSpeech(transcribeMode: transcribeMode)
         } else {
             startAssemblyAI(transcribeMode: transcribeMode)
@@ -1104,6 +1132,26 @@ class AppState: ObservableObject {
     func saveActiveBehavior(_ behavior: ActiveBehavior) {
         activeBehavior = behavior
         UserDefaults.standard.set(behavior.rawValue, forKey: "active_behavior")
+    }
+
+    private func loadDictationProvider() {
+        if let providerString = UserDefaults.standard.string(forKey: "dictation_provider"),
+           let provider = DictationProvider(rawValue: providerString) {
+            dictationProvider = provider
+        }
+    }
+
+    func saveDictationProvider(_ provider: DictationProvider) {
+        let previous = dictationProvider
+        dictationProvider = provider
+        UserDefaults.standard.set(provider.rawValue, forKey: "dictation_provider")
+        
+        if previous != provider && microphoneMode != .off {
+            logDebug("Dictation provider changed: \(previous.rawValue) -> \(provider.rawValue)")
+            let currentMode = microphoneMode
+            stopListening()
+            setMode(currentMode)
+        }
     }
 
     private func loadLaunchMode() {
