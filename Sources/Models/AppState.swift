@@ -3,6 +3,11 @@ import Combine
 import CoreGraphics
 import AppKit
 import Carbon.HIToolbox
+import ApplicationServices
+import AVFoundation
+import os.log
+
+private let logger = Logger(subsystem: "com.voiceflow", category: "app")
 
 /// Main application state management
 @MainActor
@@ -17,6 +22,9 @@ class AppState: ObservableObject {
     @Published var currentWords: [TranscriptWord] = []
     @Published var commandDelayMs: Double = 0
     @Published var liveDictationEnabled: Bool = false
+    @Published var audioLevel: Float = 0.0
+    @Published var isAccessibilityGranted: Bool = false
+    @Published var isMicrophoneGranted: Bool = false
 
     private var audioCaptureManager: AudioCaptureManager?
     private var assemblyAIService: AssemblyAIService?
@@ -37,9 +45,121 @@ class AppState: ObservableObject {
         loadVoiceCommands()
         loadCommandDelay()
         loadLiveDictationEnabled()
+        checkAccessibilityPermission(silent: true)
+        checkMicrophonePermission()
+    }
+
+    func checkAccessibilityPermission(silent: Bool = true) {
+        if silent {
+            let trusted = AXIsProcessTrusted()
+            isAccessibilityGranted = trusted
+            logger.info("Accessibility permission (silent check): \(trusted ? "GRANTED" : "NOT GRANTED")")
+        } else {
+            // Use AXIsProcessTrustedWithOptions to prompt user if not trusted
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            let trusted = AXIsProcessTrustedWithOptions(options)
+            isAccessibilityGranted = trusted
+            logger.info("Accessibility permission (prompted): \(trusted ? "GRANTED" : "NOT GRANTED")")
+
+            if !trusted {
+                logger.warning("CGEvent typing will not work without accessibility permission!")
+                // Show our custom alert after the system prompt
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    if self?.isAccessibilityGranted == false {
+                        self?.showRestartPrompt()
+                    }
+                }
+            }
+        }
+    }
+
+    func recheckAccessibilityPermission() {
+        checkAccessibilityPermission(silent: true)
+    }
+
+    func checkMicrophonePermission() {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        print("[VoiceFlow] Microphone auth status: \(status.rawValue)")
+        switch status {
+        case .authorized:
+            isMicrophoneGranted = true
+            print("[VoiceFlow] Microphone permission: granted")
+        case .notDetermined:
+            isMicrophoneGranted = false
+            print("[VoiceFlow] Microphone permission: not determined")
+        case .denied, .restricted:
+            isMicrophoneGranted = false
+            print("[VoiceFlow] Microphone permission: denied or restricted")
+        @unknown default:
+            isMicrophoneGranted = false
+            print("[VoiceFlow] Microphone permission: unknown")
+        }
+    }
+
+    func requestMicrophonePermission() {
+        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+            DispatchQueue.main.async {
+                self?.isMicrophoneGranted = granted
+                logger.info("Microphone permission request result: \(granted ? "granted" : "denied")")
+            }
+        }
+    }
+
+    var microphoneAuthStatusRaw: Int {
+        AVCaptureDevice.authorizationStatus(for: .audio).rawValue
+    }
+
+    var microphoneAuthStatusDescription: String {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .notDetermined: return "Not Determined (0)"
+        case .restricted: return "Restricted (1)"
+        case .denied: return "Denied (2)"
+        case .authorized: return "Authorized (3)"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    var accessibilityStatusDescription: String {
+        AXIsProcessTrusted() ? "Trusted" : "Not Trusted"
+    }
+
+    private func showRestartPrompt() {
+        let alert = NSAlert()
+        alert.messageText = "App Restart Required"
+        alert.informativeText = "VoiceFlow needs to restart to detect the new permissions. Please click 'Restart App' after you have granted permission in System Settings."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Restart App")
+        alert.addButton(withTitle: "Later")
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            restartApp()
+        }
+    }
+
+    private func restartApp() {
+        let executablePath = Bundle.main.executablePath!
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = []
+
+        do {
+            try process.run()
+            NSApp.terminate(nil)
+        } catch {
+            logger.error("Failed to restart: \(error.localizedDescription)")
+        }
     }
 
     func setMode(_ mode: MicrophoneMode) {
+        // Check permissions before enabling active modes
+        if (mode == .on || mode == .wake) && !isAccessibilityGranted {
+             checkAccessibilityPermission(silent: false)
+             // If still not granted (user hit cancel or system denied), do we switch?
+             // We can switch, but maybe show a warning?
+             // For now, let's let them switch but the prompt will have appeared.
+        }
+
         let previousMode = microphoneMode
         microphoneMode = mode
 
@@ -101,6 +221,11 @@ class AppState: ObservableObject {
             self?.assemblyAIService?.sendAudio(data)
         }
 
+        // Connect audio level for visualization
+        audioCaptureManager?.onAudioLevel = { [weak self] level in
+            self?.audioLevel = level
+        }
+
         // Start services
         assemblyAIService?.setTranscribeMode(transcribeMode)
         assemblyAIService?.connect()
@@ -114,6 +239,7 @@ class AppState: ObservableObject {
         assemblyAIService = nil
         cancellables.removeAll()
         isConnected = false
+        audioLevel = 0.0
     }
 
     private func handleTurn(_ turn: TranscriptTurn) {
@@ -137,14 +263,24 @@ class AppState: ObservableObject {
     }
 
     private func handleDictationTurn(_ turn: TranscriptTurn) {
-        guard !currentUtteranceHadCommand else { return }
+        logger.info("handleDictationTurn: isFormatted=\(turn.isFormatted), endOfTurn=\(turn.endOfTurn), transcript=\"\(turn.transcript.prefix(50))...\"")
+
+        guard !currentUtteranceHadCommand else {
+            logger.debug("Skipping - utterance had command")
+            return
+        }
         if liveDictationEnabled {
             handleLiveDictationTurn(turn)
             return
         }
 
         let shouldType = turn.isFormatted || (!expectsFormattedTurns && turn.endOfTurn)
-        guard shouldType, !turn.transcript.isEmpty else { return }
+        logger.info("shouldType=\(shouldType) (isFormatted=\(turn.isFormatted), expectsFormattedTurns=\(self.expectsFormattedTurns), endOfTurn=\(turn.endOfTurn))")
+
+        guard shouldType, !turn.transcript.isEmpty else {
+            logger.debug("Not typing: shouldType=\(shouldType), isEmpty=\(turn.transcript.isEmpty)")
+            return
+        }
         typeText(turn.transcript, appendSpace: true)
     }
 
@@ -309,6 +445,7 @@ class AppState: ObservableObject {
         window.isMovableByWindowBackground = true
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
@@ -396,10 +533,16 @@ class AppState: ObservableObject {
     }
 
     private func typeText(_ text: String, appendSpace: Bool) {
-        // Use CGEvent to type text into the active application
-        let source = CGEventSource(stateID: .hidSystemState)
+        // Check accessibility first
+        guard AXIsProcessTrusted() else {
+            logger.error("Cannot type - accessibility permission not granted")
+            return
+        }
 
         let output = appendSpace ? text + " " : text
+        logger.info("Typing: \"\(output)\"")
+
+        let source = CGEventSource(stateID: .hidSystemState)
         for char in output {
             if let unicodeScalar = char.unicodeScalars.first {
                 let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)

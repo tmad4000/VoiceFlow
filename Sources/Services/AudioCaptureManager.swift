@@ -13,6 +13,9 @@ class AudioCaptureManager: NSObject {
     /// Callback for audio data ready to send
     var onAudioData: ((Data) -> Void)?
 
+    /// Callback for audio level (0.0 to 1.0)
+    var onAudioLevel: ((Float) -> Void)?
+
     private var isCapturing = false
 
     override init() {
@@ -101,9 +104,21 @@ class AudioCaptureManager: NSObject {
         let frameLength = Int(outputBuffer.frameLength)
         let data = Data(bytes: channelData[0], count: frameLength * MemoryLayout<Int16>.size)
 
-        // Send to callback
+        // Calculate audio level (RMS)
+        let samples = channelData[0]
+        var sum: Float = 0
+        for i in 0..<frameLength {
+            let sample = Float(samples[i]) / Float(Int16.max)
+            sum += sample * sample
+        }
+        let rms = sqrt(sum / Float(frameLength))
+        // Convert to 0-1 range with some scaling for better visualization
+        let level = min(1.0, rms * 4.0)
+
+        // Send to callbacks
         DispatchQueue.main.async { [weak self] in
             self?.onAudioData?(data)
+            self?.onAudioLevel?(level)
         }
     }
 

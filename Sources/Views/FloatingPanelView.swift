@@ -3,46 +3,154 @@ import AppKit
 
 struct FloatingPanelView: View {
     @EnvironmentObject var appState: AppState
+    @State private var showingHideToast = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 6) {
+        VStack(spacing: 0) {
+            // Header with mode buttons, volume indicator, and close button
+            HStack(spacing: 8) {
                 ForEach(MicrophoneMode.allCases) { mode in
                     ModeButton(mode: mode, isSelected: appState.microphoneMode == mode) {
                         appState.setMode(mode)
+                        updateMenuBarIcon(for: mode)
                     }
                 }
+
+                Spacer()
+
+                // Mic volume indicator
+                if appState.microphoneMode != .off {
+                    MicLevelIndicator(level: appState.audioLevel)
+                }
+
+                // Close/hide button
+                Button(action: hidePanel) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Hide panel (access from menu bar)")
             }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
 
             Divider()
-                .frame(height: 20)
+                .padding(.horizontal, 8)
 
-            TranscriptLineView()
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // Transcript area - scrollable with max height
+            ScrollView {
+                TranscriptContentView()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+            }
+            .frame(maxHeight: 150)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .frame(minWidth: 340, maxWidth: 500)
         .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(PanelWindowConfigurator { window in
             appState.configurePanelWindow(window)
         })
-        .frame(minWidth: 360)
+        .overlay(alignment: .bottom) {
+            if showingHideToast {
+                ToastView(message: "Panel hidden. Click menu bar icon to show.")
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+    }
+
+    private func updateMenuBarIcon(for mode: MicrophoneMode) {
+        if let appDelegate = NSApp.delegate as? AppDelegate {
+            let iconName: String
+            switch mode {
+            case .off: iconName = "mic.slash.fill"
+            case .on: iconName = "mic.fill"
+            case .wake: iconName = "waveform"
+            }
+            appDelegate.updateIcon(iconName)
+        }
+    }
+
+    private func hidePanel() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showingHideToast = true
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            if let window = NSApp.windows.first(where: { $0.level == .floating }) {
+                window.orderOut(nil)
+            }
+            // Notify AppDelegate
+            if let appDelegate = NSApp.delegate as? AppDelegate {
+                appDelegate.isPanelVisible = false
+                appDelegate.showHideMenuItem?.title = "Show Panel"
+            }
+        }
     }
 }
 
-private struct TranscriptLineView: View {
+private struct MicLevelIndicator: View {
+    let level: Float  // 0.0 to 1.0
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<5, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(barColor(for: index))
+                    .frame(width: 3, height: CGFloat(4 + index * 2))
+            }
+        }
+        .frame(height: 14)
+    }
+
+    private func barColor(for index: Int) -> Color {
+        let threshold = Float(index + 1) / 5.0
+        if level >= threshold {
+            if index >= 4 {
+                return .red
+            } else if index >= 3 {
+                return .orange
+            } else {
+                return .green
+            }
+        } else {
+            return .gray.opacity(0.3)
+        }
+    }
+}
+
+private struct ToastView: View {
+    let message: String
+
+    var body: some View {
+        Text(message)
+            .font(.system(size: 11))
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.black.opacity(0.75))
+            .clipShape(Capsule())
+            .padding(.bottom, 8)
+    }
+}
+
+private struct TranscriptContentView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
         if !appState.currentWords.isEmpty {
             TranscriptWordsText(words: appState.currentWords)
+        } else if !appState.currentTranscript.isEmpty {
+            Text(appState.currentTranscript)
+                .font(.system(size: 14))
+                .foregroundColor(.primary)
+                .fixedSize(horizontal: false, vertical: true)
         } else {
             Text(placeholderText)
-                .font(.system(size: 12))
+                .font(.system(size: 14))
                 .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
         }
     }
 
@@ -63,9 +171,8 @@ private struct TranscriptWordsText: View {
 
     var body: some View {
         textView
-            .font(.system(size: 12))
-            .lineLimit(1)
-            .truncationMode(.tail)
+            .font(.system(size: 14))
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var textView: Text {
@@ -88,7 +195,7 @@ struct PanelWindowConfigurator: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
+        let view = PassThroughView()
         DispatchQueue.main.async {
             if let window = view.window, !context.coordinator.didConfigure {
                 context.coordinator.didConfigure = true
@@ -109,6 +216,13 @@ struct PanelWindowConfigurator: NSViewRepresentable {
 
     class Coordinator {
         var didConfigure = false
+    }
+}
+
+/// NSView that doesn't intercept mouse events
+private class PassThroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        return nil  // Pass all clicks through
     }
 }
 

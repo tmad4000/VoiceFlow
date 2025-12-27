@@ -15,3 +15,5 @@ xcuserdata/
 # IDE
 .idea/
 *.code-workspace
+VoiceFlow-Dev.app/
+VoiceFlow Release.app/

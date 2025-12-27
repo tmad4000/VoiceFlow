@@ -22,5 +22,9 @@
     <string>VoiceFlow uses speech recognition for real-time transcription.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>VoiceFlow needs permission to send keyboard events to other applications.</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
 </dict>
 </plist>

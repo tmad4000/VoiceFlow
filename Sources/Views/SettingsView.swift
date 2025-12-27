@@ -15,7 +15,7 @@ struct SettingsView: View {
                     Label("Commands", systemImage: "command")
                 }
         }
-        .frame(width: 500, height: 400)
+        .frame(width: 500, height: 550)
     }
 }
 
@@ -24,6 +24,7 @@ struct GeneralSettingsView: View {
     @State private var apiKeyInput: String = ""
 
     var body: some View {
+        ScrollView {
         Form {
             Section {
                 VStack(alignment: .leading, spacing: 8) {
@@ -57,29 +58,87 @@ struct GeneralSettingsView: View {
 
             Section {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Accessibility Permissions")
+                    Text("Permissions")
                         .font(.headline)
 
-                    Text("VoiceFlow needs Accessibility permissions to type text and execute keyboard shortcuts in other applications.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    // Microphone Permission
+                    HStack {
+                        if appState.isMicrophoneGranted {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                            Text("Microphone: Granted")
+                                .foregroundColor(.green)
+                        } else {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("Microphone: Not Granted")
+                                .foregroundColor(.orange)
+                        }
+                        Spacer()
+                        if !appState.isMicrophoneGranted {
+                            Button("Request") {
+                                appState.requestMicrophonePermission()
+                            }
+                            Button("Open Settings") {
+                                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+                            }
+                        }
+                    }
 
-                    Button("Open System Preferences") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                    // Accessibility Permission
+                    HStack {
+                        if appState.isAccessibilityGranted {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                            Text("Accessibility: Granted")
+                                .foregroundColor(.green)
+                        } else {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("Accessibility: Not Granted")
+                                .foregroundColor(.orange)
+                        }
+                        Spacer()
+                        if !appState.isAccessibilityGranted {
+                            Button("Request") {
+                                appState.checkAccessibilityPermission(silent: false)
+                            }
+                            Button("Open Settings") {
+                                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                            }
+                        }
+                    }
+
+                    if !appState.isMicrophoneGranted || !appState.isAccessibilityGranted {
+                        Text("VoiceFlow needs Microphone access for speech recognition and Accessibility access to type text in other applications.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        Button("Check Permissions Again") {
+                            appState.checkMicrophonePermission()
+                            appState.recheckAccessibilityPermission()
+                        }
                     }
                 }
             }
 
             Section {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("About VoiceFlow")
+                    Text("About")
                         .font(.headline)
 
-                    Text("A speech recognition app designed for users with RSI. Uses AssemblyAI for real-time transcription.")
+                    let bundleName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "VoiceFlow"
+                    let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
+                    let bundleID = Bundle.main.bundleIdentifier ?? "dev"
+
+                    Text("\(bundleName) v\(bundleVersion)")
                         .font(.caption)
+
+                    Text("Bundle: \(bundleID)")
+                        .font(.system(.caption, design: .monospaced))
                         .foregroundColor(.secondary)
 
-                    Text("Version 1.0.0")
+                    Text("Speech recognition app for users with RSI.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -116,8 +175,30 @@ struct GeneralSettingsView: View {
                         .foregroundColor(.secondary)
                 }
             }
+
+            Section {
+                DisclosureGroup("Debug Info") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Microphone: \(appState.microphoneAuthStatusDescription)")
+                            .font(.system(.caption, design: .monospaced))
+                        Text("Accessibility: \(appState.accessibilityStatusDescription)")
+                            .font(.system(.caption, design: .monospaced))
+                        Text("isMicrophoneGranted: \(appState.isMicrophoneGranted ? "true" : "false")")
+                            .font(.system(.caption, design: .monospaced))
+                        Text("isAccessibilityGranted: \(appState.isAccessibilityGranted ? "true" : "false")")
+                            .font(.system(.caption, design: .monospaced))
+
+                        Button("Refresh All") {
+                            appState.checkMicrophonePermission()
+                            appState.recheckAccessibilityPermission()
+                        }
+                        .padding(.top, 4)
+                    }
+                }
+            }
         }
         .padding()
+        }
     }
 
     private var commandDelayBinding: Binding<Double> {

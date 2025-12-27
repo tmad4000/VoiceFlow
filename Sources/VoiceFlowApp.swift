@@ -1,22 +1,15 @@
 import SwiftUI
+import AppKit
+import AVFoundation
 
 @main
 struct VoiceFlowApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var appState = AppState()
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuBarView()
-                .environmentObject(appState)
-        } label: {
-            Image(systemName: appState.microphoneMode.icon)
-                .foregroundStyle(menuBarIconColor)
-        }
-
         WindowGroup {
             FloatingPanelView()
-                .environmentObject(appState)
+                .environmentObject(appDelegate.appState)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
@@ -24,31 +17,160 @@ struct VoiceFlowApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
-
-        Settings {
-            SettingsView()
-                .environmentObject(appState)
-        }
-    }
-
-    private var menuBarIconColor: Color {
-        switch appState.microphoneMode {
-        case .off: return .secondary
-        case .on: return .green
-        case .wake: return .orange
-        }
     }
 }
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
+    var statusItem: NSStatusItem?
+    var appState: AppState = AppState() // Instantiated here
+    var offMenuItem: NSMenuItem?
+    var onMenuItem: NSMenuItem?
+    var wakeMenuItem: NSMenuItem?
+    var showHideMenuItem: NSMenuItem?
+    var isPanelVisible = true
+    var settingsWindow: NSWindow?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        print("[VoiceFlow] App launched")
+
+        // Create status bar item
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = statusItem?.button {
+            button.image = NSImage(systemSymbolName: "mic.slash.fill", accessibilityDescription: "VoiceFlow")
+        }
+        print("[VoiceFlow] Status bar item created")
+
+        // Create menu
+        let menu = NSMenu()
+        menu.delegate = self
+        menu.addItem(NSMenuItem(title: "VoiceFlow", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+
+        offMenuItem = NSMenuItem(title: "Off", action: #selector(setModeOff), keyEquivalent: "")
+        offMenuItem?.target = self
+        menu.addItem(offMenuItem!)
+
+        onMenuItem = NSMenuItem(title: "On", action: #selector(setModeOn), keyEquivalent: "")
+        onMenuItem?.target = self
+        menu.addItem(onMenuItem!)
+
+        wakeMenuItem = NSMenuItem(title: "Wake", action: #selector(setModeWake), keyEquivalent: "")
+        wakeMenuItem?.target = self
+        menu.addItem(wakeMenuItem!)
+
+        menu.addItem(NSMenuItem.separator())
+
+        showHideMenuItem = NSMenuItem(title: "Hide Panel", action: #selector(togglePanel), keyEquivalent: "")
+        showHideMenuItem?.target = self
+        menu.addItem(showHideMenuItem!)
+
+        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Quit VoiceFlow", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        statusItem?.menu = menu
 
         // Request microphone permission on launch
         AVCaptureDevice.requestAccess(for: .audio) { granted in
-            if !granted {
-                print("Microphone permission denied")
+            print("[VoiceFlow] Microphone permission: \(granted ? "granted" : "denied")")
+        }
+
+        // Show the panel window after a brief delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.showPanelWindow()
+        }
+    }
+
+    func showPanelWindow() {
+        if let window = NSApp.windows.first(where: { $0.contentView?.subviews.first != nil }),
+           let screen = NSScreen.main {
+            window.level = .floating
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            // Center horizontally, near top of screen
+            let panelWidth = window.frame.width
+            let x = (screen.frame.width - panelWidth) / 2 + screen.frame.origin.x
+            let y = screen.frame.maxY - 80
+            window.setFrameOrigin(NSPoint(x: x, y: y))
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    @objc func togglePanel() {
+        if isPanelVisible {
+            // Hide panel
+            if let window = NSApp.windows.first(where: { $0.level == .floating }) {
+                window.orderOut(nil)
             }
+            isPanelVisible = false
+            showHideMenuItem?.title = "Show Panel"
+        } else {
+            // Show panel
+            showPanelWindow()
+            isPanelVisible = true
+            showHideMenuItem?.title = "Hide Panel"
+        }
+    }
+
+    @objc func setModeOff() {
+        print("[VoiceFlow] Setting mode: Off")
+        Task { @MainActor in
+            appState.setMode(.off)
+        }
+        updateIcon("mic.slash.fill")
+    }
+
+    @objc func setModeOn() {
+        print("[VoiceFlow] Setting mode: On")
+        Task { @MainActor in
+            appState.setMode(.on)
+        }
+        updateIcon("mic.fill")
+    }
+
+    @objc func setModeWake() {
+        print("[VoiceFlow] Setting mode: Wake")
+        Task { @MainActor in
+            appState.setMode(.wake)
+        }
+        updateIcon("waveform")
+    }
+
+    @objc func openSettings() {
+        print("[VoiceFlow] openSettings called")
+        if settingsWindow == nil {
+            print("[VoiceFlow] Creating settings window")
+            let settingsView = SettingsView()
+                .environmentObject(appState)
+            let hostingController = NSHostingController(rootView: settingsView)
+            
+            let window = NSWindow(contentViewController: hostingController)
+            window.title = "VoiceFlow Settings"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 500, height: 400))
+            window.center()
+            window.isReleasedWhenClosed = false
+            
+            settingsWindow = window
+        }
+        
+        print("[VoiceFlow] Showing settings window")
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func updateIcon(_ name: String) {
+        statusItem?.button?.image = NSImage(systemSymbolName: name, accessibilityDescription: "VoiceFlow")
+    }
+
+    func updateMenuCheckmarks() {
+        Task { @MainActor in
+            let mode = appState.microphoneMode
+            offMenuItem?.state = mode == .off ? .on : .off
+            onMenuItem?.state = mode == .on ? .on : .off
+            wakeMenuItem?.state = mode == .wake ? .on : .off
         }
     }
 
@@ -57,4 +179,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-import AVFoundation
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        updateMenuCheckmarks()
+    }
+}

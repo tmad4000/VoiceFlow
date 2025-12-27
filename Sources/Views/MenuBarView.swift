@@ -9,13 +9,17 @@ struct MenuBarView: View {
             Text("VoiceFlow")
                 .font(.headline)
 
-            HStack(spacing: 6) {
-                ForEach(MicrophoneMode.allCases) { mode in
-                    Button(mode.rawValue) {
-                        appState.setMode(mode)
+            ForEach(MicrophoneMode.allCases) { mode in
+                Button {
+                    appState.setMode(mode)
+                } label: {
+                    HStack {
+                        Image(systemName: appState.microphoneMode == mode ? "checkmark" : "")
+                            .frame(width: 16)
+                        Text(mode.rawValue)
                     }
-                    .buttonStyle(.borderless)
                 }
+                .buttonStyle(.borderless)
             }
 
             Divider()
@@ -28,7 +32,12 @@ struct MenuBarView: View {
                 }
             }
 
-            SettingsLink()
+            Button("Settings...") {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
 
             Divider()
 
