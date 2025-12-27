@@ -97,7 +97,10 @@ class AssemblyAIService: NSObject, ObservableObject {
 
     /// Force end of current utterance immediately
     func forceEndUtterance() {
-        guard isConnected, let socket = socket else { return }
+        guard isConnected, let socket = socket else {
+            print("ForceEndUtterance skipped: not connected")
+            return
+        }
         let message: [String: Any] = ["type": "ForceEndUtterance"]
         if let data = try? JSONSerialization.data(withJSONObject: message),
            let jsonString = String(data: data, encoding: .utf8) {

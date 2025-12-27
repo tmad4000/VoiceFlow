@@ -73,13 +73,6 @@ struct FloatingPanelView: View {
         .frame(minWidth: 360, maxWidth: 520)
         .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(
-                    Bundle.main.bundleIdentifier?.contains("release") == true ? Color.clear : Color.orange.opacity(0.5),
-                    lineWidth: 2
-                )
-        )
         .overlay(PanelWindowConfigurator { window in
             appState.configurePanelWindow(window)
         })

@@ -94,6 +94,10 @@ class AppState: ObservableObject {
     private let cancelWindowSeconds: TimeInterval = 2
     private let undoShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command])
     private var typedFinalWordCount = 0
+    private var forceEndPending = false
+    private var forceEndRequestedAt: Date?
+    private let forceEndTimeoutSeconds: TimeInterval = 2.0
+    private var lastTypedTurnOrder = -1
 
     /// Effective confidence threshold based on mode
     var effectiveConfidenceThreshold: Double {
@@ -254,6 +258,9 @@ class AppState: ObservableObject {
         }
 
         errorMessage = nil
+        forceEndPending = false
+        forceEndRequestedAt = nil
+        lastTypedTurnOrder = -1
 
         // Initialize services
         assemblyAIService = AssemblyAIService(apiKey: apiKey)
@@ -343,6 +350,13 @@ class AppState: ObservableObject {
     private func handleDictationTurn(_ turn: TranscriptTurn) {
         logger.info("handleDictationTurn: isFormatted=\(turn.isFormatted), endOfTurn=\(turn.endOfTurn), transcript=\"\(turn.transcript.prefix(50))...\"")
 
+        if forceEndPending, let requestedAt = forceEndRequestedAt,
+           Date().timeIntervalSince(requestedAt) > forceEndTimeoutSeconds {
+            logger.info("Force end request expired without end-of-turn")
+            forceEndPending = false
+            forceEndRequestedAt = nil
+        }
+
         guard !currentUtteranceHadCommand else {
             logger.debug("Skipping - utterance had command")
             return
@@ -352,14 +366,36 @@ class AppState: ObservableObject {
             return
         }
 
-        let shouldType = turn.isFormatted || (!expectsFormattedTurns && turn.endOfTurn)
-        logger.info("shouldType=\(shouldType) (isFormatted=\(turn.isFormatted), expectsFormattedTurns=\(self.expectsFormattedTurns), endOfTurn=\(turn.endOfTurn))")
+        let isForceEndTurn = forceEndPending && turn.endOfTurn
+        let shouldType = turn.isFormatted || (!expectsFormattedTurns && turn.endOfTurn) || isForceEndTurn
+        var textToType = turn.transcript
+        if textToType.isEmpty, isForceEndTurn {
+            textToType = turn.utterance ?? assembleDisplayText(from: turn.words)
+        }
+        logger.info("shouldType=\(shouldType) (isFormatted=\(turn.isFormatted), expectsFormattedTurns=\(self.expectsFormattedTurns), endOfTurn=\(turn.endOfTurn), forceEnd=\(isForceEndTurn))")
 
-        guard shouldType, !turn.transcript.isEmpty else {
-            logger.debug("Not typing: shouldType=\(shouldType), isEmpty=\(turn.transcript.isEmpty)")
+        if let turnOrder = turn.turnOrder, turnOrder <= lastTypedTurnOrder {
+            logger.debug("Skipping duplicate turn order \(turnOrder)")
             return
         }
-        typeText(turn.transcript, appendSpace: true)
+
+        guard shouldType, !textToType.isEmpty else {
+            logger.debug("Not typing: shouldType=\(shouldType), isEmpty=\(textToType.isEmpty)")
+            return
+        }
+
+        if isForceEndTurn, turn.transcript.isEmpty {
+            logger.info("Force end typing unformatted utterance")
+        }
+
+        typeText(textToType, appendSpace: true)
+        if let turnOrder = turn.turnOrder {
+            lastTypedTurnOrder = turnOrder
+        }
+        if isForceEndTurn {
+            forceEndPending = false
+            forceEndRequestedAt = nil
+        }
     }
 
     private func handleLiveDictationTurn(_ turn: TranscriptTurn) {
@@ -484,6 +520,8 @@ class AppState: ObservableObject {
         currentUtteranceHadCommand = false
         pendingCommandExecutions.removeAll()
         typedFinalWordCount = 0
+        forceEndPending = false
+        forceEndRequestedAt = nil
     }
 
     private func executeMatch(_ match: PendingCommandMatch) {
@@ -756,6 +794,18 @@ class AppState: ObservableObject {
 
     /// Force end of current utterance immediately
     func forceEndUtterance() {
+        logger.info("Force end utterance requested (connected=\(self.isConnected ? "true" : "false"))")
+        forceEndPending = true
+        forceEndRequestedAt = Date()
+        DispatchQueue.main.asyncAfter(deadline: .now() + forceEndTimeoutSeconds) { [weak self] in
+            guard let self else { return }
+            if self.forceEndPending, let requestedAt = self.forceEndRequestedAt,
+               Date().timeIntervalSince(requestedAt) >= self.forceEndTimeoutSeconds {
+                logger.info("Force end request timed out without end-of-turn")
+                self.forceEndPending = false
+                self.forceEndRequestedAt = nil
+            }
+        }
         assemblyAIService?.forceEndUtterance()
     }
 }
