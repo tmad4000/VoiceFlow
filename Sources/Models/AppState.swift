@@ -129,7 +129,9 @@ class AppState: ObservableObject {
         ("cancel that", "Undo last keyboard command"),
         ("no wait", "Undo last keyboard command"),
         ("submit dictation", "Force finalize and type current speech"),
-        ("send dictation", "Force finalize and type current speech")
+        ("send dictation", "Force finalize and type current speech"),
+        ("window recent", "Switch to previous application"),
+        ("window recent 2", "Switch to 2nd most recent application")
     ]
 
     var panelVisibilityHandler: ((Bool) -> Void)?
@@ -138,6 +140,7 @@ class AppState: ObservableObject {
     private var assemblyAIService: AssemblyAIService?
     private var appleSpeechService: AppleSpeechService?
     private var networkMonitor = NetworkMonitor()
+    private var windowManager = WindowManager()
     private var cancellables = Set<AnyCancellable>()
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
@@ -766,7 +769,10 @@ class AppState: ObservableObject {
                 (phrase: "cancel that", key: "system.cancel_command", name: "Cancel", haltsProcessing: true, action: { [weak self] in self?.cancelLastCommandIfRecent() } as () -> Void),
                 (phrase: "no wait", key: "system.cancel_command", name: "Cancel", haltsProcessing: true, action: { [weak self] in self?.cancelLastCommandIfRecent() } as () -> Void),
                 (phrase: "submit dictation", key: "system.force_end_utterance", name: "Submit", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void),
-                (phrase: "send dictation", key: "system.force_end_utterance", name: "Send", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void)
+                (phrase: "send dictation", key: "system.force_end_utterance", name: "Send", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void),
+                (phrase: "window recent", key: "system.window_recent", name: "Previous Window", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 1) } as () -> Void),
+                (phrase: "window recent 2", key: "system.window_recent_2", name: "Previous Window 2", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 2) } as () -> Void),
+                (phrase: "window recent two", key: "system.window_recent_2", name: "Previous Window 2", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 2) } as () -> Void)
             ])
         }
 
