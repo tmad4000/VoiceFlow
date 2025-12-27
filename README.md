@@ -62,9 +62,10 @@ In Wake mode, you can use voice commands to control your computer:
 - "tab forward" - Ctrl+Tab
 - "new tab" - ⌘T
 - "close tab" - ⌘W
-- "undo" / "redo" - ⌘Z / ⌘⇧Z
-- "copy" / "paste" / "cut" - Standard clipboard shortcuts
-- "save" / "find" - ⌘S / ⌘F
+- "undo that" / "redo that" - ⌘Z / ⌘⇧Z
+- "copy that" / "paste that" / "cut that" - Standard clipboard shortcuts
+- "save that" / "find that" - ⌘S / ⌘F
+- "cancel that" / "no wait" - Best-effort undo of last command
 - And more...
 
 Add custom voice commands in Settings → Commands.

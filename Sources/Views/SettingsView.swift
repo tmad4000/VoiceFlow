@@ -84,8 +84,34 @@ struct GeneralSettingsView: View {
                         .foregroundColor(.secondary)
                 }
             }
+
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Command Responsiveness")
+                        .font(.headline)
+
+                    Text("Delay non-prefixed commands to reduce false triggers. Prefixed commands (\"voiceflow ...\") are always immediate.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    HStack {
+                        Slider(value: commandDelayBinding, in: 0...500, step: 50)
+                        Text("\(Int(appState.commandDelayMs)) ms")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .frame(width: 60, alignment: .trailing)
+                    }
+                }
+            }
         }
         .padding()
+    }
+
+    private var commandDelayBinding: Binding<Double> {
+        Binding(
+            get: { appState.commandDelayMs },
+            set: { appState.saveCommandDelay($0) }
+        )
     }
 }
 
@@ -128,7 +154,7 @@ struct VoiceCommandsSettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                Text("Built-in commands: \"microphone on\", \"microphone off\", \"start dictation\", \"stop dictation\"")
+                Text("Built-in commands: \"microphone on\", \"microphone off\", \"start dictation\", \"stop dictation\", \"cancel that\", \"no wait\"")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

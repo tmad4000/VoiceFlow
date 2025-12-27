@@ -422,9 +422,9 @@ t=0.3s  Turn (end_of_turn=false): words="undo no wait redo"  → "undo" already 
 **Problem:** User didn't want undo, but it executed before they could correct
 
 **Possible solutions (future consideration):**
-- Add brief delay before executing? (hurts responsiveness)
-- "Cancel" voice command to undo last action?
-- This might just be accepted behavior for voice control
+- Add brief delay before executing? (hurts responsiveness) → **Implemented as configurable delay**
+- "Cancel" voice command to undo last action? → **Implemented ("cancel that", "no wait")**
+- This might just be accepted behavior for voice control (still true for some apps)
 
 ---
 
@@ -473,12 +473,12 @@ Turn 2: transcript="hello"   → If pasted: screen shows "helhello" (WRONG)
 - Command deduplication by word span/end index per utterance (reset on end_of_turn)
 - Word-boundary command matching
 - Multi-command utterances supported, including repeated commands
+- Command correction phrases: "cancel that", "no wait" (best-effort undo)
+- Configurable command delay for non-prefixed commands
+- Word-level visual feedback (final vs non-final highlighting)
 
 ### Backlog (Future Versions)
 - [ ] Paste on Turn updates with delta tracking
-- [ ] Command correction ("cancel", "no wait")
-- [ ] Customizable command confirmation delay
-- [ ] Word-level visual feedback (final vs non-final highlighting)
 - [ ] Macro commands / user-defined sequences (e.g., "wrap selection" → copy + new tab + paste)
 
 ---

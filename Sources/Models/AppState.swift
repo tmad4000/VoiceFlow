@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import CoreGraphics
 import AppKit
+import Carbon.HIToolbox
 
 /// Main application state management
 @MainActor
@@ -14,6 +15,7 @@ class AppState: ObservableObject {
     @Published var voiceCommands: [VoiceCommand] = VoiceCommand.defaults
     @Published var isPanelVisible: Bool = true
     @Published var currentWords: [TranscriptWord] = []
+    @Published var commandDelayMs: Double = 0
 
     private var audioCaptureManager: AudioCaptureManager?
     private var assemblyAIService: AssemblyAIService?
@@ -23,10 +25,15 @@ class AppState: ObservableObject {
     private let commandPrefixToken = "voiceflow"
     private let expectsFormattedTurns = true
     private weak var panelWindow: NSWindow?
+    private var pendingCommandExecutions = Set<PendingExecutionKey>()
+    private var lastCommandExecutionTime: Date?
+    private let cancelWindowSeconds: TimeInterval = 2
+    private let undoShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command])
 
     init() {
         loadAPIKey()
         loadVoiceCommands()
+        loadCommandDelay()
     }
 
     func setMode(_ mode: MicrophoneMode) {
@@ -144,6 +151,11 @@ class AppState: ObservableObject {
         let action: () -> Void
     }
 
+    private struct PendingExecutionKey: Hashable {
+        let key: String
+        let endWordIndex: Int
+    }
+
     private func processVoiceCommands(_ turn: TranscriptTurn) {
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         guard !normalizedTokens.isEmpty else { return }
@@ -155,7 +167,9 @@ class AppState: ObservableObject {
             ("microphone on", "system.microphone_on", true, { [weak self] in self?.setMode(.on) }),
             ("start dictation", "system.start_dictation", true, { [weak self] in self?.setMode(.on) }),
             ("microphone off", "system.microphone_off", true, { [weak self] in self?.setMode(.off) }),
-            ("stop dictation", "system.stop_dictation", true, { [weak self] in self?.setMode(.off) })
+            ("stop dictation", "system.stop_dictation", true, { [weak self] in self?.setMode(.off) }),
+            ("cancel that", "system.cancel_command", true, { [weak self] in self?.cancelLastCommandIfRecent() }),
+            ("no wait", "system.cancel_command", true, { [weak self] in self?.cancelLastCommandIfRecent() })
         ]
 
         for systemCommand in systemCommands {
@@ -215,12 +229,13 @@ class AppState: ObservableObject {
             let lastEndIndex = lastExecutedEndWordIndexByCommand[match.key] ?? -1
             guard match.endWordIndex > lastEndIndex else { continue }
 
-            match.action()
-            lastExecutedEndWordIndexByCommand[match.key] = match.endWordIndex
-            currentUtteranceHadCommand = true
-
-            if match.haltsProcessing {
-                break
+            if match.isPrefixed || match.haltsProcessing || commandDelayMs <= 0 {
+                executeMatch(match)
+                if match.haltsProcessing {
+                    break
+                }
+            } else {
+                scheduleMatch(match)
             }
         }
     }
@@ -228,6 +243,40 @@ class AppState: ObservableObject {
     private func resetUtteranceState() {
         lastExecutedEndWordIndexByCommand.removeAll()
         currentUtteranceHadCommand = false
+        pendingCommandExecutions.removeAll()
+    }
+
+    private func executeMatch(_ match: PendingCommandMatch) {
+        match.action()
+        lastExecutedEndWordIndexByCommand[match.key] = match.endWordIndex
+        currentUtteranceHadCommand = true
+        if match.key.hasPrefix("user.") {
+            lastCommandExecutionTime = Date()
+        }
+    }
+
+    private func scheduleMatch(_ match: PendingCommandMatch) {
+        let pendingKey = PendingExecutionKey(key: match.key, endWordIndex: match.endWordIndex)
+        guard !pendingCommandExecutions.contains(pendingKey) else { return }
+        pendingCommandExecutions.insert(pendingKey)
+
+        let delaySeconds = commandDelayMs / 1000
+        DispatchQueue.main.asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
+            guard let self else { return }
+            self.pendingCommandExecutions.remove(pendingKey)
+
+            let lastEndIndex = self.lastExecutedEndWordIndexByCommand[match.key] ?? -1
+            guard match.endWordIndex > lastEndIndex else { return }
+            self.executeMatch(match)
+        }
+    }
+
+    private func cancelLastCommandIfRecent() {
+        guard let lastExecution = lastCommandExecutionTime,
+              Date().timeIntervalSince(lastExecution) <= cancelWindowSeconds else {
+            return
+        }
+        executeKeyboardShortcut(undoShortcut)
     }
 
     func configurePanelWindow(_ window: NSWindow) {
@@ -382,5 +431,15 @@ class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(voiceCommands) {
             UserDefaults.standard.set(data, forKey: "voice_commands")
         }
+    }
+
+    private func loadCommandDelay() {
+        let stored = UserDefaults.standard.double(forKey: "command_delay_ms")
+        commandDelayMs = stored
+    }
+
+    func saveCommandDelay(_ value: Double) {
+        commandDelayMs = value
+        UserDefaults.standard.set(value, forKey: "command_delay_ms")
     }
 }
