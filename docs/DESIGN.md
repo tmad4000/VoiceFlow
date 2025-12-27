@@ -191,24 +191,48 @@ t=0.7s  Turn: "Tab back."        → Reset executed commands set
 - Consistent pattern users can learn
 - Simple substring matching is now safe
 
+**Command execution modes:**
+
+1. **With pause (default):** Say command, pause ~500ms, then it executes
+   - "copy that" [pause] → executes Cmd+C
+
+2. **With prefix (instant):** Say "voiceflow" + command, executes immediately
+   - "voiceflow copy that" → executes Cmd+C instantly
+
+This prevents accidental triggers if you say a command phrase in normal speech - you'd keep talking and no pause would occur.
+
 **Default command phrases:**
 - "copy that" → Cmd+C
 - "paste that" → Cmd+V
 - "undo that" → Cmd+Z
 - "redo that" → Cmd+Shift+Z
+- "cut that" → Cmd+X
 - "select all" → Cmd+A
 - "save that" → Cmd+S
+- "find that" → Cmd+F
 - "tab back" → Ctrl+Shift+Tab
 - "tab forward" → Ctrl+Tab
 - "new tab" → Cmd+T
 - "close tab" → Cmd+W
 - "go back" → Cmd+←
 - "go forward" → Cmd+→
+- "scroll up" → ↑
+- "scroll down" → ↓
+- "page up" → Page Up
+- "page down" → Page Down
+- "escape" → Esc
+- "enter" → Return
+
+**System commands (always instant, no pause needed):**
 - "microphone on" / "start dictation" → Switch to On mode
 - "microphone off" / "stop dictation" → Switch to Off mode
 - "quit voiceflow" → Quit app
 
-**Implementation:** Simple `.contains(phrase)` matching is sufficient since phrases are unambiguous.
+**Implementation notes:**
+- Track time since last partial to detect pauses
+- Check for "voiceflow" prefix → execute immediately
+- Otherwise, wait for pause before executing
+- Configurable pause duration (default 500ms)
 
 ---
 
