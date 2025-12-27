@@ -15,6 +15,11 @@ struct SettingsView: View {
                     Label("Commands", systemImage: "command")
                 }
 
+            DictationHistoryView()
+                .tabItem {
+                    Label("History", systemImage: "clock.arrow.circlepath")
+                }
+
             DebugConsoleView()
                 .tabItem {
                     Label("Debug", systemImage: "terminal")
@@ -776,6 +781,64 @@ struct AddCommandSheet: View {
         case "PageDown": return 0x79
         default: return 0x00
         }
+    }
+}
+
+// MARK: - Dictation History
+
+struct DictationHistoryView: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Dictation History")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button("Clear History") {
+                    appState.dictationHistory.removeAll()
+                    appState.saveDictationHistory()
+                }
+                .font(.system(size: 11))
+            }
+            .padding()
+
+            Divider()
+
+            if appState.dictationHistory.isEmpty {
+                VStack {
+                    Spacer()
+                    Text("No dictation history yet.")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 12))
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(appState.dictationHistory, id: \.self) { entry in
+                        HStack {
+                            Text(entry)
+                                .font(.system(size: 12))
+                                .lineLimit(3)
+                            Spacer()
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(entry, forType: .string)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.system(size: 10))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Copy to clipboard")
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .listStyle(.inset)
+            }
+        }
+        .background(Color(NSColor.textBackgroundColor))
     }
 }
 

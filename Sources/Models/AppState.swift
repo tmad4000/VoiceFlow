@@ -115,6 +115,7 @@ class AppState: ObservableObject {
     @Published var lastCommandName: String? = nil
     @Published var isCommandFlashActive: Bool = false
     @Published var debugLog: [String] = []
+    @Published var dictationHistory: [String] = []
     @Published var isOffline: Bool = false
     @Published var dictationProvider: DictationProvider = .auto
     @Published var launchMode: MicrophoneMode = .sleep
@@ -184,6 +185,7 @@ class AppState: ObservableObject {
         loadActiveBehavior()
         loadLaunchMode()
         loadDictationProvider()
+        loadDictationHistory()
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
         checkSpeechPermission()
@@ -555,12 +557,10 @@ class AppState: ObservableObject {
 
         switch microphoneMode {
         case .sleep:
-            if !turn.isFormatted {
-                processVoiceCommands(turn)
-            }
+            processVoiceCommands(turn)
         case .on:
             // Always check for commands if behavior allows
-            if activeBehavior != .dictation, !turn.isFormatted {
+            if activeBehavior != .dictation {
                 processVoiceCommands(turn)
             }
             
@@ -995,6 +995,19 @@ class AppState: ObservableObject {
         let output = appendSpace ? text + " " : text
         logDebug("Posting CGKEvents for: \"\(output.replacingOccurrences(of: "\n", with: "\\n"))\" (\(output.count) chars)")
 
+        // Add to history (only non-empty text)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.dictationHistory.insert(trimmed, at: 0)
+                if self.dictationHistory.count > 100 {
+                    self.dictationHistory.removeLast()
+                }
+                self.saveDictationHistory()
+            }
+        }
+
         let source = CGEventSource(stateID: .hidSystemState)
         var eventsPosted = 0
         for char in output {
@@ -1184,6 +1197,16 @@ class AppState: ObservableObject {
         }
     }
 
+    private func loadDictationHistory() {
+        if let history = UserDefaults.standard.stringArray(forKey: "dictation_history") {
+            dictationHistory = history
+        }
+    }
+
+    func saveDictationHistory() {
+        UserDefaults.standard.set(dictationHistory, forKey: "dictation_history")
+    }
+
     private func loadLaunchMode() {
         if let modeString = UserDefaults.standard.string(forKey: "launch_mode"),
            let mode = MicrophoneMode(rawValue: modeString) {
@@ -1202,11 +1225,33 @@ class AppState: ObservableObject {
     func forceEndUtterance() {
         logger.info("Force end utterance requested (connected=\(self.isConnected ? "true" : "false"))")
         
-        // 1. Immediately type whatever is currently in the buffer if it's not empty
+        // 1. Check for commands and immediately type whatever is currently in the buffer if it's not empty
         if !currentTranscript.isEmpty {
+            // Construct a temporary turn to process commands from the current buffer
+            let tempTurn = TranscriptTurn(
+                transcript: currentTranscript,
+                words: currentWords,
+                endOfTurn: true,
+                isFormatted: false,
+                turnOrder: -1,
+                utterance: currentTranscript
+            )
+            
+            // Process commands from the buffer
+            if activeBehavior != .dictation {
+                processVoiceCommands(tempTurn)
+            }
+
+            // Only type if we haven't just executed a command that halts processing (like 'microphone off')
+            // or if the utterance didn't have a command.
+            // preprocessDictation also helps strip the command phrases from the text.
             let processed = preprocessDictation(currentTranscript)
-            logDebug("Force pushing buffer: \"\(processed.prefix(20))...\"")
-            typeText(processed, appendSpace: true)
+            
+            if !processed.isEmpty {
+                logDebug("Force pushing buffer: \"\(processed.prefix(20))...\"")
+                typeText(processed, appendSpace: true)
+            }
+            
             currentTranscript = ""
             currentWords = []
         }
