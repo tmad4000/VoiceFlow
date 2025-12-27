@@ -17,6 +17,14 @@ struct TranscriptTurn {
     let utterance: String?
 }
 
+/// Configuration for utterance detection
+struct UtteranceConfig {
+    let confidenceThreshold: Double
+    let silenceThresholdMs: Int
+
+    static let `default` = UtteranceConfig(confidenceThreshold: 0.7, silenceThresholdMs: 160)
+}
+
 /// WebSocket client for AssemblyAI real-time streaming transcription
 class AssemblyAIService: NSObject, ObservableObject {
     private let apiKey: String
@@ -28,6 +36,7 @@ class AssemblyAIService: NSObject, ObservableObject {
     @Published var errorMessage: String?
 
     private var transcribeMode = true
+    private var utteranceConfig: UtteranceConfig = .default
 
     init(apiKey: String) {
         self.apiKey = apiKey
@@ -38,13 +47,19 @@ class AssemblyAIService: NSObject, ObservableObject {
         transcribeMode = enabled
     }
 
+    func setUtteranceConfig(_ config: UtteranceConfig) {
+        utteranceConfig = config
+    }
+
     func connect() {
         guard socket == nil else { return }
 
         var urlComponents = URLComponents(string: endpoint)!
         urlComponents.queryItems = [
             URLQueryItem(name: "sample_rate", value: "16000"),
-            URLQueryItem(name: "format_turns", value: "true")
+            URLQueryItem(name: "format_turns", value: "true"),
+            URLQueryItem(name: "end_of_turn_confidence_threshold", value: String(utteranceConfig.confidenceThreshold)),
+            URLQueryItem(name: "min_end_of_turn_silence_when_confident", value: String(utteranceConfig.silenceThresholdMs))
         ]
 
         guard let url = urlComponents.url else {
@@ -78,6 +93,17 @@ class AssemblyAIService: NSObject, ObservableObject {
     func sendAudio(_ data: Data) {
         guard isConnected, let socket = socket else { return }
         socket.write(data: data)
+    }
+
+    /// Force end of current utterance immediately
+    func forceEndUtterance() {
+        guard isConnected, let socket = socket else { return }
+        let message: [String: Any] = ["type": "ForceEndUtterance"]
+        if let data = try? JSONSerialization.data(withJSONObject: message),
+           let jsonString = String(data: data, encoding: .utf8) {
+            socket.write(string: jsonString)
+            print("Sent ForceEndUtterance message")
+        }
     }
 
     private func handleMessage(_ message: [String: Any]) {

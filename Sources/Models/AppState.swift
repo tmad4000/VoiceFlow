@@ -9,6 +9,57 @@ import os.log
 
 private let logger = Logger(subsystem: "com.voiceflow", category: "app")
 
+/// Utterance detection mode presets
+enum UtteranceMode: String, CaseIterable, Codable {
+    case quick = "quick"
+    case balanced = "balanced"
+    case patient = "patient"
+    case dictation = "dictation"
+    case custom = "custom"
+
+    var displayName: String {
+        switch self {
+        case .quick: return "Quick"
+        case .balanced: return "Balanced"
+        case .patient: return "Patient"
+        case .dictation: return "Dictation"
+        case .custom: return "Custom"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .quick: return "Fast responses, may cut off"
+        case .balanced: return "Good for most uses"
+        case .patient: return "Allows natural pauses"
+        case .dictation: return "Long-form with thinking pauses"
+        case .custom: return "Manual configuration"
+        }
+    }
+
+    /// End-of-turn confidence threshold (0.0 - 1.0)
+    var confidenceThreshold: Double {
+        switch self {
+        case .quick: return 0.5
+        case .balanced: return 0.7
+        case .patient: return 0.8
+        case .dictation: return 0.85
+        case .custom: return 0.7
+        }
+    }
+
+    /// Minimum silence after confident end-of-turn (milliseconds)
+    var silenceThresholdMs: Int {
+        switch self {
+        case .quick: return 100
+        case .balanced: return 160
+        case .patient: return 400
+        case .dictation: return 560
+        case .custom: return 160
+        }
+    }
+}
+
 /// Main application state management
 @MainActor
 class AppState: ObservableObject {
@@ -25,6 +76,9 @@ class AppState: ObservableObject {
     @Published var audioLevel: Float = 0.0
     @Published var isAccessibilityGranted: Bool = false
     @Published var isMicrophoneGranted: Bool = false
+    @Published var utteranceMode: UtteranceMode = .balanced
+    @Published var customConfidenceThreshold: Double = 0.7
+    @Published var customSilenceThresholdMs: Int = 160
 
     private var audioCaptureManager: AudioCaptureManager?
     private var assemblyAIService: AssemblyAIService?
@@ -34,17 +88,29 @@ class AppState: ObservableObject {
     private let commandPrefixToken = "voiceflow"
     private let expectsFormattedTurns = true
     private weak var panelWindow: NSWindow?
+    private var didSetInitialPanelVisibility = false
     private var pendingCommandExecutions = Set<PendingExecutionKey>()
     private var lastCommandExecutionTime: Date?
     private let cancelWindowSeconds: TimeInterval = 2
     private let undoShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command])
     private var typedFinalWordCount = 0
 
+    /// Effective confidence threshold based on mode
+    var effectiveConfidenceThreshold: Double {
+        utteranceMode == .custom ? customConfidenceThreshold : utteranceMode.confidenceThreshold
+    }
+
+    /// Effective silence threshold based on mode
+    var effectiveSilenceThresholdMs: Int {
+        utteranceMode == .custom ? customSilenceThresholdMs : utteranceMode.silenceThresholdMs
+    }
+
     init() {
         loadAPIKey()
         loadVoiceCommands()
         loadCommandDelay()
         loadLiveDictationEnabled()
+        loadUtteranceSettings()
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
     }
@@ -193,6 +259,13 @@ class AppState: ObservableObject {
         assemblyAIService = AssemblyAIService(apiKey: apiKey)
         audioCaptureManager = AudioCaptureManager()
 
+        // Configure utterance detection
+        let utteranceConfig = UtteranceConfig(
+            confidenceThreshold: effectiveConfidenceThreshold,
+            silenceThresholdMs: effectiveSilenceThresholdMs
+        )
+        assemblyAIService?.setUtteranceConfig(utteranceConfig)
+
         // Set up bindings
         assemblyAIService?.$isConnected
             .receive(on: DispatchQueue.main)
@@ -333,7 +406,9 @@ class AppState: ObservableObject {
             ("microphone off", "system.microphone_off", true, { [weak self] in self?.setMode(.off) }),
             ("stop dictation", "system.stop_dictation", true, { [weak self] in self?.setMode(.off) }),
             ("cancel that", "system.cancel_command", true, { [weak self] in self?.cancelLastCommandIfRecent() }),
-            ("no wait", "system.cancel_command", true, { [weak self] in self?.cancelLastCommandIfRecent() })
+            ("no wait", "system.cancel_command", true, { [weak self] in self?.cancelLastCommandIfRecent() }),
+            ("send that", "system.force_end_utterance", false, { [weak self] in self?.forceEndUtterance() }),
+            ("done", "system.force_end_utterance", false, { [weak self] in self?.forceEndUtterance() })
         ]
 
         for systemCommand in systemCommands {
@@ -451,6 +526,7 @@ class AppState: ObservableObject {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
+        window.styleMask.insert(.nonactivatingPanel)
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
@@ -459,13 +535,17 @@ class AppState: ObservableObject {
         window.hasShadow = true
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.hidesOnDeactivate = false
         panelWindow = window
         wrapContentViewForFirstMouseIfNeeded(window)
 
-        if isPanelVisible {
-            window.makeKeyAndOrderFront(nil)
-        } else {
-            window.orderOut(nil)
+        if !didSetInitialPanelVisibility {
+            if isPanelVisible {
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                window.orderOut(nil)
+            }
+            didSetInitialPanelVisibility = true
         }
     }
 
@@ -634,6 +714,49 @@ class AppState: ObservableObject {
     func saveLiveDictationEnabled(_ value: Bool) {
         liveDictationEnabled = value
         UserDefaults.standard.set(value, forKey: "live_dictation_enabled")
+    }
+
+    private func loadUtteranceSettings() {
+        if let modeString = UserDefaults.standard.string(forKey: "utterance_mode"),
+           let mode = UtteranceMode(rawValue: modeString) {
+            utteranceMode = mode
+        }
+        let storedConfidence = UserDefaults.standard.double(forKey: "custom_confidence_threshold")
+        if storedConfidence > 0 {
+            customConfidenceThreshold = storedConfidence
+        }
+        let storedSilence = UserDefaults.standard.integer(forKey: "custom_silence_threshold_ms")
+        if storedSilence > 0 {
+            customSilenceThresholdMs = storedSilence
+        }
+    }
+
+    func saveUtteranceMode(_ mode: UtteranceMode) {
+        utteranceMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "utterance_mode")
+    }
+
+    func saveCustomConfidenceThreshold(_ value: Double) {
+        customConfidenceThreshold = value
+        UserDefaults.standard.set(value, forKey: "custom_confidence_threshold")
+        // Auto-switch to custom mode when manually adjusting
+        if utteranceMode != .custom {
+            saveUtteranceMode(.custom)
+        }
+    }
+
+    func saveCustomSilenceThreshold(_ value: Int) {
+        customSilenceThresholdMs = value
+        UserDefaults.standard.set(value, forKey: "custom_silence_threshold_ms")
+        // Auto-switch to custom mode when manually adjusting
+        if utteranceMode != .custom {
+            saveUtteranceMode(.custom)
+        }
+    }
+
+    /// Force end of current utterance immediately
+    func forceEndUtterance() {
+        assemblyAIService?.forceEndUtterance()
     }
 }
 

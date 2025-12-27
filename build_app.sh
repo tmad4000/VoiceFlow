@@ -82,4 +82,9 @@ if [ -n "$DEV_API_KEY" ]; then
     echo "API key copied to release defaults"
 fi
 
+# Install to Applications folder
+echo "Installing to /Applications..."
+cp -R "${APP_BUNDLE}" /Applications/
+echo "Installed to /Applications/${APP_BUNDLE}"
+
 echo "NOTE: If you have previously granted Accessibility permissions, you may need to remove 'VoiceFlow' from System Settings > Privacy & Security > Accessibility and add it again."

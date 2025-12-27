@@ -15,191 +15,349 @@ struct SettingsView: View {
                     Label("Commands", systemImage: "command")
                 }
         }
-        .frame(width: 500, height: 550)
+        .frame(width: 480, height: 580)
     }
 }
+
+// MARK: - Reusable Components
+
+struct SettingRow<Content: View>: View {
+    let title: String
+    let subtitle: String?
+    let content: Content
+
+    init(_ title: String, subtitle: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.subtitle = subtitle
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium))
+                    if let subtitle = subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Spacer()
+                content
+            }
+        }
+    }
+}
+
+struct SliderRow: View {
+    let title: String
+    let subtitle: String?
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let unit: String
+    let formatAsInt: Bool
+
+    init(_ title: String, subtitle: String? = nil, value: Binding<Double>, range: ClosedRange<Double>, step: Double = 1, unit: String = "", formatAsInt: Bool = true) {
+        self.title = title
+        self.subtitle = subtitle
+        self._value = value
+        self.range = range
+        self.step = step
+        self.unit = unit
+        self.formatAsInt = formatAsInt
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                Spacer()
+                Text(formatAsInt ? "\(Int(value))\(unit)" : String(format: "%.2f\(unit)", value))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(.primary)
+                    .frame(minWidth: 50, alignment: .trailing)
+            }
+            Slider(value: $value, in: range, step: step)
+            if let subtitle = subtitle {
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+}
+
+struct SectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(.secondary)
+            .textCase(.uppercase)
+            .padding(.top, 8)
+    }
+}
+
+// MARK: - General Settings
 
 struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
     @State private var apiKeyInput: String = ""
+    @State private var showAdvancedUtterance = false
+    @State private var showDebugInfo = false
 
     var body: some View {
         ScrollView {
-        Form {
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("AssemblyAI API Key")
-                        .font(.headline)
+            VStack(alignment: .leading, spacing: 20) {
 
-                    SecureField("Enter your API key", text: $apiKeyInput)
-                        .textFieldStyle(.roundedBorder)
-                        .onAppear {
-                            apiKeyInput = appState.apiKey
+                // API Key Section
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("AssemblyAI API Key")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        SecureField("Enter your API key", text: $apiKeyInput)
+                            .textFieldStyle(.roundedBorder)
+                            .onAppear { apiKeyInput = appState.apiKey }
+
+                        HStack {
+                            Button("Save") {
+                                appState.saveAPIKey(apiKeyInput)
+                            }
+                            .disabled(apiKeyInput.isEmpty)
+
+                            Spacer()
+
+                            Link("Get API Key", destination: URL(string: "https://www.assemblyai.com/app/account")!)
+                                .font(.system(size: 11))
                         }
-
-                    HStack {
-                        Button("Save") {
-                            appState.saveAPIKey(apiKeyInput)
-                        }
-                        .disabled(apiKeyInput.isEmpty)
-
-                        Spacer()
-
-                        Link("Get API Key",
-                             destination: URL(string: "https://www.assemblyai.com/app/account")!)
-                            .font(.caption)
                     }
-
-                    Text("Your API key is stored locally in UserDefaults.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    .padding(4)
                 }
-            }
 
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Permissions")
-                        .font(.headline)
+                // Permissions Section
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Permissions")
+                            .font(.system(size: 13, weight: .semibold))
 
-                    // Microphone Permission
-                    HStack {
-                        if appState.isMicrophoneGranted {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                            Text("Microphone: Granted")
-                                .foregroundColor(.green)
-                        } else {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.orange)
-                            Text("Microphone: Not Granted")
-                                .foregroundColor(.orange)
-                        }
-                        Spacer()
-                        if !appState.isMicrophoneGranted {
-                            Button("Request") {
-                                appState.requestMicrophonePermission()
-                            }
-                            Button("Open Settings") {
-                                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
-                            }
+                        PermissionRow(
+                            name: "Microphone",
+                            isGranted: appState.isMicrophoneGranted,
+                            onRequest: { appState.requestMicrophonePermission() },
+                            settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+                        )
+
+                        PermissionRow(
+                            name: "Accessibility",
+                            isGranted: appState.isAccessibilityGranted,
+                            onRequest: { appState.checkAccessibilityPermission(silent: false) },
+                            settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                        )
+
+                        if !appState.isMicrophoneGranted || !appState.isAccessibilityGranted {
+                            Text("VoiceFlow needs Microphone for speech recognition and Accessibility to type in other apps.")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .padding(.top, 4)
                         }
                     }
+                    .padding(4)
+                }
 
-                    // Accessibility Permission
-                    HStack {
-                        if appState.isAccessibilityGranted {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                            Text("Accessibility: Granted")
-                                .foregroundColor(.green)
-                        } else {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.orange)
-                            Text("Accessibility: Not Granted")
-                                .foregroundColor(.orange)
-                        }
-                        Spacer()
-                        if !appState.isAccessibilityGranted {
-                            Button("Request") {
-                                appState.checkAccessibilityPermission(silent: false)
-                            }
-                            Button("Open Settings") {
-                                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-                            }
-                        }
-                    }
+                // Dictation Settings
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Dictation")
+                            .font(.system(size: 13, weight: .semibold))
 
-                    if !appState.isMicrophoneGranted || !appState.isAccessibilityGranted {
-                        Text("VoiceFlow needs Microphone access for speech recognition and Accessibility access to type text in other applications.")
-                            .font(.caption)
+                        Toggle("Live Dictation", isOn: liveDictationBinding)
+                            .font(.system(size: 13))
+
+                        Text("Type words as they become final (faster, but no punctuation).")
+                            .font(.system(size: 11))
                             .foregroundColor(.secondary)
 
-                        Button("Check Permissions Again") {
-                            appState.checkMicrophonePermission()
-                            appState.recheckAccessibilityPermission()
+                        Divider()
+
+                        SliderRow(
+                            "Command Delay",
+                            subtitle: "Delay before triggering non-prefixed commands.",
+                            value: commandDelayBinding,
+                            range: 0...500,
+                            step: 50,
+                            unit: " ms"
+                        )
+                    }
+                    .padding(4)
+                }
+
+                // Utterance Detection
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("Utterance Detection")
+                                .font(.system(size: 13, weight: .semibold))
+                            Spacer()
+                            Button(action: { appState.forceEndUtterance() }) {
+                                Text("Force End")
+                                    .font(.system(size: 11))
+                            }
+                            .disabled(!appState.isConnected)
+                            .help("Force end current utterance (or say \"send that\" / \"done\")")
+                        }
+
+                        Text("How long to wait before finalizing speech.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        // Mode picker as menu (cleaner for 5 options)
+                        HStack {
+                            Text("Mode")
+                                .font(.system(size: 13))
+                            Spacer()
+                            Picker("", selection: utteranceModeBinding) {
+                                ForEach(UtteranceMode.allCases, id: \.self) { mode in
+                                    Text(modeLabel(mode)).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 180)
+                        }
+
+                        // Current mode description + reset button
+                        HStack(spacing: 8) {
+                            Image(systemName: modeIcon)
+                                .foregroundColor(.secondary)
+                            Text(appState.utteranceMode.description)
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            if appState.utteranceMode != .balanced {
+                                Button("Reset") {
+                                    appState.saveUtteranceMode(.balanced)
+                                }
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                            }
+                        }
+
+                        // Advanced toggle button
+                        Button(action: { withAnimation { showAdvancedUtterance.toggle() } }) {
+                            HStack {
+                                Image(systemName: showAdvancedUtterance ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundColor(.secondary)
+                                Text("Advanced")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        if showAdvancedUtterance {
+                            VStack(alignment: .leading, spacing: 16) {
+                                SliderRow(
+                                    "Confidence",
+                                    subtitle: "Higher = waits longer for certainty",
+                                    value: confidenceThresholdBinding,
+                                    range: 0.3...0.95,
+                                    step: 0.05,
+                                    formatAsInt: false
+                                )
+
+                                SliderRow(
+                                    "Silence",
+                                    subtitle: "Minimum pause (ms) after confident end",
+                                    value: silenceThresholdBinding,
+                                    range: 50...800,
+                                    step: 10,
+                                    unit: " ms"
+                                )
+                            }
+                            .padding(.leading, 16)
+                            .padding(.top, 4)
                         }
                     }
+                    .padding(4)
                 }
-            }
 
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("About")
-                        .font(.headline)
-
-                    let bundleName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "VoiceFlow"
-                    let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
-                    let bundleID = Bundle.main.bundleIdentifier ?? "dev"
-
-                    Text("\(bundleName) v\(bundleVersion)")
-                        .font(.caption)
-
-                    Text("Bundle: \(bundleID)")
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundColor(.secondary)
-
-                    Text("Speech recognition app for users with RSI.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Command Responsiveness")
-                        .font(.headline)
-
-                    Text("Delay non-prefixed commands to reduce false triggers. Prefixed commands (\"voiceflow ...\") are always immediate.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
+                // Debug Section
+                Button(action: { withAnimation { showDebugInfo.toggle() } }) {
                     HStack {
-                        Slider(value: commandDelayBinding, in: 0...500, step: 50)
-                        Text("\(Int(appState.commandDelayMs)) ms")
-                            .font(.caption)
+                        Image(systemName: showDebugInfo ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(.secondary)
-                            .frame(width: 60, alignment: .trailing)
+                        Text("Debug Info")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                        Spacer()
                     }
+                    .contentShape(Rectangle())
                 }
-            }
+                .buttonStyle(.plain)
 
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Live Dictation")
-                        .font(.headline)
-
-                    Toggle("Type words as they become final", isOn: liveDictationBinding)
-
-                    Text("When enabled, text appears faster but without formatted punctuation.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            Section {
-                DisclosureGroup("Debug Info") {
+                if showDebugInfo {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Microphone: \(appState.microphoneAuthStatusDescription)")
-                            .font(.system(.caption, design: .monospaced))
+                        Text("Mic: \(appState.microphoneAuthStatusDescription)")
                         Text("Accessibility: \(appState.accessibilityStatusDescription)")
-                            .font(.system(.caption, design: .monospaced))
-                        Text("isMicrophoneGranted: \(appState.isMicrophoneGranted ? "true" : "false")")
-                            .font(.system(.caption, design: .monospaced))
-                        Text("isAccessibilityGranted: \(appState.isAccessibilityGranted ? "true" : "false")")
-                            .font(.system(.caption, design: .monospaced))
+                        Text("isMicGranted: \(appState.isMicrophoneGranted ? "true" : "false")")
+                        Text("isA11yGranted: \(appState.isAccessibilityGranted ? "true" : "false")")
 
-                        Button("Refresh All") {
+                        Button("Refresh") {
                             appState.checkMicrophonePermission()
                             appState.recheckAccessibilityPermission()
                         }
+                        .font(.system(size: 11))
                         .padding(.top, 4)
                     }
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .padding(.leading, 16)
+                }
+
+                // About
+                HStack {
+                    let bundleName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "VoiceFlow"
+                    let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
+                    Text("\(bundleName) v\(bundleVersion)")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    Spacer()
                 }
             }
-        }
-        .padding()
+            .padding(16)
         }
     }
+
+    private var modeIcon: String {
+        switch appState.utteranceMode {
+        case .quick: return "hare"
+        case .balanced: return "scale.3d"
+        case .patient: return "tortoise"
+        case .dictation: return "doc.text"
+        case .custom: return "slider.horizontal.3"
+        }
+    }
+
+    private func modeLabel(_ mode: UtteranceMode) -> String {
+        switch mode {
+        case .quick: return "Quick (100ms)"
+        case .balanced: return "Balanced (160ms) ✓"
+        case .patient: return "Patient (400ms)"
+        case .dictation: return "Dictation (560ms)"
+        case .custom: return "Custom"
+        }
+    }
+
+    // MARK: - Bindings
 
     private var commandDelayBinding: Binding<Double> {
         Binding(
@@ -214,7 +372,66 @@ struct GeneralSettingsView: View {
             set: { appState.saveLiveDictationEnabled($0) }
         )
     }
+
+    private var utteranceModeBinding: Binding<UtteranceMode> {
+        Binding(
+            get: { appState.utteranceMode },
+            set: { appState.saveUtteranceMode($0) }
+        )
+    }
+
+    private var confidenceThresholdBinding: Binding<Double> {
+        Binding(
+            get: { appState.utteranceMode == .custom ? appState.customConfidenceThreshold : appState.utteranceMode.confidenceThreshold },
+            set: { appState.saveCustomConfidenceThreshold($0) }
+        )
+    }
+
+    private var silenceThresholdBinding: Binding<Double> {
+        Binding(
+            get: { Double(appState.utteranceMode == .custom ? appState.customSilenceThresholdMs : appState.utteranceMode.silenceThresholdMs) },
+            set: { appState.saveCustomSilenceThreshold(Int($0)) }
+        )
+    }
 }
+
+// MARK: - Permission Row
+
+struct PermissionRow: View {
+    let name: String
+    let isGranted: Bool
+    let onRequest: () -> Void
+    let settingsURL: String
+
+    var body: some View {
+        HStack {
+            Image(systemName: isGranted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundColor(isGranted ? .green : .orange)
+                .font(.system(size: 14))
+
+            Text(name)
+                .font(.system(size: 13))
+                .foregroundColor(isGranted ? .primary : .orange)
+
+            Spacer()
+
+            if !isGranted {
+                Button("Request") { onRequest() }
+                    .font(.system(size: 11))
+                Button("Settings") {
+                    NSWorkspace.shared.open(URL(string: settingsURL)!)
+                }
+                .font(.system(size: 11))
+            } else {
+                Text("Granted")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+}
+
+// MARK: - Voice Commands Settings
 
 struct VoiceCommandsSettingsView: View {
     @EnvironmentObject var appState: AppState
@@ -226,7 +443,7 @@ struct VoiceCommandsSettingsView: View {
             // Header
             HStack {
                 Text("Voice Commands")
-                    .font(.headline)
+                    .font(.system(size: 13, weight: .semibold))
 
                 Spacer()
 
@@ -251,12 +468,12 @@ struct VoiceCommandsSettingsView: View {
 
             // Footer info
             VStack(alignment: .leading, spacing: 4) {
-                Text("Say a phrase in Wake mode to trigger the keyboard shortcut.")
-                    .font(.caption)
+                Text("Say a phrase in Wake mode to trigger the shortcut.")
+                    .font(.system(size: 11))
                     .foregroundColor(.secondary)
 
-                Text("Built-in commands: \"microphone on\", \"microphone off\", \"start dictation\", \"stop dictation\", \"cancel that\", \"no wait\"")
-                    .font(.caption)
+                Text("Built-in: microphone on/off, start/stop dictation, cancel that, no wait, send that, done")
+                    .font(.system(size: 10))
                     .foregroundColor(.secondary)
             }
             .padding()
@@ -293,7 +510,7 @@ struct VoiceCommandRow: View {
 
             if !command.isEnabled {
                 Text("Disabled")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundColor(.secondary)
             }
         }

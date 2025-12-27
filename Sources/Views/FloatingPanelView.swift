@@ -32,6 +32,17 @@ struct FloatingPanelView: View {
                 // Mic volume indicator
                 if appState.microphoneMode != .off {
                     MicLevelIndicator(level: appState.audioLevel)
+
+                    // Force end utterance button - appears when connected
+                    if appState.isConnected {
+                        Button(action: { appState.forceEndUtterance() }) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Send now (force end utterance)")
+                    }
                 }
 
                 // Close/hide button
@@ -43,22 +54,23 @@ struct FloatingPanelView: View {
                 .buttonStyle(.plain)
                 .help("Hide panel (access from menu bar)")
             }
-            .padding(.horizontal, 10)
-            .padding(.bottom, 6)
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 8)
 
             Divider()
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 10)
 
             // Transcript area - scrollable with max height
             ScrollView {
                 TranscriptContentView()
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
             }
-            .frame(maxHeight: 150)
+            .frame(maxHeight: 170)
         }
-        .frame(minWidth: 340, maxWidth: 500)
+        .frame(minWidth: 360, maxWidth: 520)
         .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
@@ -162,13 +174,15 @@ private struct TranscriptContentView: View {
             TranscriptWordsText(words: appState.currentWords)
         } else if !appState.currentTranscript.isEmpty {
             Text(appState.currentTranscript)
-                .font(.system(size: 16))
+                .font(.system(size: 16, weight: .regular, design: .rounded))
                 .foregroundColor(.primary)
+                .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             Text(placeholderText)
-                .font(.system(size: 16))
+                .font(.system(size: 15, weight: .regular, design: .rounded))
                 .foregroundColor(.secondary)
+                .lineSpacing(3)
         }
     }
 
@@ -193,7 +207,8 @@ private struct TranscriptWordsText: View {
 
     var body: some View {
         textView
-            .font(.system(size: 16))
+            .font(.system(size: 16, weight: .regular, design: .rounded))
+            .lineSpacing(3)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -212,15 +227,10 @@ private struct TranscriptWordsText: View {
 struct PanelWindowConfigurator: NSViewRepresentable {
     let configure: (NSWindow) -> Void
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
     func makeNSView(context: Context) -> NSView {
         let view = PassThroughView()
         DispatchQueue.main.async {
-            if let window = view.window, !context.coordinator.didConfigure {
-                context.coordinator.didConfigure = true
+            if let window = view.window {
                 configure(window)
             }
         }
@@ -229,15 +239,10 @@ struct PanelWindowConfigurator: NSViewRepresentable {
 
     func updateNSView(_ view: NSView, context: Context) {
         DispatchQueue.main.async {
-            if let window = view.window, !context.coordinator.didConfigure {
-                context.coordinator.didConfigure = true
+            if let window = view.window {
                 configure(window)
             }
         }
-    }
-
-    class Coordinator {
-        var didConfigure = false
     }
 }
 
