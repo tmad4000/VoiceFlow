@@ -243,12 +243,17 @@ class AppState: ObservableObject {
     }
 
     private func handleTurn(_ turn: TranscriptTurn) {
+        let fallbackTranscript = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
         if !turn.words.isEmpty {
             currentWords = turn.words
-            currentTranscript = assembleDisplayText(from: turn.words)
-        } else if !turn.transcript.isEmpty {
+            if !fallbackTranscript.isEmpty {
+                currentTranscript = fallbackTranscript
+            } else {
+                currentTranscript = assembleDisplayText(from: turn.words)
+            }
+        } else if !fallbackTranscript.isEmpty {
             currentWords = []
-            currentTranscript = turn.transcript
+            currentTranscript = fallbackTranscript
         }
 
         if microphoneMode == .wake, !turn.isFormatted {
@@ -455,12 +460,23 @@ class AppState: ObservableObject {
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panelWindow = window
+        wrapContentViewForFirstMouseIfNeeded(window)
 
         if isPanelVisible {
             window.makeKeyAndOrderFront(nil)
         } else {
             window.orderOut(nil)
         }
+    }
+
+    private func wrapContentViewForFirstMouseIfNeeded(_ window: NSWindow) {
+        guard let contentView = window.contentView,
+              !(contentView is FirstMouseContainerView) else {
+            return
+        }
+
+        let container = FirstMouseContainerView(wrapping: contentView)
+        window.contentView = container
     }
 
     func showPanelWindow() {
@@ -618,5 +634,31 @@ class AppState: ObservableObject {
     func saveLiveDictationEnabled(_ value: Bool) {
         liveDictationEnabled = value
         UserDefaults.standard.set(value, forKey: "live_dictation_enabled")
+    }
+}
+
+private final class FirstMouseContainerView: NSView {
+    private let wrappedView: NSView
+
+    init(wrapping view: NSView) {
+        self.wrappedView = view
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wrappedView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(wrappedView)
+        NSLayoutConstraint.activate([
+            wrappedView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            wrappedView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            wrappedView.topAnchor.constraint(equalTo: topAnchor),
+            wrappedView.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
     }
 }

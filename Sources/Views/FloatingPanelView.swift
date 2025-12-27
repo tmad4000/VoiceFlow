@@ -9,6 +9,17 @@ struct FloatingPanelView: View {
         VStack(spacing: 0) {
             // Header with mode buttons, volume indicator, and close button
             HStack(spacing: 8) {
+                // Dev indicator - shows when not running from release bundle
+                if Bundle.main.bundleIdentifier?.contains("release") != true {
+                    Text("DEV")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.2))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
+
                 ForEach(MicrophoneMode.allCases) { mode in
                     ModeButton(mode: mode, isSelected: appState.microphoneMode == mode) {
                         appState.setMode(mode)
@@ -50,6 +61,13 @@ struct FloatingPanelView: View {
         .frame(minWidth: 340, maxWidth: 500)
         .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(
+                    Bundle.main.bundleIdentifier?.contains("release") == true ? Color.clear : Color.orange.opacity(0.5),
+                    lineWidth: 2
+                )
+        )
         .overlay(PanelWindowConfigurator { window in
             appState.configurePanelWindow(window)
         })
@@ -140,18 +158,22 @@ private struct TranscriptContentView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        if !appState.currentWords.isEmpty {
+        if shouldShowWordHighlights {
             TranscriptWordsText(words: appState.currentWords)
         } else if !appState.currentTranscript.isEmpty {
             Text(appState.currentTranscript)
-                .font(.system(size: 14))
+                .font(.system(size: 16))
                 .foregroundColor(.primary)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             Text(placeholderText)
-                .font(.system(size: 14))
+                .font(.system(size: 16))
                 .foregroundColor(.secondary)
         }
+    }
+
+    private var shouldShowWordHighlights: Bool {
+        appState.currentWords.contains { $0.isFinal == false }
     }
 
     private var placeholderText: String {
@@ -171,7 +193,7 @@ private struct TranscriptWordsText: View {
 
     var body: some View {
         textView
-            .font(.system(size: 14))
+            .font(.system(size: 16))
             .fixedSize(horizontal: false, vertical: true)
     }
 
