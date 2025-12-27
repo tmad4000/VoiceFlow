@@ -25,6 +25,10 @@ struct VoiceFlowApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Make app appear in Dock and be activatable
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
         // Request microphone permission on launch
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             if !granted {
