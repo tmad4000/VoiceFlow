@@ -1,3 +1,4 @@
+
 # VoiceFlow App Architecture Plan
 
 ## Overview
@@ -120,22 +121,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 ## Transcript Handling Strategy
 
-### AssemblyAI Message Types
+### AssemblyAI Message Types (Streaming v3)
 
-AssemblyAI's streaming API sends two types of transcript data:
+AssemblyAI's streaming API (v3) sends these message types:
 
-| Message Type | Description | Latency | Content |
-|--------------|-------------|---------|---------|
-| **Partial** | Real-time updates as words are recognized | ~100-200ms | Raw text, no punctuation, may change |
-| **Turn** | Finalized transcript for completed utterance | ~300-500ms | Formatted with punctuation, immutable |
+| Message Type | Description | Key fields |
+|--------------|-------------|------------|
+| **Begin** | Session started | `id` |
+| **Turn** | Streaming updates for the current utterance (interim + final) | `transcript`, `words`, `end_of_turn`, `turn_is_formatted` |
+| **Termination** | Session ended | — |
+| **Error** | Error details | `error` |
+
+**Important semantics (v3):**
+- There is **no separate "Partial" message**. A "partial" is a `Turn` with `end_of_turn = false`.
+- `transcript` contains **only finalized words** and **never rewinds**; it grows as words become final.
+- `words` includes `word_is_final`, so we can build a live hypothesis (final + non-final words) for the panel.
+- If `format_turns=true`, the service emits an additional **formatted** `Turn` after endpointing; use `turn_is_formatted` to detect it.
 
 **Example timeline for user saying "Hello world":**
 ```
-t=0.1s  Partial: "hel"
-t=0.2s  Partial: "hello"
-t=0.3s  Partial: "hello wor"
-t=0.4s  Partial: "hello world"
-t=0.6s  Turn: "Hello world."  ← finalized with punctuation
+t=0.1s  Turn (end_of_turn=false, turn_is_formatted=false)
+        words: ["hel"(word_is_final=false)]
+        transcript: ""
+t=0.2s  Turn (end_of_turn=false, turn_is_formatted=false)
+        words: ["hello"(word_is_final=true)]
+        transcript: "hello"
+t=0.3s  Turn (end_of_turn=false, turn_is_formatted=false)
+        words: ["hello"(true), "wor"(false)]
+        transcript: "hello"
+t=0.4s  Turn (end_of_turn=true, turn_is_formatted=false)
+        words: ["hello"(true), "world"(true)]
+        transcript: "hello world"
+t=0.55s Turn (end_of_turn=true, turn_is_formatted=true)  // only if format_turns=true
+        transcript: "Hello world."
 ```
 
 ### V1 Processing Strategy
@@ -144,14 +162,14 @@ t=0.6s  Turn: "Hello world."  ← finalized with punctuation
 
 | Tier | Trigger | Action | Mode |
 |------|---------|--------|------|
-| **Command Detection** | Every partial | Check for voice commands, execute immediately | Wake mode |
-| **Text Pasting** | Turn only | Paste finalized text to active app | On mode |
-| **Panel Display** | Every partial | Show real-time text (visual feedback) | Both modes |
+| **Command Detection** | Every unformatted Turn (`turn_is_formatted=false`) | Check for voice commands, execute immediately (dedupe per utterance) | Wake mode |
+| **Text Pasting** | `end_of_turn=true` (and if `format_turns=true`, wait for `turn_is_formatted=true`) | Paste finalized text to active app | On mode |
+| **Panel Display** | Every Turn | Build live text from `words` (final + non-final) | Both modes |
 
 **Rationale:**
-- Commands need maximum speed → process partials
-- Text pasting needs accuracy → wait for finalized Turn
-- Panel always shows real-time feedback
+- Commands need maximum speed → process the Turn stream (ignore formatted duplicates)
+- Text pasting needs accuracy → wait for `end_of_turn` (+ formatted Turn if enabled)
+- Panel shows real-time feedback using `words`
 
 ---
 
@@ -164,12 +182,12 @@ t=0.6s  Turn: "Hello world."  ← finalized with punctuation
 **Timeline:**
 ```
 t=0.0s  User starts speaking: "tab back"
-t=0.1s  Partial: "tab"           → No match (looking for "tab back")
-t=0.2s  Partial: "tab ba"        → No match
-t=0.3s  Partial: "tab back"      → MATCH! Execute Ctrl+Shift+Tab
-t=0.4s  Partial: "tab back"      → Already executed, skip
-t=0.5s  Partial: "tab back"      → Already executed, skip
-t=0.7s  Turn: "Tab back."        → Reset executed commands set
+t=0.1s  Turn (end_of_turn=false): words="tab"           → No match (looking for "tab back")
+t=0.2s  Turn (end_of_turn=false): words="tab ba"        → No match
+t=0.3s  Turn (end_of_turn=false): words="tab back"      → MATCH! Execute Ctrl+Shift+Tab
+t=0.4s  Turn (end_of_turn=false): words="tab back"      → Already executed, skip
+t=0.5s  Turn (end_of_turn=true):  transcript="tab back" → Reset executed commands set
+t=0.6s  Turn (end_of_turn=true, turn_is_formatted=true): "Tab back." → Ignore for commands
 ```
 
 **Expected behavior:** Command executes exactly once at t=0.3s
@@ -177,23 +195,24 @@ t=0.7s  Turn: "Tab back."        → Reset executed commands set
 **Implementation requirement:**
 - Track `executedCommandsThisUtterance: Set<String>`
 - Add command phrase to set when executed
-- Clear set on Turn event
+- Clear set on the first `end_of_turn=true` for that utterance
+- Ignore `turn_is_formatted=true` for command detection to avoid double-fire
 
 ---
 
 ### Story 2: Command Design - Explicit Phrases (RESOLVED)
 
-**Design decision:** Commands use explicit, unambiguous phrases like "copy that" instead of single words like "copy".
+**Design decision:** Commands use explicit multi-word phrases and an optional prefix ("voiceflow") to reduce false positives, but this is not foolproof. The real safety boundaries are **mode** (Wake vs On) and **prefix** for instant execution.
 
 **Benefits:**
-- "copy that" won't appear naturally in dictation
-- No false positives from words like "photocopy" or "escape artist"
-- Consistent pattern users can learn
-- Simple substring matching is now safe
+- Multi-word phrases reduce accidental triggers compared to single words
+- Prefix provides a near-zero false positive path for instant commands
+- Consistent pattern users can learn quickly
+- Commands are treated as intent-only (never pasted as dictation)
 
 **Command execution modes:**
 
-1. **With pause (default):** Say command, pause ~500ms, then it executes
+1. **With pause (default):** Say command, pause until endpointing (or ~500ms), then it executes
    - "copy that" [pause] → executes Cmd+C
 
 2. **With prefix (instant):** Say "voiceflow" + command, executes immediately
@@ -229,10 +248,11 @@ This prevents accidental triggers if you say a command phrase in normal speech -
 - "quit voiceflow" → Quit app
 
 **Implementation notes:**
-- Track time since last partial to detect pauses
+- Track time since last Turn *or* rely on `end_of_turn=true` for pause detection
 - Check for "voiceflow" prefix → execute immediately
-- Otherwise, wait for pause before executing
-- Configurable pause duration (default 500ms)
+- Otherwise, wait for pause/end_of_turn before executing
+- Ignore `turn_is_formatted=true` for command detection (avoid double-fire)
+- Configurable pause duration (default 500ms) if not relying purely on endpointing
 
 ---
 
@@ -242,17 +262,17 @@ This prevents accidental triggers if you say a command phrase in normal speech -
 
 **Timeline:**
 ```
-t=0.1s  Partial: "undo that"          → MATCH! Execute Cmd+Z
-t=0.2s  Partial: "undo that redo"     → "undo that" already executed, skip
-t=0.3s  Partial: "undo that redo that" → "undo that" skip, "redo that" MATCH! Execute Cmd+Shift+Z
-t=0.4s  Partial: "undo that redo that" → Both already executed, skip
-t=0.6s  Turn: "Undo that. Redo that." → Reset executed set
+t=0.1s  Turn (end_of_turn=false): words="undo that"           → MATCH! Execute Cmd+Z
+t=0.2s  Turn (end_of_turn=false): words="undo that redo"      → "undo that" already executed, skip
+t=0.3s  Turn (end_of_turn=false): words="undo that redo that"  → "undo that" skip, "redo that" MATCH! Execute Cmd+Shift+Z
+t=0.4s  Turn (end_of_turn=false): words="undo that redo that"  → Both already executed, skip
+t=0.6s  Turn (end_of_turn=true):  transcript="undo that redo that" → Reset executed set
 ```
 
 **Expected behavior:** Both commands execute exactly once, in order
 
 **Implementation requirement:**
-- Check ALL registered commands against each partial
+- Check ALL registered commands against each unformatted Turn
 - Track each command separately in the executed set
 
 ---
@@ -264,11 +284,12 @@ t=0.6s  Turn: "Undo that. Redo that." → Reset executed set
 **Timeline:**
 ```
 t=0.0s  Mode: Wake
-t=0.1s  Partial: "microphone"    → No match
-t=0.2s  Partial: "microphone on" → MATCH! Set mode to On
+t=0.1s  Turn (end_of_turn=false): words="microphone"    → No match
+t=0.2s  Turn (end_of_turn=false): words="microphone on" → MATCH! Set mode to On
 t=0.2s  Mode: On (immediate)
-t=0.3s  Partial: "microphone on" → Mode is On, command detection skipped
-t=0.5s  Turn: "Microphone on."   → Mode is On, text NOT pasted (it's a command)
+t=0.3s  Turn (end_of_turn=false): words="microphone on" → Mode is On, command detection skipped
+t=0.5s  Turn (end_of_turn=true):  transcript="microphone on" → DO NOT paste (command utterance)
+t=0.6s  Turn (end_of_turn=true, turn_is_formatted=true): "Microphone on." → DO NOT paste
 ```
 
 **Expected behavior:** Mode switches once, no text pasted
@@ -277,7 +298,7 @@ t=0.5s  Turn: "Microphone on."   → Mode is On, text NOT pasted (it's a command
 
 **Implementation requirement:**
 - System commands (mode switches) should never paste their text
-- Track that this utterance was a command, skip pasting on Turn
+- Track that this utterance was a command, skip pasting on any `end_of_turn=true` Turn
 
 ---
 
@@ -288,17 +309,17 @@ t=0.5s  Turn: "Microphone on."   → Mode is On, text NOT pasted (it's a command
 **Timeline:**
 ```
 t=0.0s  Mode: On
-t=0.1s  Partial: "hel"           → Display in panel (gray/italic)
-t=0.2s  Partial: "hello"         → Display in panel (updating)
-t=0.3s  Partial: "hello wor"     → Display in panel
-t=0.4s  Partial: "hello world"   → Display in panel
-t=0.6s  Turn: "Hello world."     → PASTE to active app
+t=0.1s  Turn (end_of_turn=false): words="hel"               → Display in panel (hypothesis)
+t=0.2s  Turn (end_of_turn=false): words="hello"             → Display in panel (updating)
+t=0.3s  Turn (end_of_turn=false): words="hello wor"         → Display in panel
+t=0.4s  Turn (end_of_turn=true):  transcript="hello world"  → WAIT (if format_turns=true)
+t=0.5s  Turn (end_of_turn=true, turn_is_formatted=true): "Hello world." → PASTE to active app
 ```
 
 **Expected behavior:**
 - Panel shows real-time updates
-- Text "Hello world." pasted once at finalization
-- Proper punctuation and capitalization from Turn
+- Text pasted once at end-of-turn (formatted if enabled)
+- Proper punctuation and capitalization when using formatted Turn
 
 ---
 
@@ -308,13 +329,13 @@ t=0.6s  Turn: "Hello world."     → PASTE to active app
 
 **Timeline:**
 ```
-t=0.1s  Partial: "I need to"
-t=0.2s  Partial: "I need to send"
-t=0.3s  Partial: "I need to send an email"
-t=0.4s  Partial: "I need to send an email to John"
-t=0.5s  Partial: "I need to send an email to John about"
-t=0.6s  Partial: "I need to send an email to John about the meeting"
-t=0.8s  Turn: "I need to send an email to John about the meeting."
+t=0.1s  Turn (end_of_turn=false): words="I need to"
+t=0.2s  Turn (end_of_turn=false): words="I need to send"
+t=0.3s  Turn (end_of_turn=false): words="I need to send an email"
+t=0.4s  Turn (end_of_turn=false): words="I need to send an email to John"
+t=0.5s  Turn (end_of_turn=false): words="I need to send an email to John about"
+t=0.6s  Turn (end_of_turn=false): words="I need to send an email to John about the meeting"
+t=0.8s  Turn (end_of_turn=true, turn_is_formatted=true): "I need to send an email to John about the meeting."
 ```
 
 **Panel display:** Shows updating text in real-time
@@ -329,14 +350,14 @@ t=0.8s  Turn: "I need to send an email to John about the meeting."
 **Timeline:**
 ```
 --- First utterance ---
-t=0.1s  Partial: "copy"          → MATCH! Execute Cmd+C
-t=0.3s  Turn: "Copy."            → Reset executed set
+t=0.1s  Turn (end_of_turn=false): words="copy"  → MATCH! Execute Cmd+C
+t=0.3s  Turn (end_of_turn=true):  transcript="copy" → Reset executed set
 
 --- Pause (user doing something) ---
 
 --- Second utterance ---
-t=2.0s  Partial: "paste"         → MATCH! Execute Cmd+V
-t=2.2s  Turn: "Paste."           → Reset executed set
+t=2.0s  Turn (end_of_turn=false): words="paste" → MATCH! Execute Cmd+V
+t=2.2s  Turn (end_of_turn=true):  transcript="paste" → Reset executed set
 ```
 
 **Expected behavior:** Each command executes once, Turn events provide natural boundaries
@@ -350,11 +371,11 @@ t=2.2s  Turn: "Paste."           → Reset executed set
 **Timeline:**
 ```
 t=0.0s  Mode: On
-t=0.1s  Partial: "I need"        → Display
-t=0.2s  Partial: "I need to"     → Display
-t=0.3s  Partial: "I need to copy"    → Display (NOT a command - we're in On mode)
-t=0.4s  Partial: "I need to copy this" → Display
-t=0.6s  Turn: "I need to copy this."  → PASTE full text
+t=0.1s  Turn (end_of_turn=false): words="I need"            → Display
+t=0.2s  Turn (end_of_turn=false): words="I need to"         → Display
+t=0.3s  Turn (end_of_turn=false): words="I need to copy"    → Display (NOT a command - we're in On mode)
+t=0.4s  Turn (end_of_turn=false): words="I need to copy this" → Display
+t=0.6s  Turn (end_of_turn=true, turn_is_formatted=true): "I need to copy this." → PASTE full text
 ```
 
 **Expected behavior:** No command executed, full text pasted
@@ -369,9 +390,9 @@ t=0.6s  Turn: "I need to copy this."  → PASTE full text
 
 **Timeline:**
 ```
-t=0.1s  Partial: "und"           → No match
-t=0.2s  Partial: "undo"          → MATCH! Execute Cmd+Z
-t=0.3s  Partial: "undo no wait redo"  → "undo" already done, "redo" MATCH! Execute
+t=0.1s  Turn (end_of_turn=false): words="und"                → No match
+t=0.2s  Turn (end_of_turn=false): words="undo"               → MATCH! Execute Cmd+Z
+t=0.3s  Turn (end_of_turn=false): words="undo no wait redo"  → "undo" already done, "redo" MATCH! Execute
 ```
 
 **Problem:** User didn't want undo, but it executed before they could correct
@@ -387,25 +408,23 @@ t=0.3s  Partial: "undo no wait redo"  → "undo" already done, "redo" MATCH! Exe
 
 ### Issue 1: Command Multi-Fire (SOLVED in design)
 
-**Problem:** Partials repeat full text, causing same command to match multiple times
-**Solution:** Track executed commands per utterance, reset on Turn
+**Problem:** Turn updates repeat cumulative hypotheses, so the same command can match multiple times
+**Solution:** Track executed commands per utterance, reset on first `end_of_turn=true`, and ignore `turn_is_formatted=true` for command detection
 
 ### Issue 2: Substring False Positives (RESOLVED)
 
-**Problem:** Single-word commands like "copy" could match "photocopy"
-**Solution:** Use explicit multi-word phrases like "copy that" instead of single words.
+**Problem:** Single-word commands like "copy" can appear in dictation or as substrings
+**Solution:** Use explicit multi-word phrases + optional "voiceflow" prefix, and only run command detection in Wake mode
 
-These phrases are unambiguous and won't appear in natural dictation, so simple `.contains()` matching is safe.
+### Issue 3: "Paste on Turn Updates" Duplication (DEFERRED TO BACKLOG)
 
-### Issue 3: "Paste on Partial" Duplication (DEFERRED TO BACKLOG)
-
-**Problem:** Each partial contains COMPLETE text, not delta
+**Problem:** Each Turn transcript is cumulative, not delta
 ```
-Partial 1: "hel"     → If pasted: screen shows "hel"
-Partial 2: "hello"   → If pasted: screen shows "helhello" (WRONG)
+Turn 1: transcript="hel"     → If pasted: screen shows "hel"
+Turn 2: transcript="hello"   → If pasted: screen shows "helhello" (WRONG)
 ```
 
-**This is V2/backlog** - too complex for initial version
+**This is V2/backlog** - requires delta tracking from `words` + `word_is_final`
 
 ### Issue 4: Command vs Dictation Ambiguity
 
@@ -414,8 +433,8 @@ Partial 2: "hello"   → If pasted: screen shows "helhello" (WRONG)
 
 ### Issue 5: Network Latency Variation
 
-**Problem:** Partial → Turn delay varies with network conditions
-**Mitigation:** Panel shows real-time partials so user has immediate feedback
+**Problem:** Unformatted → formatted Turn delay varies with network conditions
+**Mitigation:** Panel uses live `words`; dictation waits for formatted end-of-turn when enabled
 
 ---
 
@@ -424,17 +443,17 @@ Partial 2: "hello"   → If pasted: screen shows "helhello" (WRONG)
 ### In Scope
 - Menu bar app + floating panel + settings window
 - Three modes: Off, On, Wake
-- Command detection on partials (Wake mode)
-- Text pasting on Turn events (On mode)
-- Real-time panel display
-- Command deduplication per utterance
+- Command detection on unformatted Turn updates (Wake mode)
+- Text pasting on `end_of_turn=true` (formatted if enabled) in On mode
+- Real-time panel display from `words`
+- Command deduplication per utterance (reset on end_of_turn)
 - Word-boundary command matching
 
 ### Backlog (Future Versions)
-- [ ] Paste on partial with delta tracking
+- [ ] Paste on Turn updates with delta tracking
 - [ ] Command correction ("cancel", "no wait")
 - [ ] Customizable command confirmation delay
-- [ ] Partial-level visual feedback (word-by-word highlighting)
+- [ ] Word-level visual feedback (final vs non-final highlighting)
 - [ ] Command chaining ("copy paste" as two commands)
 
 ---
