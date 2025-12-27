@@ -8,7 +8,9 @@ final class FloatingPanelWindow: NSPanel {
     override var canBecomeMain: Bool {
         true
     }
+}
 
+final class FirstMouseContainerView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
     }

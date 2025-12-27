@@ -5,35 +5,57 @@ enum MicrophoneMode: String, CaseIterable, Identifiable {
     /// Microphone is completely off - no listening, no response to anything
     case off = "Off"
 
-    /// Microphone is on and actively transcribing speech to text
-    case on = "On"
+    /// Microphone is listening for wake word only
+    case sleep = "Sleep"
 
-    /// Microphone is listening for wake word/voice commands only
-    case wake = "Wake"
+    /// Microphone is on and actively processing commands and/or dictation
+    case on = "On"
 
     var id: String { rawValue }
 
     var icon: String {
         switch self {
         case .off: return "mic.slash.fill"
+        case .sleep: return "moon.zzz.fill"
         case .on: return "mic.fill"
-        case .wake: return "waveform"
         }
     }
 
     var color: String {
         switch self {
         case .off: return "gray"
+        case .sleep: return "orange"
         case .on: return "green"
-        case .wake: return "orange"
         }
     }
 
     var description: String {
         switch self {
-        case .off: return "Microphone off - not listening"
-        case .on: return "Transcribing speech to text"
-        case .wake: return "Listening for voice commands"
+        case .off: return "Microphone off"
+        case .sleep: return "Listening for 'Wake up'"
+        case .on: return "Active"
+        }
+    }
+}
+
+/// Behaviors for the 'On' microphone mode
+enum ActiveBehavior: String, CaseIterable, Identifiable, Codable {
+    /// Both commands and dictation are active (commands take priority)
+    case mixed = "Mixed"
+    
+    /// Only dictation is active (commands are ignored)
+    case dictation = "Dictation"
+    
+    /// Only commands are active (nothing is typed)
+    case command = "Command"
+    
+    var id: String { rawValue }
+    
+    var icon: String {
+        switch self {
+        case .mixed: return "square.grid.2x2.fill"
+        case .dictation: return "text.quote"
+        case .command: return "command"
         }
     }
 }

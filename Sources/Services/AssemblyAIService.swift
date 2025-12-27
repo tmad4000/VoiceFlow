@@ -21,8 +21,9 @@ struct TranscriptTurn {
 struct UtteranceConfig {
     let confidenceThreshold: Double
     let silenceThresholdMs: Int
+    let maxTurnSilenceMs: Int
 
-    static let `default` = UtteranceConfig(confidenceThreshold: 0.7, silenceThresholdMs: 160)
+    static let `default` = UtteranceConfig(confidenceThreshold: 0.7, silenceThresholdMs: 160, maxTurnSilenceMs: 1280)
 }
 
 /// WebSocket client for AssemblyAI real-time streaming transcription
@@ -59,7 +60,8 @@ class AssemblyAIService: NSObject, ObservableObject {
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "format_turns", value: "true"),
             URLQueryItem(name: "end_of_turn_confidence_threshold", value: String(utteranceConfig.confidenceThreshold)),
-            URLQueryItem(name: "min_end_of_turn_silence_when_confident", value: String(utteranceConfig.silenceThresholdMs))
+            URLQueryItem(name: "min_end_of_turn_silence_when_confident", value: String(utteranceConfig.silenceThresholdMs)),
+            URLQueryItem(name: "max_turn_silence", value: String(utteranceConfig.maxTurnSilenceMs))
         ]
 
         guard let url = urlComponents.url else {
@@ -184,14 +186,18 @@ extension AssemblyAIService: WebSocketDelegate {
             print("WebSocket connected")
 
         case .disconnected(let reason, let code):
+            print("WebSocket disconnected: \(reason) (code: \(code))")
             DispatchQueue.main.async { [weak self] in
                 self?.isConnected = false
+                self?.errorMessage = "Disconnected: \(reason)"
             }
-            print("WebSocket disconnected: \(reason) (code: \(code))")
 
         case .text(let text):
             if let data = text.data(using: .utf8),
                let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let type = message["type"] as? String, type != "Turn" {
+                    print("Received message: \(type)")
+                }
                 handleMessage(message)
             }
 

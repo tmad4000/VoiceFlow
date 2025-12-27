@@ -19,103 +19,59 @@ VoiceFlow will be a **menu bar app** with a **floating panel** and **separate se
 
 1. **Menu Bar Icon**
    - Always visible in menu bar
-   - Color-coded status indicator (gray=off, green=on, orange=wake)
+   - Color-coded status indicator:
+     - Gray: **Off** (Not listening)
+     - Orange: **Sleep** (Listening for "Wake up" only)
+     - Green: **On** (Active mode - Dictation/Commands)
    - Dropdown menu:
-     - Mode toggles: Off / On / Wake
+     - Mode toggles: Off / Sleep / On
+     - Behavior (when On): Mixed / Dictation / Command
      - "Show Panel" / "Hide Panel"
      - "Settings..." (opens settings window)
      - Separator
      - "Quit VoiceFlow"
 
 2. **Floating Panel** (always on top)
-   - Horizontal strip (~320x50px)
-   - Layout: `[Off][On][Wake] | Transcript text scrolling...`
-   - Mode buttons on left, live transcript on right
-   - Rounded corners, subtle shadow, semi-transparent background
-   - Draggable by background, remembers position
-   - Window level: `.floating` (stays above other windows)
-   - No Dock icon, no Cmd-Tab (accessory app)
+   - Horizontal strip (~320x60px)
+   - Layout: `[Status Icon] [Transcript text scrolling...]`
+   - Shows current mode/behavior and a live "pulse" for audio levels.
+   - When a command is recognized:
+     - Border pulses green.
+     - The command name (e.g., "⌘C / Copy") appears briefly in the status area.
+   - Rounded corners, subtle shadow, semi-transparent background.
+   - Draggable by background, remembers position.
+   - Window level: `.floating` (stays above other windows).
 
-3. **Settings Window** (separate, standard window)
-   - Opens as regular window when needed
-   - API key configuration
-   - Voice commands list/editor
-   - Opens via menu bar "Settings..." or ⌘,
+---
 
-### App Lifecycle
+## Microphone Modes & Behaviors
 
-- **Launch**: App starts as menu bar accessory (no Dock icon)
-- **Panel**: Floating panel shown by default, can hide via menu
-- **Quit methods**:
-  - Menu bar dropdown → "Quit VoiceFlow"
-  - Voice command: "quit voice flow" (when in Wake mode)
-  - ⌘Q when Settings window is focused
+### 1. Off Mode
+- **Status**: No audio capture, no network connection.
+- **Goal**: Privacy and battery saving.
 
-## Files to Modify
+### 2. Sleep Mode
+- **Status**: Audio capture active, API connected.
+- **Behavior**: Listens *only* for wake-up commands:
+  - "Wake up"
+  - "Microphone on"
+- **Action**: Transitions to **On** mode.
 
-### `Sources/VoiceFlowApp.swift`
-- Change to `MenuBarExtra` scene instead of `WindowGroup`
-- Set activation policy to `.accessory`
-- Add floating panel as separate `Window` scene
+### 3. On Mode
+This is the active state where the user interacts with the OS. It has three sub-behaviors:
 
-### `Sources/Views/FloatingPanelView.swift` (new)
-- Compact UI with mode buttons + transcript
-- Minimal chrome, draggable
+| Behavior | Command recognition | Text Dictation | Description |
+|----------|---------------------|----------------|-------------|
+| **Mixed** (Default) | Yes | Yes | Commands take priority. If an utterance matches a command, the action executes and text typing is suppressed. Otherwise, text is typed. |
+| **Dictation Only** | No | Yes | Perfect for long-form writing where accidental commands (like "select all") would be disruptive. |
+| **Command Only** | Yes | No | Useful for navigating and controlling the OS by voice without any accidental typing. |
 
-### `Sources/Views/MenuBarView.swift` (new)
-- Menu bar dropdown content
+### Command Recognition Feedback (UX)
 
-### `Sources/Views/ContentView.swift`
-- Refactor to `FloatingPanelView` (compact)
-- Keep `SettingsView` as separate window
-
-### `Sources/Models/AppState.swift`
-- Add `isPanelVisible` state
-- Add "quit voiceflow" voice command
-
-## Key Implementation Details
-
-```swift
-// VoiceFlowApp.swift structure
-@main
-struct VoiceFlowApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var appState = AppState()
-
-    var body: some Scene {
-        // Menu bar with dropdown
-        MenuBarExtra {
-            MenuBarView()
-                .environmentObject(appState)
-        } label: {
-            Image(systemName: appState.microphoneMode.icon)
-        }
-
-        // Floating panel (always on top)
-        Window("VoiceFlow", id: "panel") {
-            FloatingPanelView()
-                .environmentObject(appState)
-        }
-        .windowStyle(.plain)
-        .windowResizability(.contentSize)
-        .defaultPosition(.topTrailing)
-
-        // Settings window
-        Settings {
-            SettingsView()
-                .environmentObject(appState)
-        }
-    }
-}
-
-// AppDelegate - set as accessory app
-class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory) // No Dock icon
-        // Configure floating panel window level after launch
-    }
-}
-```
+To ensure the user knows an action was triggered (and which one), the app provides:
+- **Visual Pulse**: The floating panel background or border flashes briefly (e.g., green for user shortcuts, blue for system commands).
+- **Status Overlay**: The panel displays the shortcut symbol (e.g., `⌘V`) for 800ms.
+- **Haptic/Audio (Optional)**: A subtle "pop" sound or haptic feedback if supported.
 
 ---
 
@@ -425,6 +381,28 @@ t=0.3s  Turn (end_of_turn=false): words="undo no wait redo"  → "undo" already 
 - Add brief delay before executing? (hurts responsiveness) → **Implemented as configurable delay**
 - "Cancel" voice command to undo last action? → **Implemented ("cancel that", "no wait")**
 - This might just be accepted behavior for voice control (still true for some apps)
+
+---
+
+## Logic Guards & Race Condition Protections
+
+To prevent command leakage and ensure a smooth user experience, the following guards are implemented:
+
+### 1. Formatted Turn Synchronization
+- **Problem**: Commands were being typed because the "command executed" flag was reset after the interim turn, but before the final formatted turn arrived.
+- **Guard**: `resetUtteranceState()` is strictly deferred until `turn.isFormatted == true`. This ensures that the final "Wake up." or "Microphone off." strings are suppressed.
+
+### 2. Graceful Mode-Switch Delay
+- **Problem**: Voice commands that turn off the microphone would kill the connection before the words spoken *before* the command could be processed.
+- **Guard**: System commands that transition to `Off` or `Sleep` mode use a 500ms `asyncAfter` delay. This allows the server to finish transcribing the preceding dictation before the WebSocket closes.
+
+### 3. Escape Prefix Priority
+- **Problem**: "Say [shortcut phrase]" would sometimes trigger the shortcut before the "Say" prefix was analyzed.
+- **Guard**: The command engine performs an "Early Exit" if the first token of an utterance is "say". This guarantees that "say press enter" will never actually press the Enter key.
+
+### 4. Silence Threshold Overrides
+- **Problem**: The app felt rushed because AssemblyAI's default `max_turn_silence` (1.28s) was overriding our custom settings.
+- **Guard**: We explicitly pass `max_turn_silence` in the WebSocket query parameters, allowing "Extra Long" mode to support up to 5 seconds of silence.
 
 ---
 

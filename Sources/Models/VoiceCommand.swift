@@ -27,8 +27,8 @@ struct VoiceCommand: Codable, Identifiable, Equatable, Hashable {
         VoiceCommand(phrase: "page down", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_PageDown), modifiers: [])),
         VoiceCommand(phrase: "scroll up", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_UpArrow), modifiers: [])),
         VoiceCommand(phrase: "scroll down", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_DownArrow), modifiers: [])),
-        VoiceCommand(phrase: "escape", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Escape), modifiers: [])),
-        VoiceCommand(phrase: "enter", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Return), modifiers: [])),
+        VoiceCommand(phrase: "press escape", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Escape), modifiers: [])),
+        VoiceCommand(phrase: "press enter", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Return), modifiers: [])),
     ]
 }
 

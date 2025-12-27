@@ -49,8 +49,10 @@ struct ModeControlBar: View {
 }
 
 struct ModeButton: View {
+    @EnvironmentObject var appState: AppState
     let mode: MicrophoneMode
     let isSelected: Bool
+    var compact: Bool = false
     let action: () -> Void
 
     var backgroundColor: Color {
@@ -58,7 +60,7 @@ struct ModeButton: View {
         switch mode {
         case .off: return Color.gray.opacity(0.3)
         case .on: return Color.green.opacity(0.3)
-        case .wake: return Color.orange.opacity(0.3)
+        case .sleep: return Color.orange.opacity(0.3)
         }
     }
 
@@ -66,25 +68,38 @@ struct ModeButton: View {
         switch mode {
         case .off: return isSelected ? .gray : .secondary
         case .on: return isSelected ? .green : .secondary
-        case .wake: return isSelected ? .orange : .secondary
+        case .sleep: return isSelected ? .orange : .secondary
         }
+    }
+
+    var labelText: String {
+        return mode.rawValue
     }
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            HStack(spacing: compact ? 4 : 6) {
                 Image(systemName: mode.icon)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(mode.rawValue)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .font(.system(size: compact ? 10 : 13, weight: .semibold))
+                
+                Text(labelText)
+                    .font(.system(size: compact ? 10 : 13, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                if mode == .on && isSelected {
+                    Image(systemName: appState.activeBehavior.icon)
+                        .font(.system(size: compact ? 8 : 11, weight: .bold))
+                        .foregroundColor(iconColor.opacity(0.8))
+                }
             }
             .foregroundColor(iconColor)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
+            .padding(.horizontal, compact ? 8 : 11)
+            .padding(.vertical, compact ? 4 : 6)
             .background(backgroundColor)
-            .cornerRadius(8)
+            .cornerRadius(compact ? 6 : 8)
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: compact ? 6 : 8)
                     .stroke(isSelected ? iconColor.opacity(0.5) : Color.clear, lineWidth: 1)
             )
         }
@@ -133,7 +148,7 @@ struct PlaceholderView: View {
     var placeholderText: String {
         switch appState.microphoneMode {
         case .off:
-            return "Microphone is off\nClick \"On\" to start dictating or \"Wake\" for voice commands"
+            return "Microphone is off\nClick \"On\" to start dictating or \"Sleep\" for voice commands"
         case .on:
             if appState.apiKey.isEmpty {
                 return "Please add your AssemblyAI API key in Settings (⌘,)"
@@ -141,12 +156,12 @@ struct PlaceholderView: View {
             return appState.isConnected
                 ? "Listening... Start speaking"
                 : "Connecting to AssemblyAI..."
-        case .wake:
+        case .sleep:
             if appState.apiKey.isEmpty {
                 return "Please add your AssemblyAI API key in Settings (⌘,)"
             }
             return appState.isConnected
-                ? "Listening for commands...\nSay \"microphone on\" to start dictating"
+                ? "Listening for 'Wake up'...\nSay \"microphone on\" to start dictating"
                 : "Connecting to AssemblyAI..."
         }
     }
@@ -182,7 +197,7 @@ struct StatusBar: View {
     var statusColor: Color {
         switch appState.microphoneMode {
         case .off: return .gray
-        case .on, .wake: return appState.isConnected ? .green : .orange
+        case .on, .sleep: return appState.isConnected ? .green : .orange
         }
     }
 
@@ -190,7 +205,7 @@ struct StatusBar: View {
         switch appState.microphoneMode {
         case .off: return "Microphone off"
         case .on: return appState.isConnected ? "Transcribing" : "Connecting..."
-        case .wake: return appState.isConnected ? "Listening for commands" : "Connecting..."
+        case .sleep: return appState.isConnected ? "Listening for 'Wake up'" : "Connecting..."
         }
     }
 }

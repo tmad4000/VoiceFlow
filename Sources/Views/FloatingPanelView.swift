@@ -18,14 +18,11 @@ struct FloatingPanelView: View {
                         .padding(.vertical, 2)
                         .background(Color.orange.opacity(0.2))
                         .clipShape(RoundedRectangle(cornerRadius: 3))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
 
-                ForEach(MicrophoneMode.allCases) { mode in
-                    ModeButton(mode: mode, isSelected: appState.microphoneMode == mode) {
-                        appState.setMode(mode)
-                        updateMenuBarIcon(for: mode)
-                    }
-                }
+                ModeSelectionView()
 
                 Spacer()
 
@@ -41,7 +38,7 @@ struct FloatingPanelView: View {
                                 .foregroundColor(.accentColor)
                         }
                         .buttonStyle(.plain)
-                        .help("Send now (force end utterance)")
+                        .help("Force send current dictation")
                     }
                 }
 
@@ -55,41 +52,70 @@ struct FloatingPanelView: View {
                 .help("Hide panel (access from menu bar)")
             }
             .padding(.horizontal, 12)
-            .padding(.top, 8)
+            .padding(.top, 4)
             .padding(.bottom, 8)
 
             Divider()
                 .padding(.horizontal, 10)
 
-            // Transcript area - scrollable with max height
+            // Transcript area - scrollable with flexible height
             ScrollView {
                 TranscriptContentView()
+                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
             }
-            .frame(maxHeight: 170)
+            .frame(minHeight: 100, maxHeight: .infinity)
+            .overlay(alignment: .topTrailing) {
+                if !appState.currentTranscript.isEmpty {
+                    Button(action: {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(appState.currentTranscript, forType: .string)
+                    }) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                            .padding(6)
+                            .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow).opacity(0.8))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
+                    .padding(.trailing, 4)
+                    .help("Copy transcript to clipboard")
+                }
+            }
         }
-        .frame(minWidth: 360, maxWidth: 520)
-        .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow))
+        .frame(minWidth: 360, maxWidth: 520, minHeight: 140, maxHeight: 800)
+        .background(
+            VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.green, lineWidth: appState.isCommandFlashActive ? 3 : 0)
+                        .animation(.easeInOut(duration: 0.2), value: appState.isCommandFlashActive)
+                )
+        )
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(alignment: .bottom) {
+            if appState.isCommandFlashActive, let commandName = appState.lastCommandName {
+                Text("Command: \(commandName)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.green.opacity(0.8))
+                    .clipShape(Capsule())
+                    .padding(.bottom, 20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
         .overlay(alignment: .bottom) {
             if showingHideToast {
                 ToastView(message: "Panel hidden. Click menu bar icon to show.")
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-        }
-    }
-
-    private func updateMenuBarIcon(for mode: MicrophoneMode) {
-        if let appDelegate = NSApp.delegate as? AppDelegate {
-            let iconName: String
-            switch mode {
-            case .off: iconName = "mic.slash.fill"
-            case .on: iconName = "mic.fill"
-            case .wake: iconName = "waveform"
-            }
-            appDelegate.updateIcon(iconName)
         }
     }
 
@@ -101,6 +127,70 @@ struct FloatingPanelView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             appState.hidePanelWindow()
         }
+    }
+}
+
+private struct ModeSelectionView: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(MicrophoneMode.allCases) { mode in
+                if mode == .on {
+                    onModePill
+                } else {
+                    ModeButton(mode: mode, isSelected: appState.microphoneMode == mode, compact: true) {
+                        appState.setMode(mode)
+                    }
+                }
+            }
+        }
+    }
+
+    private var onModePill: some View {
+        let isSelected = appState.microphoneMode == .on
+        return HStack(spacing: 0) {
+            ModeButton(mode: .on, isSelected: isSelected, compact: true) {
+                appState.setMode(.on)
+            }
+            
+            if isSelected {
+                Divider()
+                    .frame(height: 12)
+                    .background(Color.green.opacity(0.3))
+                
+                Menu {
+                    ForEach(ActiveBehavior.allCases) { behavior in
+                        Button {
+                            appState.saveActiveBehavior(behavior)
+                        } label: {
+                            HStack {
+                                Text(behavior.rawValue)
+                                Spacer()
+                                Image(systemName: behavior.icon)
+                                if appState.activeBehavior == behavior {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundColor(Color.green.opacity(0.8))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .frame(width: 16)
+            }
+        }
+        .background(isSelected ? Color.green.opacity(0.15) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isSelected ? Color.green.opacity(0.3) : Color.clear, lineWidth: 1)
+        )
     }
 }
 
@@ -179,8 +269,8 @@ private struct TranscriptContentView: View {
             return "Microphone off"
         case .on:
             return appState.isConnected ? "Listening…" : "Connecting…"
-        case .wake:
-            return appState.isConnected ? "Listening for commands…" : "Connecting…"
+        case .sleep:
+            return appState.isConnected ? "Listening for 'Wake up'…" : "Connecting…"
         }
     }
 }

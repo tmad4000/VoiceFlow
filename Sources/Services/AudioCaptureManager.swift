@@ -113,7 +113,8 @@ class AudioCaptureManager: NSObject {
         }
         let rms = sqrt(sum / Float(frameLength))
         // Convert to 0-1 range with some scaling for better visualization
-        let level = min(1.0, rms * 4.0)
+        // Increased scaling from 4.0 to 8.0 for better sensitivity
+        let level = min(1.0, rms * 8.0)
 
         // Send to callbacks
         DispatchQueue.main.async { [weak self] in

@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import AVFoundation
+import Combine
 
 @main
 struct VoiceFlowApp: App {
@@ -24,10 +25,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var appState: AppState = AppState() // Instantiated here
     var offMenuItem: NSMenuItem?
     var onMenuItem: NSMenuItem?
-    var wakeMenuItem: NSMenuItem?
+    var sleepMenuItem: NSMenuItem?
     var showHideMenuItem: NSMenuItem?
     var settingsWindow: NSWindow?
     private var panelWindow: FloatingPanelWindow?
+    private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -39,6 +41,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = NSImage(systemSymbolName: "mic.slash.fill", accessibilityDescription: "VoiceFlow")
         }
         print("[VoiceFlow] Status bar item created")
+
+        // Subscribe to mode changes to update icon
+        appState.$microphoneMode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] mode in
+                self?.updateIcon(mode.icon)
+            }
+            .store(in: &cancellables)
 
         // Create menu
         let menu = NSMenu()
@@ -54,9 +64,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         onMenuItem?.target = self
         menu.addItem(onMenuItem!)
 
-        wakeMenuItem = NSMenuItem(title: "Wake", action: #selector(setModeWake), keyEquivalent: "")
-        wakeMenuItem?.target = self
-        menu.addItem(wakeMenuItem!)
+        sleepMenuItem = NSMenuItem(title: "Sleep", action: #selector(setModeSleep), keyEquivalent: "")
+        sleepMenuItem?.target = self
+        menu.addItem(sleepMenuItem!)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -94,8 +104,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configurePanelWindow() {
         let panel = FloatingPanelWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 220),
-            styleMask: [.titled, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 160),
+            styleMask: [.titled, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -104,7 +114,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             rootView: FloatingPanelView()
                 .environmentObject(appState)
         )
-        panel.contentViewController = hostingController
+        
+        let containerView = FirstMouseContainerView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(hostingController.view)
+        
+        NSLayoutConstraint.activate([
+            hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor)
+        ])
+        
+        panel.contentView = containerView
         hostingController.view.layoutSubtreeIfNeeded()
         let fittingSize = hostingController.view.fittingSize
         if fittingSize.width > 0, fittingSize.height > 0 {
@@ -127,6 +150,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
+        
+        // Set size constraints
+        panel.minSize = NSSize(width: 360, height: 140)
+        panel.maxSize = NSSize(width: 520, height: 800)
 
         panelWindow = panel
     }
@@ -161,7 +188,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             appState.setMode(.off)
         }
-        updateIcon("mic.slash.fill")
     }
 
     @objc func setModeOn() {
@@ -169,15 +195,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             appState.setMode(.on)
         }
-        updateIcon("mic.fill")
     }
 
-    @objc func setModeWake() {
-        print("[VoiceFlow] Setting mode: Wake")
+    @objc func setModeSleep() {
+        print("[VoiceFlow] Setting mode: Sleep")
         Task { @MainActor in
-            appState.setMode(.wake)
+            appState.setMode(.sleep)
         }
-        updateIcon("waveform")
     }
 
     @objc func openSettings() {
@@ -196,11 +220,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.isReleasedWhenClosed = false
             
             settingsWindow = window
+        } else {
+            settingsWindow?.center()
         }
         
         print("[VoiceFlow] Showing settings window")
-        settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
     func updateIcon(_ name: String) {
@@ -212,7 +238,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let mode = appState.microphoneMode
             offMenuItem?.state = mode == .off ? .on : .off
             onMenuItem?.state = mode == .on ? .on : .off
-            wakeMenuItem?.state = mode == .wake ? .on : .off
+            sleepMenuItem?.state = mode == .sleep ? .on : .off
         }
     }
 

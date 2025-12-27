@@ -22,6 +22,27 @@ struct MenuBarView: View {
                 .buttonStyle(.borderless)
             }
 
+            if appState.microphoneMode == .on {
+                Divider()
+                Text("Active Behavior")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.leading, 5)
+
+                ForEach(ActiveBehavior.allCases) { behavior in
+                    Button {
+                        appState.saveActiveBehavior(behavior)
+                    } label: {
+                        HStack {
+                            Image(systemName: appState.activeBehavior == behavior ? "checkmark" : "")
+                                .frame(width: 16)
+                            Text(behavior.rawValue)
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
             Divider()
 
             Button(appState.isPanelVisible ? "Hide Panel" : "Show Panel") {

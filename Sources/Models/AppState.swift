@@ -59,8 +59,16 @@ enum UtteranceMode: String, CaseIterable, Codable {
         case .balanced: return 160
         case .patient: return 400
         case .dictation: return 560
-        case .extraLong: return 2000
+        case .extraLong: return 3000
         case .custom: return 160
+        }
+    }
+
+    /// Maximum silence allowed during a turn regardless of confidence (milliseconds)
+    var maxTurnSilenceMs: Int {
+        switch self {
+        case .extraLong: return 5000
+        default: return 1280 // Default AssemblyAI value
         }
     }
 }
@@ -84,6 +92,24 @@ class AppState: ObservableObject {
     @Published var utteranceMode: UtteranceMode = .balanced
     @Published var customConfidenceThreshold: Double = 0.7
     @Published var customSilenceThresholdMs: Int = 160
+    @Published var activeBehavior: ActiveBehavior = .mixed
+    @Published var lastCommandName: String? = nil
+    @Published var isCommandFlashActive: Bool = false
+    @Published var debugLog: [String] = []
+    @Published var launchMode: MicrophoneMode = .sleep
+
+    /// Built-in system commands for reference in UI
+    static let systemCommandList: [(phrase: String, description: String)] = [
+        ("wake up", "Switch to On mode"),
+        ("microphone on", "Switch to On mode"),
+        ("go to sleep", "Switch to Sleep mode"),
+        ("microphone off", "Turn microphone completely Off"),
+        ("stop dictation", "Turn microphone completely Off"),
+        ("cancel that", "Undo last keyboard command"),
+        ("no wait", "Undo last keyboard command"),
+        ("submit dictation", "Force finalize and type current speech"),
+        ("send dictation", "Force finalize and type current speech")
+    ]
 
     var panelVisibilityHandler: ((Bool) -> Void)?
 
@@ -120,8 +146,17 @@ class AppState: ObservableObject {
         loadCommandDelay()
         loadLiveDictationEnabled()
         loadUtteranceSettings()
+        loadActiveBehavior()
+        loadLaunchMode()
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
+        
+        // Start in the preferred launch mode
+        // Small delay to ensure everything is initialized
+        let initialMode = launchMode
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.setMode(initialMode)
+        }
     }
 
     func checkAccessibilityPermission(silent: Bool = true) {
@@ -198,6 +233,24 @@ class AppState: ObservableObject {
         AXIsProcessTrusted() ? "Trusted" : "Not Trusted"
     }
 
+    func logDebug(_ message: String) {
+        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        let entry = "[\(timestamp)] \(message)"
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.debugLog.insert(entry, at: 0)
+            if self.debugLog.count > 100 {
+                self.debugLog.removeLast()
+            }
+        }
+        logger.info("\(message)")
+    }
+
+    func clearDebugLog() {
+        debugLog.removeAll()
+    }
+
     private func showRestartPrompt() {
         let alert = NSAlert()
         alert.messageText = "App Restart Required"
@@ -228,18 +281,27 @@ class AppState: ObservableObject {
 
     func setMode(_ mode: MicrophoneMode) {
         // Check permissions before enabling active modes
-        if (mode == .on || mode == .wake) && !isAccessibilityGranted {
+        if (mode == .on || mode == .sleep) && !isAccessibilityGranted {
              checkAccessibilityPermission(silent: false)
-             // If still not granted (user hit cancel or system denied), do we switch?
-             // We can switch, but maybe show a warning?
-             // For now, let's let them switch but the prompt will have appeared.
         }
 
         let previousMode = microphoneMode
         microphoneMode = mode
+        logDebug("Mode changed: \(previousMode.rawValue) -> \(mode.rawValue)")
+
+        // Clear UI state when waking up or switching active modes
+        if previousMode == .sleep && mode == .on {
+            currentTranscript = ""
+            currentWords = []
+            // Mark that we just woke up to prevent the "wake up" phrase from typing
+            currentUtteranceHadCommand = true 
+        }
 
         switch mode {
         case .off:
+            // If we are currently in an utterance, we might want to wait a bit
+            // but for now, let's just stop. 
+            // IMPROVEMENT: The system command caller will handle the delay if needed.
             stopListening()
         case .on:
             if previousMode == .off {
@@ -247,7 +309,7 @@ class AppState: ObservableObject {
             } else {
                 assemblyAIService?.setTranscribeMode(true)
             }
-        case .wake:
+        case .sleep:
             if previousMode == .off {
                 startListening(transcribeMode: false)
             } else {
@@ -257,8 +319,10 @@ class AppState: ObservableObject {
     }
 
     private func startListening(transcribeMode: Bool) {
+        logDebug("Starting services (transcribeMode: \(transcribeMode))")
         guard !apiKey.isEmpty else {
             errorMessage = "Please set your AssemblyAI API key in Settings"
+            logDebug("Error: API key missing")
             return
         }
 
@@ -274,7 +338,8 @@ class AppState: ObservableObject {
         // Configure utterance detection
         let utteranceConfig = UtteranceConfig(
             confidenceThreshold: effectiveConfidenceThreshold,
-            silenceThresholdMs: effectiveSilenceThresholdMs
+            silenceThresholdMs: effectiveSilenceThresholdMs,
+            maxTurnSilenceMs: utteranceMode.maxTurnSilenceMs
         )
         assemblyAIService?.setUtteranceConfig(utteranceConfig)
 
@@ -283,6 +348,7 @@ class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] connected in
                 self?.isConnected = connected
+                self?.logDebug(connected ? "Connected to AssemblyAI" : "Disconnected from AssemblyAI")
             }
             .store(in: &cancellables)
 
@@ -298,6 +364,9 @@ class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] error in
                 self?.errorMessage = error
+                if let error = error {
+                    self?.logDebug("API Error: \(error)")
+                }
             }
             .store(in: &cancellables)
 
@@ -318,6 +387,7 @@ class AppState: ObservableObject {
     }
 
     private func stopListening() {
+        logDebug("Stopping services")
         audioCaptureManager?.stopCapture()
         assemblyAIService?.disconnect()
         audioCaptureManager = nil
@@ -341,14 +411,29 @@ class AppState: ObservableObject {
             currentTranscript = fallbackTranscript
         }
 
-        if microphoneMode == .wake, !turn.isFormatted {
-            processVoiceCommands(turn)
-        } else if microphoneMode == .on {
-            handleDictationTurn(turn)
+        switch microphoneMode {
+        case .sleep:
+            if !turn.isFormatted {
+                processVoiceCommands(turn)
+            }
+        case .on:
+            // Always check for commands if behavior allows
+            if activeBehavior != .dictation, !turn.isFormatted {
+                processVoiceCommands(turn)
+            }
+            
+            // Handle dictation if behavior allows
+            if activeBehavior != .command {
+                handleDictationTurn(turn)
+            }
+        case .off:
+            break
         }
 
         if turn.endOfTurn {
-            resetUtteranceState()
+            if !expectsFormattedTurns || turn.isFormatted {
+                resetUtteranceState()
+            }
         }
     }
 
@@ -362,22 +447,21 @@ class AppState: ObservableObject {
             forceEndRequestedAt = nil
         }
 
-        guard !currentUtteranceHadCommand else {
-            logger.debug("Skipping - utterance had command")
-            return
-        }
-        if liveDictationEnabled {
-            handleLiveDictationTurn(turn)
-            return
-        }
-
         let isForceEndTurn = forceEndPending && turn.endOfTurn
+        
+        guard !currentUtteranceHadCommand || isForceEndTurn else {
+            logger.debug("Skipping - utterance had command and not a forced end")
+            return
+        }
         let shouldType = turn.isFormatted || (!expectsFormattedTurns && turn.endOfTurn) || isForceEndTurn
         var textToType = turn.transcript
+        
         if textToType.isEmpty, isForceEndTurn {
             textToType = turn.utterance ?? assembleDisplayText(from: turn.words)
+            logger.info("Force end: using fallback text \"\(textToType)\"")
         }
-        logger.info("shouldType=\(shouldType) (isFormatted=\(turn.isFormatted), expectsFormattedTurns=\(self.expectsFormattedTurns), endOfTurn=\(turn.endOfTurn), forceEnd=\(isForceEndTurn))")
+        
+        logger.info("handleDictationTurn logic: isFormatted=\(turn.isFormatted), endOfTurn=\(turn.endOfTurn), forceEnd=\(isForceEndTurn), shouldType=\(shouldType), textToType=\"\(textToType)\"")
 
         if let turnOrder = turn.turnOrder, turnOrder <= lastTypedTurnOrder {
             logger.debug("Skipping duplicate turn order \(turnOrder)")
@@ -393,7 +477,9 @@ class AppState: ObservableObject {
             logger.info("Force end typing unformatted utterance")
         }
 
-        typeText(textToType, appendSpace: true)
+        let processedText = preprocessDictation(textToType)
+        typeText(processedText, appendSpace: true)
+        
         if let turnOrder = turn.turnOrder {
             lastTypedTurnOrder = turnOrder
         }
@@ -402,6 +488,58 @@ class AppState: ObservableObject {
             forceEndRequestedAt = nil
         }
     }
+
+    private func preprocessDictation(_ text: String) -> String {
+        var processed = text
+        
+        // 1. Handle "say " prefix (escape mode)
+        // Check for "say " at the beginning (case insensitive, allowing for multiple spaces)
+        var isLiteral = false
+        let lower = processed.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if lower.hasPrefix("say ") {
+            isLiteral = true
+            // Find the index of the first space and drop everything before it
+            if let firstSpaceIndex = processed.firstIndex(of: " ") {
+                processed = String(processed[processed.index(after: firstSpaceIndex)...]).trimmingCharacters(in: .whitespaces)
+            }
+        } else if lower == "say" {
+            // Just the word "say"
+            isLiteral = true
+            processed = ""
+        }
+        
+        // 2. Handle trailing mode-switch commands if they are at the very end
+        // This allows "Hello world microphone off" to just type "Hello world"
+        if !isLiteral {
+            let trailingCommands = ["microphone off", "stop dictation", "go to sleep", "submit dictation", "send dictation"]
+            for cmd in trailingCommands {
+                if processed.lowercased().hasSuffix(cmd) {
+                    processed = String(processed.prefix(processed.count - cmd.count))
+                    processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
+                    break
+                }
+            }
+        }
+
+        // 3. Handle "new line" replacement
+        if !isLiteral {
+            // Replace various forms of "new line" (case-insensitive)
+            // Use a regex-like approach to handle "new line" and "newline" with any capitalization
+            let patterns = ["new line", "newline"]
+            for pattern in patterns {
+                let range = NSRange(processed.startIndex..<processed.endIndex, in: processed)
+                let regex = try? NSRegularExpression(pattern: "(?i)\(pattern)", options: [])
+                processed = regex?.stringByReplacingMatches(in: processed, options: [], range: range, withTemplate: "\n") ?? processed
+            }
+            
+            // 4. (REMOVED) Strip trailing punctuation
+            // User requested to keep this for now to avoid unnecessary complexity.
+        }
+        
+        return processed
+    }
+
+
 
     private func handleLiveDictationTurn(_ turn: TranscriptTurn) {
         guard !turn.isFormatted else {
@@ -437,20 +575,54 @@ class AppState: ObservableObject {
     private func processVoiceCommands(_ turn: TranscriptTurn) {
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         guard !normalizedTokens.isEmpty else { return }
+        
+        // If the first word is "say", skip command processing for this utterance
+        // Also check if the transcript starts with "say" to be safe
+        let firstToken = normalizedTokens.first?.token
+        let transcriptStartsWaySay = turn.transcript.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("say ") || 
+                                     turn.transcript.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "say"
+                                     
+        if firstToken == "say" || transcriptStartsWaySay {
+            logger.debug("Utterance starts with 'say', skipping command processing")
+            return
+        }
+
         let tokenStrings = normalizedTokens.map { $0.token }
 
         var matches: [PendingCommandMatch] = []
 
-        let systemCommands: [(phrase: String, key: String, haltsProcessing: Bool, action: () -> Void)] = [
-            ("microphone on", "system.microphone_on", true, { [weak self] in self?.setMode(.on) }),
-            ("start dictation", "system.start_dictation", true, { [weak self] in self?.setMode(.on) }),
-            ("microphone off", "system.microphone_off", true, { [weak self] in self?.setMode(.off) }),
-            ("stop dictation", "system.stop_dictation", true, { [weak self] in self?.setMode(.off) }),
-            ("cancel that", "system.cancel_command", true, { [weak self] in self?.cancelLastCommandIfRecent() }),
-            ("no wait", "system.cancel_command", true, { [weak self] in self?.cancelLastCommandIfRecent() }),
-            ("send that", "system.force_end_utterance", false, { [weak self] in self?.forceEndUtterance() }),
-            ("done", "system.force_end_utterance", false, { [weak self] in self?.forceEndUtterance() })
-        ]
+        // System commands based on current mode
+        var systemCommands: [(phrase: String, key: String, name: String, haltsProcessing: Bool, action: () -> Void)] = []
+        
+        if microphoneMode == .sleep {
+            systemCommands.append(contentsOf: [
+                (phrase: "wake up", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void),
+                (phrase: "microphone on", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void)
+            ])
+        } else if microphoneMode == .on {
+            systemCommands.append(contentsOf: [
+                (phrase: "go to sleep", key: "system.go_to_sleep", name: "Sleep", haltsProcessing: true, action: { [weak self] in 
+                    // Delay slightly to allow any preceding dictation in the same utterance to type
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        self?.setMode(.sleep)
+                    }
+                } as () -> Void),
+                (phrase: "microphone off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in 
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        self?.setMode(.off)
+                    }
+                } as () -> Void),
+                (phrase: "stop dictation", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in 
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        self?.setMode(.off)
+                    }
+                } as () -> Void),
+                (phrase: "cancel that", key: "system.cancel_command", name: "Cancel", haltsProcessing: true, action: { [weak self] in self?.cancelLastCommandIfRecent() } as () -> Void),
+                (phrase: "no wait", key: "system.cancel_command", name: "Cancel", haltsProcessing: true, action: { [weak self] in self?.cancelLastCommandIfRecent() } as () -> Void),
+                (phrase: "submit dictation", key: "system.force_end_utterance", name: "Submit", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void),
+                (phrase: "send dictation", key: "system.force_end_utterance", name: "Send", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void)
+            ])
+        }
 
         for systemCommand in systemCommands {
             let phraseTokens = tokenizePhrase(systemCommand.phrase)
@@ -469,31 +641,40 @@ class AppState: ObservableObject {
                     isPrefixed: isPrefixed,
                     isStable: isStable,
                     haltsProcessing: systemCommand.haltsProcessing,
-                    action: systemCommand.action
+                    action: { [weak self] in
+                        systemCommand.action()
+                        self?.triggerCommandFlash(name: systemCommand.name)
+                    }
                 ))
             }
         }
 
-        for command in voiceCommands where command.isEnabled {
-            let phraseTokens = tokenizePhrase(command.phrase)
-            for range in findMatches(phraseTokens: phraseTokens, in: tokenStrings) {
-                let startTokenIndex = range.lowerBound
-                let endTokenIndex = range.upperBound - 1
-                let startWordIndex = normalizedTokens[startTokenIndex].wordIndex
-                let endWordIndex = normalizedTokens[endTokenIndex].wordIndex
-                let isPrefixed = startTokenIndex > 0 && normalizedTokens[startTokenIndex - 1].token == commandPrefixToken
-                let wordIndices = normalizedTokens[range].map { $0.wordIndex }
-                let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
-                let key = "user.\(command.id.uuidString)"
-                matches.append(PendingCommandMatch(
-                    key: key,
-                    startWordIndex: startWordIndex,
-                    endWordIndex: endWordIndex,
-                    isPrefixed: isPrefixed,
-                    isStable: isStable,
-                    haltsProcessing: false,
-                    action: { [weak self] in self?.executeKeyboardShortcut(command.shortcut) }
-                ))
+        // User voice commands only in On mode (or if we want them in sleep? Usually just On)
+        if microphoneMode == .on {
+            for command in voiceCommands where command.isEnabled {
+                let phraseTokens = tokenizePhrase(command.phrase)
+                for range in findMatches(phraseTokens: phraseTokens, in: tokenStrings) {
+                    let startTokenIndex = range.lowerBound
+                    let endTokenIndex = range.upperBound - 1
+                    let startWordIndex = normalizedTokens[startTokenIndex].wordIndex
+                    let endWordIndex = normalizedTokens[endTokenIndex].wordIndex
+                    let isPrefixed = startTokenIndex > 0 && normalizedTokens[startTokenIndex - 1].token == commandPrefixToken
+                    let wordIndices = normalizedTokens[range].map { $0.wordIndex }
+                    let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
+                    let key = "user.\(command.id.uuidString)"
+                    matches.append(PendingCommandMatch(
+                        key: key,
+                        startWordIndex: startWordIndex,
+                        endWordIndex: endWordIndex,
+                        isPrefixed: isPrefixed,
+                        isStable: isStable,
+                        haltsProcessing: false,
+                        action: { [weak self] in
+                            self?.executeKeyboardShortcut(command.shortcut)
+                            self?.triggerCommandFlash(name: command.phrase)
+                        }
+                    ))
+                }
             }
         }
 
@@ -521,6 +702,7 @@ class AppState: ObservableObject {
     }
 
     private func resetUtteranceState() {
+        logger.info("resetUtteranceState called")
         lastExecutedEndWordIndexByCommand.removeAll()
         currentUtteranceHadCommand = false
         pendingCommandExecutions.removeAll()
@@ -530,6 +712,7 @@ class AppState: ObservableObject {
     }
 
     private func executeMatch(_ match: PendingCommandMatch) {
+        logDebug("Executing command: \(match.key)")
         match.action()
         lastExecutedEndWordIndexByCommand[match.key] = match.endWordIndex
         currentUtteranceHadCommand = true
@@ -560,6 +743,16 @@ class AppState: ObservableObject {
             return
         }
         executeKeyboardShortcut(undoShortcut)
+    }
+
+    private func triggerCommandFlash(name: String) {
+        lastCommandName = name
+        isCommandFlashActive = true
+        
+        // Reset flash after a short delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.isCommandFlashActive = false
+        }
     }
 
     func showPanelWindow() {
@@ -632,10 +825,18 @@ class AppState: ObservableObject {
         }
 
         let output = appendSpace ? text + " " : text
-        logger.info("Typing: \"\(output)\"")
+        logDebug("Typing: \"\(output.replacingOccurrences(of: "\n", with: "\\n"))\"")
 
         let source = CGEventSource(stateID: .hidSystemState)
         for char in output {
+            if char == "\n" {
+                let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+                let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+                keyDown?.post(tap: .cghidEventTap)
+                keyUp?.post(tap: .cghidEventTap)
+                continue
+            }
+            
             if let unicodeScalar = char.unicodeScalars.first {
                 let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
                 let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
@@ -730,6 +931,15 @@ class AppState: ObservableObject {
     func saveUtteranceMode(_ mode: UtteranceMode) {
         utteranceMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: "utterance_mode")
+        
+        // When switching to a preset, update custom values to match the preset
+        // This provides a good starting point for customization
+        if mode != .custom {
+            customConfidenceThreshold = mode.confidenceThreshold
+            customSilenceThresholdMs = mode.silenceThresholdMs
+            UserDefaults.standard.set(customConfidenceThreshold, forKey: "custom_confidence_threshold")
+            UserDefaults.standard.set(customSilenceThresholdMs, forKey: "custom_silence_threshold_ms")
+        }
     }
 
     func saveCustomConfidenceThreshold(_ value: Double) {
@@ -750,20 +960,52 @@ class AppState: ObservableObject {
         }
     }
 
+    private func loadActiveBehavior() {
+        if let behaviorString = UserDefaults.standard.string(forKey: "active_behavior"),
+           let behavior = ActiveBehavior(rawValue: behaviorString) {
+            activeBehavior = behavior
+        }
+    }
+
+    func saveActiveBehavior(_ behavior: ActiveBehavior) {
+        activeBehavior = behavior
+        UserDefaults.standard.set(behavior.rawValue, forKey: "active_behavior")
+    }
+
+    private func loadLaunchMode() {
+        if let modeString = UserDefaults.standard.string(forKey: "launch_mode"),
+           let mode = MicrophoneMode(rawValue: modeString) {
+            launchMode = mode
+        } else {
+            launchMode = .sleep // Default to Sleep
+        }
+    }
+
+    func saveLaunchMode(_ mode: MicrophoneMode) {
+        launchMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "launch_mode")
+    }
+
     /// Force end of current utterance immediately
     func forceEndUtterance() {
         logger.info("Force end utterance requested (connected=\(self.isConnected ? "true" : "false"))")
+        
+        // Reset state locally so we are ready for the next turn even if the server is slow
+        let wasPending = forceEndPending
         forceEndPending = true
         forceEndRequestedAt = Date()
+        
+        if !wasPending {
+            assemblyAIService?.forceEndUtterance()
+        }
+        
         DispatchQueue.main.asyncAfter(deadline: .now() + forceEndTimeoutSeconds) { [weak self] in
             guard let self else { return }
             if self.forceEndPending, let requestedAt = self.forceEndRequestedAt,
                Date().timeIntervalSince(requestedAt) >= self.forceEndTimeoutSeconds {
                 logger.info("Force end request timed out without end-of-turn")
-                self.forceEndPending = false
-                self.forceEndRequestedAt = nil
+                self.resetUtteranceState()
             }
         }
-        assemblyAIService?.forceEndUtterance()
     }
 }

@@ -14,6 +14,11 @@ struct SettingsView: View {
                 .tabItem {
                     Label("Commands", systemImage: "command")
                 }
+
+            DebugConsoleView()
+                .tabItem {
+                    Label("Debug", systemImage: "terminal")
+                }
         }
         .frame(width: 480, height: 580)
     }
@@ -140,32 +145,30 @@ struct GeneralSettingsView: View {
                     .padding(4)
                 }
 
-                // Permissions Section
+                // permissions section ...
+                
+                // Startup Settings
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Permissions")
+                        Text("Startup")
                             .font(.system(size: 13, weight: .semibold))
 
-                        PermissionRow(
-                            name: "Microphone",
-                            isGranted: appState.isMicrophoneGranted,
-                            onRequest: { appState.requestMicrophonePermission() },
-                            settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-                        )
-
-                        PermissionRow(
-                            name: "Accessibility",
-                            isGranted: appState.isAccessibilityGranted,
-                            onRequest: { appState.checkAccessibilityPermission(silent: false) },
-                            settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-                        )
-
-                        if !appState.isMicrophoneGranted || !appState.isAccessibilityGranted {
-                            Text("VoiceFlow needs Microphone for speech recognition and Accessibility to type in other apps.")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                                .padding(.top, 4)
+                        HStack {
+                            Text("Initial Mode")
+                                .font(.system(size: 13))
+                            Spacer()
+                            Picker("", selection: launchModeBinding) {
+                                ForEach(MicrophoneMode.allCases) { mode in
+                                    Text(mode.rawValue).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 180)
                         }
+                        
+                        Text("The mode VoiceFlow will enter when first launched.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
                     }
                     .padding(4)
                 }
@@ -349,17 +352,27 @@ struct GeneralSettingsView: View {
     }
 
     private func modeLabel(_ mode: UtteranceMode) -> String {
+        let isSelected = appState.utteranceMode == mode
+        let checkmark = isSelected ? " ✓" : ""
+        
         switch mode {
-        case .quick: return "Quick (100ms)"
-        case .balanced: return "Balanced (160ms) ✓"
-        case .patient: return "Patient (400ms)"
-        case .dictation: return "Dictation (560ms)"
-        case .extraLong: return "Extra Long (2000ms)"
-        case .custom: return "Custom"
+        case .quick: return "Quick (100ms)\(checkmark)"
+        case .balanced: return "Balanced (160ms)\(checkmark)"
+        case .patient: return "Patient (400ms)\(checkmark)"
+        case .dictation: return "Dictation (560ms)\(checkmark)"
+        case .extraLong: return "Extra Long (2000ms)\(checkmark)"
+        case .custom: return "Custom\(checkmark)"
         }
     }
 
     // MARK: - Bindings
+
+    private var launchModeBinding: Binding<MicrophoneMode> {
+        Binding(
+            get: { appState.launchMode },
+            set: { appState.saveLaunchMode($0) }
+        )
+    }
 
     private var commandDelayBinding: Binding<Double> {
         Binding(
@@ -384,14 +397,14 @@ struct GeneralSettingsView: View {
 
     private var confidenceThresholdBinding: Binding<Double> {
         Binding(
-            get: { appState.utteranceMode == .custom ? appState.customConfidenceThreshold : appState.utteranceMode.confidenceThreshold },
+            get: { appState.customConfidenceThreshold },
             set: { appState.saveCustomConfidenceThreshold($0) }
         )
     }
 
     private var silenceThresholdBinding: Binding<Double> {
         Binding(
-            get: { Double(appState.utteranceMode == .custom ? appState.customSilenceThresholdMs : appState.utteranceMode.silenceThresholdMs) },
+            get: { Double(appState.customSilenceThresholdMs) },
             set: { appState.saveCustomSilenceThreshold(Int($0)) }
         )
     }
@@ -459,23 +472,43 @@ struct VoiceCommandsSettingsView: View {
             Divider()
 
             // Command list
-            List(selection: $selectedCommand) {
-                ForEach(appState.voiceCommands) { command in
-                    VoiceCommandRow(command: command)
-                        .tag(command)
+            List {
+                Section(header: Text("User Commands")) {
+                    ForEach(appState.voiceCommands) { command in
+                        VoiceCommandRow(command: command)
+                            .tag(command)
+                    }
+                    .onDelete(perform: deleteCommands)
                 }
-                .onDelete(perform: deleteCommands)
+
+                Section(header: Text("System Commands")) {
+                    ForEach(AppState.systemCommandList, id: \.phrase) { command in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\"\(command.phrase)\"")
+                                    .font(.system(size: 13, weight: .medium))
+                                Text(command.description)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Text("System")
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.2))
+                                .cornerRadius(4)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
             }
             .listStyle(.inset)
 
             // Footer info
             VStack(alignment: .leading, spacing: 4) {
-                Text("Say a phrase in Wake mode to trigger the shortcut.")
+                Text("Say a phrase in On mode to trigger a shortcut.")
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-
-                Text("Built-in: microphone on/off, start/stop dictation, cancel that, no wait, send that, done")
-                    .font(.system(size: 10))
                     .foregroundColor(.secondary)
             }
             .padding()
@@ -643,6 +676,58 @@ struct AddCommandSheet: View {
         case "PageDown": return 0x79
         default: return 0x00
         }
+    }
+}
+
+// MARK: - Debug Console
+
+struct DebugConsoleView: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Debug Log")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button("Clear") {
+                    appState.clearDebugLog()
+                }
+                .font(.system(size: 11))
+            }
+            .padding()
+
+            Divider()
+
+            if appState.debugLog.isEmpty {
+                VStack {
+                    Spacer()
+                    Text("No log entries yet.")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 12))
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 4) {
+                            ForEach(appState.debugLog, id: \.self) { entry in
+                                Text(entry)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(.primary)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 2)
+                                    .textSelection(.enabled)
+                                Divider()
+                            }
+                        }
+                        .padding(.vertical, 8)
+                    }
+                }
+            }
+        }
+        .background(Color(NSColor.textBackgroundColor))
     }
 }
 
