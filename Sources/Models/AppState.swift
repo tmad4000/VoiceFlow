@@ -117,6 +117,7 @@ class AppState: ObservableObject {
     @Published var debugLog: [String] = []
     @Published var dictationHistory: [String] = []
     @Published var vocabularyPrompt: String = ""
+    @Published var autoPopulateVocabulary: Bool = true  // Auto-add commands to vocabulary
     @Published var ideaFlowShortcut: KeyboardShortcut? = nil
     @Published var ideaFlowURL: String = ""
     @Published var isOffline: Bool = false
@@ -523,7 +524,8 @@ class AppState: ObservableObject {
         // Start services
         assemblyAIService?.setTranscribeMode(transcribeMode)
         assemblyAIService?.setFormatTurns(!liveDictationEnabled)
-        assemblyAIService?.setVocabularyPrompt(vocabularyPrompt)
+        assemblyAIService?.setVocabularyPrompt(effectiveVocabularyPrompt)
+        logDebug("Vocabulary: \(effectiveVocabularyPrompt.prefix(100))...")
         assemblyAIService?.connect()
         audioCaptureManager?.startCapture()
     }
@@ -840,21 +842,24 @@ class AppState: ObservableObject {
                     result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: " ")
                 }
             }
-            // Strip system command phrases that might leak through
+            // Strip system command phrases that might leak through (with optional trailing punctuation)
             let systemCommandPhrases = [
                 "window recent two", "window recent 2", "window recent",
                 "window previous", "window next",
                 "cancel that", "no wait",
                 "submit dictation", "send dictation",
-                "save to idea flow"
+                "save to idea flow",
+                "copy that", "paste that", "cut that", "undo that", "redo that",
+                "select all", "save that", "find that"
             ]
             for phrase in systemCommandPhrases {
-                if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))\\b", options: []) {
+                // Match phrase with optional trailing punctuation
+                if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b?", options: []) {
                     let range = NSRange(result.startIndex..<result.endIndex, in: result)
                     result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
                 }
             }
-            return result.trimmingCharacters(in: .whitespaces)
+            return result.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         // If it's a formatted turn (Cloud model with formatting ON), we use word-level isFinal
@@ -1562,17 +1567,61 @@ class AppState: ObservableObject {
 
     private func loadVocabularyPrompt() {
         vocabularyPrompt = UserDefaults.standard.string(forKey: "vocabulary_prompt") ?? ""
+        autoPopulateVocabulary = UserDefaults.standard.object(forKey: "auto_populate_vocabulary") as? Bool ?? true
     }
 
     func saveVocabularyPrompt(_ value: String) {
         let previous = vocabularyPrompt
         vocabularyPrompt = value
         UserDefaults.standard.set(value, forKey: "vocabulary_prompt")
-        
+
         if previous != value && microphoneMode != .off && !effectiveIsOffline {
             logDebug("Vocabulary prompt changed: Restarting services")
             restartServicesIfActive()
         }
+    }
+
+    func saveAutoPopulateVocabulary(_ value: Bool) {
+        autoPopulateVocabulary = value
+        UserDefaults.standard.set(value, forKey: "auto_populate_vocabulary")
+    }
+
+    /// Generates the effective vocabulary prompt combining user prompt + command phrases
+    var effectiveVocabularyPrompt: String {
+        var terms: [String] = []
+
+        // Add user-specified vocabulary (split by comma or newline)
+        if !vocabularyPrompt.isEmpty {
+            let userTerms = vocabularyPrompt
+                .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            terms.append(contentsOf: userTerms)
+        }
+
+        // Auto-populate with command phrases if enabled
+        if autoPopulateVocabulary {
+            // System command phrases
+            let systemPhrases = Self.systemCommandList.map { $0.phrase }
+            terms.append(contentsOf: systemPhrases)
+
+            // User voice command phrases
+            let userCommandPhrases = voiceCommands.filter { $0.isEnabled }.map { $0.phrase }
+            terms.append(contentsOf: userCommandPhrases)
+
+            // Wake/sleep phrases
+            terms.append(contentsOf: ["flow on", "flow off", "flow sleep", "wake up", "go to sleep"])
+        }
+
+        // Remove duplicates and limit to 100 terms (AssemblyAI limit)
+        let uniqueTerms = Array(Set(terms)).prefix(100)
+
+        // Format as JSON array for keyterms_prompt
+        if let jsonData = try? JSONSerialization.data(withJSONObject: Array(uniqueTerms)),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            return jsonString
+        }
+        return ""
     }
 
     private func loadIdeaFlowSettings() {

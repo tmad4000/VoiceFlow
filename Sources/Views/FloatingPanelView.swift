@@ -179,33 +179,31 @@ private struct ModeSelectionView: View {
     private var onModePill: some View {
         let isSelected = appState.microphoneMode == .on
         let color = isSelected ? Color.green : Color.secondary
-        
+
         return HStack(spacing: 0) {
             ModeButton(mode: .on, isSelected: isSelected, compact: true, plain: true) {
                 appState.setMode(.on)
             }
             .padding(.trailing, -4) // Pull arrow closer
-            
+
+            // Use menuIndicator to ensure proper menu presentation
             Menu {
-                Picker("Behavior", selection: Binding(
-                    get: { appState.activeBehavior },
-                    set: { appState.saveActiveBehavior($0) }
-                )) {
-                    ForEach(ActiveBehavior.allCases) { behavior in
+                ForEach(ActiveBehavior.allCases) { behavior in
+                    Button {
+                        appState.saveActiveBehavior(behavior)
+                    } label: {
                         Label(behavior.rawValue, systemImage: behavior.icon)
-                            .tag(behavior)
                     }
                 }
-                .pickerStyle(.inline)
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 7, weight: .bold))
                     .foregroundColor(color.opacity(isSelected ? 0.8 : 0.5))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 4)
+                    .frame(width: 16, height: 20)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .frame(width: 16)
+            .menuIndicator(.hidden)
+            .menuStyle(.borderlessButton)
         }
         .background(isSelected ? Color.green.opacity(0.15) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 6))

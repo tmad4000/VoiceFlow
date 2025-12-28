@@ -967,8 +967,8 @@ struct AddCommandSheet: View {
 struct DictationHistoryView: View {
     @EnvironmentObject var appState: AppState
     @State private var selection = Set<String>()
-    @State private var isAtBottom = true
-    @State private var lastHistoryCount = 0
+    @State private var shouldAutoScroll = true
+    @State private var lastScrollTime = Date()
 
     // Reversed history (oldest first, newest at bottom - like a chat)
     var reversedHistory: [String] {
@@ -988,6 +988,17 @@ struct DictationHistoryView: View {
                 }
 
                 Spacer()
+
+                // Scroll to bottom button
+                Button {
+                    shouldAutoScroll = true
+                } label: {
+                    Image(systemName: "arrow.down.to.line")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+                .help("Scroll to bottom")
+                .opacity(shouldAutoScroll ? 0.3 : 1.0)
 
                 if !selection.isEmpty {
                     Button("Copy Selected") {
@@ -1022,51 +1033,79 @@ struct DictationHistoryView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollViewReader { proxy in
-                    List(selection: $selection) {
-                        ForEach(reversedHistory, id: \.self) { entry in
-                            HStack {
-                                Text(entry)
-                                    .font(.system(size: 12))
-                                    .lineLimit(3)
-                                    .textSelection(.enabled)
-                                Spacer()
-                                Button {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(entry, forType: .string)
-                                } label: {
-                                    Image(systemName: "doc.on.doc")
-                                        .font(.system(size: 10))
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(reversedHistory.enumerated()), id: \.offset) { index, entry in
+                                VStack(alignment: .leading, spacing: 0) {
+                                    // Show divider every 10 entries for visual grouping
+                                    if index > 0 && index % 10 == 0 {
+                                        Divider()
+                                            .padding(.vertical, 8)
+                                    }
+
+                                    HStack(alignment: .top) {
+                                        Text(entry)
+                                            .font(.system(size: 12))
+                                            .textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                                        Button {
+                                            NSPasteboard.general.clearContents()
+                                            NSPasteboard.general.setString(entry, forType: .string)
+                                        } label: {
+                                            Image(systemName: "doc.on.doc")
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.secondary)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help("Copy to clipboard")
+                                    }
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 12)
+                                    .background(
+                                        selection.contains(entry)
+                                            ? Color.accentColor.opacity(0.2)
+                                            : Color.clear
+                                    )
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        if NSEvent.modifierFlags.contains(.command) {
+                                            if selection.contains(entry) {
+                                                selection.remove(entry)
+                                            } else {
+                                                selection.insert(entry)
+                                            }
+                                        } else {
+                                            selection = [entry]
+                                        }
+                                    }
                                 }
-                                .buttonStyle(.plain)
-                                .help("Copy to clipboard")
+                                .id(index)
                             }
-                            .padding(.vertical, 4)
-                            .id(entry)
                         }
+                        .padding(.vertical, 4)
                     }
-                    .listStyle(.inset)
                     .onAppear {
-                        // Scroll to bottom on appear
-                        if let last = reversedHistory.last {
-                            proxy.scrollTo(last, anchor: .bottom)
-                        }
-                        lastHistoryCount = appState.dictationHistory.count
+                        scrollToBottom(proxy: proxy)
                     }
-                    .onChange(of: appState.dictationHistory.count) { oldCount, newCount in
-                        // Only auto-scroll if we were at the bottom and there are new items
-                        if isAtBottom && newCount > oldCount {
-                            if let last = reversedHistory.last {
-                                withAnimation(.easeOut(duration: 0.2)) {
-                                    proxy.scrollTo(last, anchor: .bottom)
-                                }
+                    .onChange(of: appState.dictationHistory.count) { _, _ in
+                        if shouldAutoScroll {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                scrollToBottom(proxy: proxy)
                             }
                         }
-                        lastHistoryCount = newCount
                     }
+                    .simultaneousGesture(
+                        DragGesture().onChanged { _ in
+                            // User is scrolling manually, disable auto-scroll temporarily
+                            shouldAutoScroll = false
+                            lastScrollTime = Date()
+                        }
+                    )
                 }
 
                 // Footer hint
-                Text("Cmd+click to select multiple • Shift+click for range")
+                Text("Click to select • Cmd+click for multiple • Drag to select text")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
                     .padding(.horizontal)
@@ -1074,6 +1113,14 @@ struct DictationHistoryView: View {
             }
         }
         .background(Color(NSColor.textBackgroundColor))
+    }
+
+    private func scrollToBottom(proxy: ScrollViewProxy) {
+        if let lastIndex = reversedHistory.indices.last {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(lastIndex, anchor: .bottom)
+            }
+        }
     }
 }
 
