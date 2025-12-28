@@ -122,7 +122,7 @@ class AppState: ObservableObject {
     @Published var ideaFlowURL: String = ""
     @Published var isOffline: Bool = false
     @Published var dictationProvider: DictationProvider = .auto
-    @Published var sleepTimerEnabled: Bool = true
+    @Published var sleepTimerEnabled: Bool = false
     @Published var sleepTimerMinutes: Double = 15
     @Published var launchMode: MicrophoneMode = .sleep
 
@@ -1507,7 +1507,7 @@ class AppState: ObservableObject {
     }
 
     private func loadSleepTimerSettings() {
-        sleepTimerEnabled = UserDefaults.standard.object(forKey: "sleep_timer_enabled") as? Bool ?? true
+        sleepTimerEnabled = UserDefaults.standard.object(forKey: "sleep_timer_enabled") as? Bool ?? false
         let storedMinutes = UserDefaults.standard.double(forKey: "sleep_timer_minutes")
         if storedMinutes > 0 {
             sleepTimerMinutes = storedMinutes

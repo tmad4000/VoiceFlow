@@ -969,14 +969,26 @@ struct DictationHistoryView: View {
     @State private var selection = Set<String>()
     @State private var shouldAutoScroll = true
     @State private var lastScrollTime = Date()
+    @State private var searchText = ""
+    @State private var currentMatchIndex = 0
+    @State private var scrollProxy: ScrollViewProxy?
 
     // Reversed history (oldest first, newest at bottom - like a chat)
     var reversedHistory: [String] {
         Array(appState.dictationHistory.reversed())
     }
 
+    // Indices of entries matching search
+    var matchingIndices: [Int] {
+        guard !searchText.isEmpty else { return [] }
+        return reversedHistory.enumerated()
+            .filter { $0.element.localizedCaseInsensitiveContains(searchText) }
+            .map { $0.offset }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Header row
             HStack {
                 Text("Dictation History")
                     .font(.system(size: 13, weight: .semibold))
@@ -992,6 +1004,9 @@ struct DictationHistoryView: View {
                 // Scroll to bottom button
                 Button {
                     shouldAutoScroll = true
+                    if let proxy = scrollProxy, let lastIndex = reversedHistory.indices.last {
+                        withAnimation { proxy.scrollTo(lastIndex, anchor: .bottom) }
+                    }
                 } label: {
                     Image(systemName: "arrow.down.to.line")
                         .font(.system(size: 10))
@@ -1015,10 +1030,76 @@ struct DictationHistoryView: View {
                     appState.dictationHistory.removeAll()
                     appState.saveDictationHistory()
                     selection.removeAll()
+                    searchText = ""
                 }
                 .font(.system(size: 11))
             }
             .padding()
+
+            // Search bar
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                    .font(.system(size: 11))
+
+                TextField("Search history...", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .onChange(of: searchText) { _, _ in
+                        currentMatchIndex = 0
+                        jumpToCurrentMatch()
+                    }
+
+                if !searchText.isEmpty {
+                    // Match counter and navigation
+                    if !matchingIndices.isEmpty {
+                        Text("\(currentMatchIndex + 1)/\(matchingIndices.count)")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .frame(width: 40)
+
+                        Button {
+                            if currentMatchIndex > 0 {
+                                currentMatchIndex -= 1
+                                jumpToCurrentMatch()
+                            }
+                        } label: {
+                            Image(systemName: "chevron.up")
+                                .font(.system(size: 10))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(currentMatchIndex == 0)
+
+                        Button {
+                            if currentMatchIndex < matchingIndices.count - 1 {
+                                currentMatchIndex += 1
+                                jumpToCurrentMatch()
+                            }
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(currentMatchIndex >= matchingIndices.count - 1)
+                    } else {
+                        Text("No matches")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                            .font(.system(size: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+            .background(Color.secondary.opacity(0.1))
 
             Divider()
 
@@ -1036,6 +1117,11 @@ struct DictationHistoryView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(Array(reversedHistory.enumerated()), id: \.offset) { index, entry in
+                                let isMatch = matchingIndices.contains(index)
+                                let isCurrentMatch = !matchingIndices.isEmpty &&
+                                    currentMatchIndex < matchingIndices.count &&
+                                    matchingIndices[currentMatchIndex] == index
+
                                 VStack(alignment: .leading, spacing: 0) {
                                     // Show divider every 10 entries for visual grouping
                                     if index > 0 && index % 10 == 0 {
@@ -1044,10 +1130,18 @@ struct DictationHistoryView: View {
                                     }
 
                                     HStack(alignment: .top) {
-                                        Text(entry)
-                                            .font(.system(size: 12))
-                                            .textSelection(.enabled)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        // Highlight matching text
+                                        if isMatch && !searchText.isEmpty {
+                                            highlightedText(entry, highlight: searchText)
+                                                .font(.system(size: 12))
+                                                .textSelection(.enabled)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        } else {
+                                            Text(entry)
+                                                .font(.system(size: 12))
+                                                .textSelection(.enabled)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
 
                                         Button {
                                             NSPasteboard.general.clearContents()
@@ -1063,9 +1157,8 @@ struct DictationHistoryView: View {
                                     .padding(.vertical, 6)
                                     .padding(.horizontal, 12)
                                     .background(
-                                        selection.contains(entry)
-                                            ? Color.accentColor.opacity(0.2)
-                                            : Color.clear
+                                        isCurrentMatch ? Color.yellow.opacity(0.3) :
+                                        (selection.contains(entry) ? Color.accentColor.opacity(0.2) : Color.clear)
                                     )
                                     .contentShape(Rectangle())
                                     .onTapGesture {
@@ -1086,10 +1179,11 @@ struct DictationHistoryView: View {
                         .padding(.vertical, 4)
                     }
                     .onAppear {
+                        scrollProxy = proxy
                         scrollToBottom(proxy: proxy)
                     }
                     .onChange(of: appState.dictationHistory.count) { _, _ in
-                        if shouldAutoScroll {
+                        if shouldAutoScroll && searchText.isEmpty {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                                 scrollToBottom(proxy: proxy)
                             }
@@ -1121,6 +1215,39 @@ struct DictationHistoryView: View {
                 proxy.scrollTo(lastIndex, anchor: .bottom)
             }
         }
+    }
+
+    private func jumpToCurrentMatch() {
+        guard !matchingIndices.isEmpty,
+              currentMatchIndex < matchingIndices.count,
+              let proxy = scrollProxy else { return }
+
+        let targetIndex = matchingIndices[currentMatchIndex]
+        shouldAutoScroll = false
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo(targetIndex, anchor: .center)
+        }
+    }
+
+    private func highlightedText(_ text: String, highlight: String) -> some View {
+        guard !highlight.isEmpty else { return Text(text).eraseToAnyView() }
+
+        var attributedString = AttributedString(text)
+        var searchStart = attributedString.startIndex
+
+        while let range = attributedString[searchStart...].range(of: highlight, options: .caseInsensitive) {
+            attributedString[range].backgroundColor = .yellow
+            attributedString[range].foregroundColor = .black
+            searchStart = range.upperBound
+        }
+
+        return Text(attributedString).eraseToAnyView()
+    }
+}
+
+extension View {
+    func eraseToAnyView() -> AnyView {
+        AnyView(self)
     }
 }
 
