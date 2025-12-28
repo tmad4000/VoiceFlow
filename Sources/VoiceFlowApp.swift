@@ -41,7 +41,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSLog("[VoiceFlow] statusItem created: \(statusItem != nil), button: \(statusItem?.button != nil)")
 
         if let button = statusItem?.button {
-            if let image = NSImage(systemSymbolName: "mic.slash.fill", accessibilityDescription: "VoiceFlow") {
+            if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "VoiceFlow") {
                 button.image = image
                 NSLog("[VoiceFlow] Set SF Symbol image on button")
             } else {

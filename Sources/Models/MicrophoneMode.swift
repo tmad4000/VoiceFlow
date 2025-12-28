@@ -15,9 +15,9 @@ enum MicrophoneMode: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .off: return "mic.slash.fill"
-        case .sleep: return "moon.zzz.fill"
-        case .on: return "mic.fill"
+        case .off: return "waveform.slash"
+        case .sleep: return "waveform"
+        case .on: return "waveform"
         }
     }
 
