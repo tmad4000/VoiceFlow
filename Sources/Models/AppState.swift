@@ -657,7 +657,12 @@ class AppState: ObservableObject {
             let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
             if lastCommandEndIndex >= 0 && lastCommandEndIndex < turn.words.count - 1 {
                 let wordsAfter = turn.words[(lastCommandEndIndex + 1)...]
-                textToType = assembleDisplayText(from: Array(wordsAfter))
+                // Filter out punctuation-only words that often trail commands
+                let filteredWords = wordsAfter.filter { word in
+                    let stripped = word.text.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+                    return !stripped.isEmpty
+                }
+                textToType = assembleDisplayText(from: Array(filteredWords))
                 logDebug("Utterance had command: typing only remaining words: \"\(textToType)\"")
             } else {
                 // Command was at the end or covers everything, nothing more to type
@@ -800,11 +805,17 @@ class AppState: ObservableObject {
         let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
         let startIndex = max(typedFinalWordCount, lastCommandEndIndex + 1)
 
+        // Helper to filter out punctuation-only words
+        let filterPunctuation: (String) -> Bool = { word in
+            !word.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).isEmpty
+        }
+
         // If it's a formatted turn (Cloud model with formatting ON), we use word-level isFinal
         if turn.isFormatted {
             let finalWords = turn.words.filter { $0.isFinal == true }.map { $0.text }
             guard finalWords.count > startIndex else { return }
-            let newWords = finalWords[startIndex...]
+            let newWords = finalWords[startIndex...].filter(filterPunctuation)
+            guard !newWords.isEmpty else { return }
             let prefix = startIndex > 0 ? " " : ""
             let textToType = prefix + newWords.joined(separator: " ")
             logDebug("Live typing delta (formatted): \"\(textToType)\"")
@@ -824,7 +835,11 @@ class AppState: ObservableObject {
                 typedFinalWordCount = 0 // Reset for next utterance
                 return
             }
-            let newWords = allWords[startIndex...]
+            let newWords = allWords[startIndex...].filter(filterPunctuation)
+            guard !newWords.isEmpty else {
+                typedFinalWordCount = 0
+                return
+            }
             let prefix = startIndex > 0 ? " " : ""
             let textToType = prefix + newWords.joined(separator: " ")
             logDebug("Live typing delta (final): \"\(textToType)\"")

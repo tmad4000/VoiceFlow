@@ -966,16 +966,44 @@ struct AddCommandSheet: View {
 
 struct DictationHistoryView: View {
     @EnvironmentObject var appState: AppState
+    @State private var selection = Set<String>()
+    @State private var isAtBottom = true
+    @State private var lastHistoryCount = 0
+
+    // Reversed history (oldest first, newest at bottom - like a chat)
+    var reversedHistory: [String] {
+        Array(appState.dictationHistory.reversed())
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Dictation History")
                     .font(.system(size: 13, weight: .semibold))
+
+                if !selection.isEmpty {
+                    Text("(\(selection.count) selected)")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+
                 Spacer()
+
+                if !selection.isEmpty {
+                    Button("Copy Selected") {
+                        let selectedText = reversedHistory
+                            .filter { selection.contains($0) }
+                            .joined(separator: "\n")
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(selectedText, forType: .string)
+                    }
+                    .font(.system(size: 11))
+                }
+
                 Button("Clear History") {
                     appState.dictationHistory.removeAll()
                     appState.saveDictationHistory()
+                    selection.removeAll()
                 }
                 .font(.system(size: 11))
             }
@@ -993,27 +1021,56 @@ struct DictationHistoryView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List {
-                    ForEach(appState.dictationHistory, id: \.self) { entry in
-                        HStack {
-                            Text(entry)
-                                .font(.system(size: 12))
-                                .lineLimit(3)
-                            Spacer()
-                            Button {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(entry, forType: .string)
-                            } label: {
-                                Image(systemName: "doc.on.doc")
-                                    .font(.system(size: 10))
+                ScrollViewReader { proxy in
+                    List(selection: $selection) {
+                        ForEach(reversedHistory, id: \.self) { entry in
+                            HStack {
+                                Text(entry)
+                                    .font(.system(size: 12))
+                                    .lineLimit(3)
+                                    .textSelection(.enabled)
+                                Spacer()
+                                Button {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(entry, forType: .string)
+                                } label: {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.system(size: 10))
+                                }
+                                .buttonStyle(.plain)
+                                .help("Copy to clipboard")
                             }
-                            .buttonStyle(.plain)
-                            .help("Copy to clipboard")
+                            .padding(.vertical, 4)
+                            .id(entry)
                         }
-                        .padding(.vertical, 4)
+                    }
+                    .listStyle(.inset)
+                    .onAppear {
+                        // Scroll to bottom on appear
+                        if let last = reversedHistory.last {
+                            proxy.scrollTo(last, anchor: .bottom)
+                        }
+                        lastHistoryCount = appState.dictationHistory.count
+                    }
+                    .onChange(of: appState.dictationHistory.count) { oldCount, newCount in
+                        // Only auto-scroll if we were at the bottom and there are new items
+                        if isAtBottom && newCount > oldCount {
+                            if let last = reversedHistory.last {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo(last, anchor: .bottom)
+                                }
+                            }
+                        }
+                        lastHistoryCount = newCount
                     }
                 }
-                .listStyle(.inset)
+
+                // Footer hint
+                Text("Cmd+click to select multiple • Shift+click for range")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
             }
         }
         .background(Color(NSColor.textBackgroundColor))
