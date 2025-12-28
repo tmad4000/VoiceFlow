@@ -157,6 +157,8 @@ class AppState: ObservableObject {
     private var sleepTimer: Timer?
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
+    private var wakeUpTime: Date?
+    private let wakeUpGracePeriod: TimeInterval = 0.8  // Don't type for 0.8s after waking
     private let commandPrefixToken = "voiceflow"
     private let expectsFormattedTurns = true
     private var pendingCommandExecutions = Set<PendingExecutionKey>()
@@ -408,7 +410,8 @@ class AppState: ObservableObject {
             currentTranscript = ""
             currentWords = []
             // Mark that we just woke up to prevent the "wake up" phrase from typing
-            currentUtteranceHadCommand = true 
+            currentUtteranceHadCommand = true
+            wakeUpTime = Date()  // Grace period to ignore residual wake word audio
         }
 
         switch mode {
@@ -622,6 +625,12 @@ class AppState: ObservableObject {
     private func handleDictationTurn(_ turn: TranscriptTurn) {
         logger.info("handleDictationTurn: isFormatted=\(turn.isFormatted), endOfTurn=\(turn.endOfTurn), transcript=\"\(turn.transcript.prefix(50))...\"")
 
+        // Skip typing during wake-up grace period to avoid typing residual wake word audio
+        if let wakeTime = wakeUpTime, Date().timeIntervalSince(wakeTime) < wakeUpGracePeriod {
+            logger.debug("Skipping dictation during wake-up grace period")
+            return
+        }
+
         if forceEndPending, let requestedAt = forceEndRequestedAt,
            Date().timeIntervalSince(requestedAt) > forceEndTimeoutSeconds {
             logger.info("Force end request expired without end-of-turn")
@@ -730,7 +739,17 @@ class AppState: ObservableObject {
         if !isLiteral && processed.lowercased().hasPrefix("save to idea flow") {
             return "" // Handled by processVoiceCommands
         }
-        
+
+        // 1c. Strip wake-up phrases that might leak through after mode switch
+        let wakeUpPhrases = ["wake up", "microphone on", "flow on"]
+        for phrase in wakeUpPhrases {
+            if processed.lowercased().hasPrefix(phrase) {
+                processed = String(processed.dropFirst(phrase.count))
+                processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
+        }
+
         // 2. Handle trailing mode-switch commands if they are at the very end
         // This allows "Hello world microphone off" to just type "Hello world"
         if !isLiteral {
@@ -772,6 +791,11 @@ class AppState: ObservableObject {
 
 
     private func handleLiveDictationTurn(_ turn: TranscriptTurn) {
+        // Skip typing during wake-up grace period to avoid typing residual wake word audio
+        if let wakeTime = wakeUpTime, Date().timeIntervalSince(wakeTime) < wakeUpGracePeriod {
+            return
+        }
+
         // If utterance had a command, we only care about words AFTER the command
         let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
         let startIndex = max(typedFinalWordCount, lastCommandEndIndex + 1)

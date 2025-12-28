@@ -654,15 +654,59 @@ struct VoiceCommandsSettingsView: View {
     @EnvironmentObject var appState: AppState
     @State private var selectedCommand: VoiceCommand?
     @State private var showingAddSheet = false
+    @State private var searchText = ""
+
+    var filteredSystemCommands: [(phrase: String, description: String)] {
+        if searchText.isEmpty {
+            return AppState.systemCommandList
+        }
+        return AppState.systemCommandList.filter {
+            $0.phrase.localizedCaseInsensitiveContains(searchText) ||
+            $0.description.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    var filteredUserCommands: [VoiceCommand] {
+        if searchText.isEmpty {
+            return appState.voiceCommands
+        }
+        return appState.voiceCommands.filter {
+            $0.phrase.localizedCaseInsensitiveContains(searchText) ||
+            ($0.replacementText ?? "").localizedCaseInsensitiveContains(searchText)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
+            // Header with search
             HStack {
                 Text("Voice Commands")
                     .font(.system(size: 13, weight: .semibold))
 
                 Spacer()
+
+                // Search field
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 11))
+                    TextField("Search", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .frame(width: 100)
+                    if !searchText.isEmpty {
+                        Button(action: { searchText = "" }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                                .font(.system(size: 10))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.secondary.opacity(0.1))
+                .cornerRadius(6)
 
                 Button(action: { showingAddSheet = true }) {
                     Image(systemName: "plus")
@@ -675,16 +719,14 @@ struct VoiceCommandsSettingsView: View {
 
             // Command list
             List {
-                Section(header: Text("User Commands")) {
-                    ForEach(appState.voiceCommands) { command in
-                        VoiceCommandRow(command: command)
-                            .tag(command)
-                    }
-                    .onDelete(perform: deleteCommands)
-                }
-
-                Section(header: Text("System Commands")) {
-                    ForEach(AppState.systemCommandList, id: \.phrase) { command in
+                // System Commands at top (pinned)
+                Section(header: HStack {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(.orange)
+                    Text("System Commands")
+                }) {
+                    ForEach(filteredSystemCommands, id: \.phrase) { command in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("\"\(command.phrase)\"")
@@ -694,15 +736,25 @@ struct VoiceCommandsSettingsView: View {
                                     .foregroundColor(.secondary)
                             }
                             Spacer()
-                            Text("System")
+                            Text("Built-in")
                                 .font(.system(size: 9, weight: .bold))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.2))
+                                .foregroundColor(.orange)
+                                .background(Color.orange.opacity(0.15))
                                 .cornerRadius(4)
                         }
                         .padding(.vertical, 4)
                     }
+                }
+
+                // User Commands
+                Section(header: Text("Your Commands")) {
+                    ForEach(filteredUserCommands) { command in
+                        VoiceCommandRow(command: command)
+                            .tag(command)
+                    }
+                    .onDelete(perform: deleteCommands)
                 }
             }
             .listStyle(.inset)
@@ -724,7 +776,13 @@ struct VoiceCommandsSettingsView: View {
     }
 
     func deleteCommands(at offsets: IndexSet) {
-        appState.voiceCommands.remove(atOffsets: offsets)
+        // Map filtered indices back to original indices
+        let commandsToDelete = offsets.map { filteredUserCommands[$0] }
+        for command in commandsToDelete {
+            if let index = appState.voiceCommands.firstIndex(where: { $0.id == command.id }) {
+                appState.voiceCommands.remove(at: index)
+            }
+        }
         appState.saveVoiceCommands()
     }
 }

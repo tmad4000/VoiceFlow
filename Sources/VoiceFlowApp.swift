@@ -67,15 +67,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "VoiceFlow", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
 
-        offMenuItem = NSMenuItem(title: "Off", action: #selector(setModeOff), keyEquivalent: "")
+        offMenuItem = NSMenuItem(title: "Off", action: #selector(setModeOff), keyEquivalent: "0")
+        offMenuItem?.keyEquivalentModifierMask = [.control, .option, .command]
         offMenuItem?.target = self
         menu.addItem(offMenuItem!)
 
-        onMenuItem = NSMenuItem(title: "On", action: #selector(setModeOn), keyEquivalent: "")
+        onMenuItem = NSMenuItem(title: "On", action: #selector(setModeOn), keyEquivalent: "1")
+        onMenuItem?.keyEquivalentModifierMask = [.control, .option, .command]
         onMenuItem?.target = self
         menu.addItem(onMenuItem!)
 
-        sleepMenuItem = NSMenuItem(title: "Sleep", action: #selector(setModeSleep), keyEquivalent: "")
+        sleepMenuItem = NSMenuItem(title: "Sleep", action: #selector(setModeSleep), keyEquivalent: "2")
+        sleepMenuItem?.keyEquivalentModifierMask = [.control, .option, .command]
         sleepMenuItem?.target = self
         menu.addItem(sleepMenuItem!)
 
