@@ -1100,12 +1100,18 @@ class AppState: ObservableObject {
             return $0.startWordIndex < $1.startWordIndex
         }
 
-        for match in matches {
+        for (index, match) in matches.enumerated() {
             guard match.isStable else { continue }
             let lastEndIndex = lastExecutedEndWordIndexByCommand[match.key] ?? -1
             guard match.endWordIndex > lastEndIndex else { continue }
 
-            if match.isPrefixed || match.haltsProcessing || commandDelayMs <= 0 {
+            // Check if there's another command immediately following this one
+            let hasFollowingCommand = matches.dropFirst(index + 1).contains { nextMatch in
+                nextMatch.isStable && nextMatch.startWordIndex == match.endWordIndex + 1
+            }
+
+            // Skip delay if: prefixed, halts processing, delay is 0, OR followed by another command
+            if match.isPrefixed || match.haltsProcessing || commandDelayMs <= 0 || hasFollowingCommand {
                 executeMatch(match)
                 if match.haltsProcessing {
                     break
