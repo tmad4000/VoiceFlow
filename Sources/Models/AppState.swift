@@ -141,6 +141,8 @@ class AppState: ObservableObject {
         ("send dictation", "Force finalize and type current speech"),
         ("window recent", "Switch to previous application"),
         ("window recent 2", "Switch to 2nd most recent application"),
+        ("window next", "Cycle to next window in same app (⌘`)"),
+        ("window previous", "Cycle to previous window in same app (⌘⇧`)"),
         ("focus [app]", "Switch to a running application by name"),
         ("spell [text]", "Type characters one-by-one without spaces"),
         ("save to idea flow", "Copy last dictation and open Idea Flow")
@@ -167,6 +169,7 @@ class AppState: ObservableObject {
     private let undoShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command])
     private var typedFinalWordCount = 0
     private var didTypeDictationThisUtterance = false
+    private var hasTypedInSession = false  // Tracks if we've typed anything since going On
     private var forceEndPending = false
     private var forceEndRequestedAt: Date?
     private let forceEndTimeoutSeconds: TimeInterval = 2.0
@@ -414,10 +417,17 @@ class AppState: ObservableObject {
             wakeUpTime = Date()  // Grace period to ignore residual wake word audio
         }
 
+        // Reset session typing state when leaving On mode or starting fresh
+        if mode != .on {
+            hasTypedInSession = false
+        } else if previousMode == .off {
+            hasTypedInSession = false
+        }
+
         switch mode {
         case .off:
             // If we are currently in an utterance, we might want to wait a bit
-            // but for now, let's just stop. 
+            // but for now, let's just stop.
             // IMPROVEMENT: The system command caller will handle the delay if needed.
             stopListening()
         case .on:
@@ -704,6 +714,7 @@ class AppState: ObservableObject {
         typeText(processedText, appendSpace: true)
         if !processedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             didTypeDictationThisUtterance = true
+            hasTypedInSession = true
         }
         
         if let turnOrder = turn.turnOrder {
@@ -810,18 +821,58 @@ class AppState: ObservableObject {
             !word.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).isEmpty
         }
 
+        // Helper to process inline replacements (new line, spacebar, etc.)
+        let processInlineReplacements: (String) -> String = { text in
+            var result = text
+            // Replace "new line" / "newline" with actual newline
+            let newlinePatterns = ["new line", "newline"]
+            for pattern in newlinePatterns {
+                if let regex = try? NSRegularExpression(pattern: "(?i)\(pattern)", options: []) {
+                    let range = NSRange(result.startIndex..<result.endIndex, in: result)
+                    result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "\n")
+                }
+            }
+            // Replace "spacebar" / "space bar" with space
+            let spacePatterns = ["spacebar", "space bar"]
+            for pattern in spacePatterns {
+                if let regex = try? NSRegularExpression(pattern: "(?i)\(pattern)", options: []) {
+                    let range = NSRange(result.startIndex..<result.endIndex, in: result)
+                    result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: " ")
+                }
+            }
+            // Strip system command phrases that might leak through
+            let systemCommandPhrases = [
+                "window recent two", "window recent 2", "window recent",
+                "window previous", "window next",
+                "cancel that", "no wait",
+                "submit dictation", "send dictation",
+                "save to idea flow"
+            ]
+            for phrase in systemCommandPhrases {
+                if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))\\b", options: []) {
+                    let range = NSRange(result.startIndex..<result.endIndex, in: result)
+                    result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+                }
+            }
+            return result.trimmingCharacters(in: .whitespaces)
+        }
+
         // If it's a formatted turn (Cloud model with formatting ON), we use word-level isFinal
         if turn.isFormatted {
             let finalWords = turn.words.filter { $0.isFinal == true }.map { $0.text }
             guard finalWords.count > startIndex else { return }
             let newWords = finalWords[startIndex...].filter(filterPunctuation)
             guard !newWords.isEmpty else { return }
-            let prefix = startIndex > 0 ? " " : ""
-            let textToType = prefix + newWords.joined(separator: " ")
+            // Add space if continuing within utterance OR if we've typed before in this session
+            let needsSpace = startIndex > 0 || hasTypedInSession
+            let prefix = needsSpace ? " " : ""
+            let rawText = prefix + newWords.joined(separator: " ")
+            let textToType = processInlineReplacements(rawText)
             logDebug("Live typing delta (formatted): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
             if !textToType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 didTypeDictationThisUtterance = true
+                hasTypedInSession = true
             }
             typedFinalWordCount = finalWords.count
             return
@@ -840,12 +891,16 @@ class AppState: ObservableObject {
                 typedFinalWordCount = 0
                 return
             }
-            let prefix = startIndex > 0 ? " " : ""
-            let textToType = prefix + newWords.joined(separator: " ")
+            // Add space if continuing within utterance OR if we've typed before in this session
+            let needsSpace = startIndex > 0 || hasTypedInSession
+            let prefix = needsSpace ? " " : ""
+            let rawText = prefix + newWords.joined(separator: " ")
+            let textToType = processInlineReplacements(rawText)
             logDebug("Live typing delta (final): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
             if !textToType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 didTypeDictationThisUtterance = true
+                hasTypedInSession = true
             }
             typedFinalWordCount = 0 // Reset after final
         } else {
@@ -962,6 +1017,13 @@ class AppState: ObservableObject {
                 (phrase: "window recent", key: "system.window_recent", name: "Previous Window", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 1) } as () -> Void),
                 (phrase: "window recent 2", key: "system.window_recent_2", name: "Previous Window 2", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 2) } as () -> Void),
                 (phrase: "window recent two", key: "system.window_recent_2", name: "Previous Window 2", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 2) } as () -> Void),
+                // Window cycling within same app (Cmd+` and Cmd+Shift+`)
+                (phrase: "window next", key: "system.window_next", name: "Next Window", haltsProcessing: true, action: { [weak self] in
+                    self?.executeKeyboardShortcut(KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Grave), modifiers: [.command]))
+                } as () -> Void),
+                (phrase: "window previous", key: "system.window_previous", name: "Previous Window", haltsProcessing: true, action: { [weak self] in
+                    self?.executeKeyboardShortcut(KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Grave), modifiers: [.command, .shift]))
+                } as () -> Void),
                 (phrase: "save to idea flow", key: "system.save_ideaflow", name: "Idea Flow", haltsProcessing: true, action: { [weak self] in self?.saveToIdeaFlow() } as () -> Void)
             ])
         }

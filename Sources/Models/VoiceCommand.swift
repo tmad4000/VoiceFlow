@@ -120,6 +120,7 @@ struct KeyboardShortcut: Codable, Equatable, Hashable {
         case kVK_ANSI_7: return "7"
         case kVK_ANSI_8: return "8"
         case kVK_ANSI_9: return "9"
+        case kVK_ANSI_Grave: return "`"
         default: return "?"
         }
     }
