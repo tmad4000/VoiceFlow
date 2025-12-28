@@ -129,7 +129,10 @@ class AppState: ObservableObject {
     static let systemCommandList: [(phrase: String, description: String)] = [
         ("wake up", "Switch to On mode"),
         ("microphone on", "Switch to On mode"),
+        ("flow on", "Switch to On mode"),
         ("go to sleep", "Switch to Sleep mode"),
+        ("flow sleep", "Switch to Sleep mode"),
+        ("flow off", "Turn microphone completely Off"),
         ("microphone off", "Turn microphone completely Off"),
         ("stop dictation", "Turn microphone completely Off"),
         ("cancel that", "Undo last keyboard command"),
@@ -161,6 +164,7 @@ class AppState: ObservableObject {
     private let cancelWindowSeconds: TimeInterval = 2
     private let undoShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command])
     private var typedFinalWordCount = 0
+    private var didTypeDictationThisUtterance = false
     private var forceEndPending = false
     private var forceEndRequestedAt: Date?
     private let forceEndTimeoutSeconds: TimeInterval = 2.0
@@ -626,13 +630,36 @@ class AppState: ObservableObject {
         }
 
         let isForceEndTurn = forceEndPending && turn.endOfTurn
-        
-        guard !currentUtteranceHadCommand || isForceEndTurn else {
-            logger.debug("Skipping - utterance had command and not a forced end")
-            return
+
+        let rawTranscript: String
+        if let utterance = turn.utterance, utterance.count > turn.transcript.count {
+            rawTranscript = utterance
+        } else if turn.transcript.isEmpty {
+            rawTranscript = turn.utterance ?? ""
+        } else {
+            rawTranscript = turn.transcript
         }
+
+        var textToType = rawTranscript
+        
+        // If utterance had a command, we might have already flushed the prefix.
+        // We only want to type what came AFTER the commands.
+        if currentUtteranceHadCommand && !isForceEndTurn {
+            let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
+            if lastCommandEndIndex >= 0 && lastCommandEndIndex < turn.words.count - 1 {
+                let wordsAfter = turn.words[(lastCommandEndIndex + 1)...]
+                textToType = assembleDisplayText(from: Array(wordsAfter))
+                logDebug("Utterance had command: typing only remaining words: \"\(textToType)\"")
+            } else {
+                // Command was at the end or covers everything, nothing more to type
+                logger.debug("Command was at end of utterance")
+                if didTypeDictationThisUtterance {
+                    return
+                }
+            }
+        }
+        
         let shouldType = turn.isFormatted || (!expectsFormattedTurns && turn.endOfTurn) || isForceEndTurn
-        var textToType = turn.transcript
         
         if textToType.isEmpty, isForceEndTurn {
             textToType = turn.utterance ?? assembleDisplayText(from: turn.words)
@@ -661,6 +688,9 @@ class AppState: ObservableObject {
         let processedText = preprocessDictation(textToType)
         logDebug("Initiating type action for turn \(turn.turnOrder ?? -1): \"\(processedText.prefix(20))...\"")
         typeText(processedText, appendSpace: true)
+        if !processedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            didTypeDictationThisUtterance = true
+        }
         
         if let turnOrder = turn.turnOrder {
             lastTypedTurnOrder = turnOrder
@@ -704,7 +734,7 @@ class AppState: ObservableObject {
         // 2. Handle trailing mode-switch commands if they are at the very end
         // This allows "Hello world microphone off" to just type "Hello world"
         if !isLiteral {
-            let trailingCommands = ["microphone off", "stop dictation", "go to sleep", "submit dictation", "send dictation"]
+            let trailingCommands = ["microphone off", "flow off", "stop dictation", "go to sleep", "flow sleep", "submit dictation", "send dictation"]
             for cmd in trailingCommands {
                 if processed.lowercased().hasSuffix(cmd) {
                     processed = String(processed.prefix(processed.count - cmd.count))
@@ -742,15 +772,22 @@ class AppState: ObservableObject {
 
 
     private func handleLiveDictationTurn(_ turn: TranscriptTurn) {
+        // If utterance had a command, we only care about words AFTER the command
+        let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
+        let startIndex = max(typedFinalWordCount, lastCommandEndIndex + 1)
+
         // If it's a formatted turn (Cloud model with formatting ON), we use word-level isFinal
         if turn.isFormatted {
             let finalWords = turn.words.filter { $0.isFinal == true }.map { $0.text }
-            guard finalWords.count > typedFinalWordCount else { return }
-            let newWords = finalWords[typedFinalWordCount...]
-            let prefix = typedFinalWordCount > 0 ? " " : ""
+            guard finalWords.count > startIndex else { return }
+            let newWords = finalWords[startIndex...]
+            let prefix = startIndex > 0 ? " " : ""
             let textToType = prefix + newWords.joined(separator: " ")
             logDebug("Live typing delta (formatted): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
+            if !textToType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                didTypeDictationThisUtterance = true
+            }
             typedFinalWordCount = finalWords.count
             return
         }
@@ -759,23 +796,21 @@ class AppState: ObservableObject {
         if turn.endOfTurn {
             // This is a FinalTranscript
             let allWords = turn.words.map { $0.text }
-            guard allWords.count > typedFinalWordCount else {
+            guard allWords.count > startIndex else {
                 typedFinalWordCount = 0 // Reset for next utterance
                 return
             }
-            let newWords = allWords[typedFinalWordCount...]
-            let prefix = typedFinalWordCount > 0 ? " " : ""
+            let newWords = allWords[startIndex...]
+            let prefix = startIndex > 0 ? " " : ""
             let textToType = prefix + newWords.joined(separator: " ")
             logDebug("Live typing delta (final): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
+            if !textToType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                didTypeDictationThisUtterance = true
+            }
             typedFinalWordCount = 0 // Reset after final
         } else {
-            // This is a PartialTranscript
-            // We can type words that are "stable" but AssemblyAI PartialTranscripts 
-            // don't always have a stable word count.
-            // For now, let's wait for FinalTranscript in live mode or 
-            // implement a rolling delta if partials become too slow.
-            // IMPROVEMENT: Implement a better rolling delta for partials if needed.
+            // PartialTranscript...
         }
     }
 
@@ -786,6 +821,7 @@ class AppState: ObservableObject {
         let isPrefixed: Bool
         let isStable: Bool
         let haltsProcessing: Bool
+        let turn: TranscriptTurn
         let action: () -> Void
     }
 
@@ -845,22 +881,33 @@ class AppState: ObservableObject {
         if microphoneMode == .sleep {
             systemCommands.append(contentsOf: [
                 (phrase: "wake up", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void),
-                (phrase: "microphone on", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void)
+                (phrase: "microphone on", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void),
+                (phrase: "flow on", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void)
             ])
         } else if microphoneMode == .on {
             systemCommands.append(contentsOf: [
-                (phrase: "go to sleep", key: "system.go_to_sleep", name: "Sleep", haltsProcessing: true, action: { [weak self] in 
+                (phrase: "go to sleep", key: "system.go_to_sleep", name: "Sleep", haltsProcessing: true, action: { [weak self] in
                     // Delay slightly to allow any preceding dictation in the same utterance to type
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         self?.setMode(.sleep)
                     }
                 } as () -> Void),
-                (phrase: "microphone off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in 
+                (phrase: "flow sleep", key: "system.go_to_sleep", name: "Sleep", haltsProcessing: true, action: { [weak self] in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        self?.setMode(.sleep)
+                    }
+                } as () -> Void),
+                (phrase: "microphone off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         self?.setMode(.off)
                     }
                 } as () -> Void),
-                (phrase: "stop dictation", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in 
+                (phrase: "flow off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        self?.setMode(.off)
+                    }
+                } as () -> Void),
+                (phrase: "stop dictation", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         self?.setMode(.off)
                     }
@@ -893,6 +940,7 @@ class AppState: ObservableObject {
                     isPrefixed: isPrefixed,
                     isStable: isStable,
                     haltsProcessing: systemCommand.haltsProcessing,
+                    turn: turn,
                     action: { [weak self] in
                         systemCommand.action()
                         self?.triggerCommandFlash(name: systemCommand.name)
@@ -921,6 +969,7 @@ class AppState: ObservableObject {
                         isPrefixed: isPrefixed,
                         isStable: isStable,
                         haltsProcessing: false,
+                        turn: turn,
                         action: { [weak self] in
                             if let text = command.replacementText, !text.isEmpty {
                                 self?.typeText(text, appendSpace: true)
@@ -963,12 +1012,47 @@ class AppState: ObservableObject {
         currentUtteranceHadCommand = false
         pendingCommandExecutions.removeAll()
         typedFinalWordCount = 0
+        didTypeDictationThisUtterance = false
         forceEndPending = false
         forceEndRequestedAt = nil
     }
 
     private func executeMatch(_ match: PendingCommandMatch) {
         logDebug("Executing command: \(match.key)")
+        
+        // Pre-emptive Flush: Type any words BEFORE the command phrase
+        if microphoneMode == .on && activeBehavior != .command {
+            let wordsBefore = match.turn.words.prefix(match.startWordIndex)
+            if !wordsBefore.isEmpty {
+                // Determine what has already been typed
+                let untypedWords: [String]
+                if liveDictationEnabled {
+                    // In live mode, we track by count
+                    if wordsBefore.count > typedFinalWordCount {
+                        untypedWords = wordsBefore[typedFinalWordCount...].map { $0.text }
+                        typedFinalWordCount = wordsBefore.count
+                    } else {
+                        untypedWords = []
+                    }
+                } else {
+                    // In turn-based mode, if we are in the middle of a turn that hasn't typed yet
+                    // we type the preceding words now.
+                    // However, turn-based usually waits for end-of-turn. 
+                    // If a command is detected MID-turn, we should flush the prefix.
+                    untypedWords = wordsBefore.map { $0.text }
+                }
+                
+                if !untypedWords.isEmpty {
+                    let textToFlush = untypedWords.joined(separator: " ")
+                    logDebug("Pre-emptive flush: \"\(textToFlush)\"")
+                    typeText(textToFlush, appendSpace: true)
+                    if !textToFlush.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        didTypeDictationThisUtterance = true
+                    }
+                }
+            }
+        }
+
         match.action()
         
         // Add to dictation history with a command marker
@@ -1451,6 +1535,9 @@ class AppState: ObservableObject {
             if !processed.isEmpty {
                 logDebug("Force pushing buffer: \"\(processed.prefix(20))...\"")
                 typeText(processed, appendSpace: true)
+                if !processed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    didTypeDictationThisUtterance = true
+                }
             }
             
             currentTranscript = ""
