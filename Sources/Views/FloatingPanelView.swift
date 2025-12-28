@@ -197,9 +197,9 @@ private struct ModeSelectionView: View {
                 }
             } label: {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundColor(color.opacity(isSelected ? 0.8 : 0.5))
-                    .frame(width: 16, height: 20)
+                    .font(.system(size: 6, weight: .semibold))
+                    .foregroundColor(color.opacity(isSelected ? 0.6 : 0.4))
+                    .frame(width: 12, height: 16)
                     .contentShape(Rectangle())
             }
             .menuIndicator(.hidden)
