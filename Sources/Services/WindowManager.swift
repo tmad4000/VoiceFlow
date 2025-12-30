@@ -3,9 +3,28 @@ import os.log
 
 private let logger = Logger(subsystem: "com.voiceflow", category: "WindowManager")
 
+enum FocusMatchType {
+    case exact
+    case prefix
+    case contains
+}
+
+enum FocusResult {
+    case focused(appName: String, matchType: FocusMatchType)
+    case notFound(query: String)
+    case emptyQuery
+}
+
 class WindowManager: ObservableObject {
     private var appHistory: [NSRunningApplication] = []
     private let maxHistory = 10
+
+    private let focusAliases: [String: String] = [
+        "imessage": "messages",
+        "i message": "messages",
+        "message": "messages",
+        "messages app": "messages"
+    ]
     
     init() {
         setupNotifications()
@@ -70,28 +89,44 @@ class WindowManager: ObservableObject {
         targetApp.activate()
     }
     
-    func focusApp(named query: String) {
-        let apps = NSWorkspace.shared.runningApplications
-        let lowerQuery = query.lowercased().trimmingCharacters(in: .whitespaces)
+    private func normalizeQuery(_ text: String) -> String {
+        let lower = text.lowercased()
+        let allowed = CharacterSet.alphanumerics.union(.whitespaces)
+        let cleaned = lower.unicodeScalars.map { allowed.contains($0) ? Character($0) : " " }
+        let collapsed = String(cleaned).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func focusApp(named query: String) -> FocusResult {
+        let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+        var lowerQuery = normalizeQuery(query)
+        if let alias = focusAliases[lowerQuery] {
+            lowerQuery = alias
+        }
+        guard !lowerQuery.isEmpty else {
+            logger.warning("Focus requested with empty query")
+            return .emptyQuery
+        }
         
         // 1. Try exact match
-        if let exactMatch = apps.first(where: { $0.localizedName?.lowercased() == lowerQuery }) {
+        if let exactMatch = apps.first(where: { normalizeQuery($0.localizedName ?? "") == lowerQuery }) {
             exactMatch.activate()
-            return
+            return .focused(appName: exactMatch.localizedName ?? query, matchType: .exact)
         }
         
         // 2. Try prefix match
-        if let prefixMatch = apps.first(where: { $0.localizedName?.lowercased().hasPrefix(lowerQuery) == true }) {
+        if let prefixMatch = apps.first(where: { normalizeQuery($0.localizedName ?? "").hasPrefix(lowerQuery) }) {
             prefixMatch.activate()
-            return
+            return .focused(appName: prefixMatch.localizedName ?? query, matchType: .prefix)
         }
         
         // 3. Try contains match
-        if let containsMatch = apps.first(where: { $0.localizedName?.lowercased().contains(lowerQuery) == true }) {
+        if let containsMatch = apps.first(where: { normalizeQuery($0.localizedName ?? "").contains(lowerQuery) }) {
             containsMatch.activate()
-            return
+            return .focused(appName: containsMatch.localizedName ?? query, matchType: .contains)
         }
         
         logger.warning("No running app found matching: \(query)")
+        return .notFound(query: query)
     }
 }

@@ -42,6 +42,15 @@ struct SettingsView: View {
 
 // MARK: - Reusable Components
 
+private let globalShortcutHelpItems: [(keys: String, description: String)] = [
+    ("⌃⌥⌘Space", "Push-to-Talk (Hold)"),
+    ("⌃⌘V", "Paste last utterance"),
+    ("⌃⌥⌘1", "Mode: ON"),
+    ("⌃⌥⌘2", "Mode: SLEEP"),
+    ("⌃⌥⌘0", "Mode: OFF"),
+    ("⌘,", "Open Settings")
+]
+
 struct SettingRow<Content: View>: View {
     let title: String
     let subtitle: String?
@@ -434,12 +443,9 @@ struct GeneralSettingsView: View {
                         Text("Global Shortcuts")
                             .font(.system(size: 13, weight: .semibold))
 
-                        ShortcutHelpRow(keys: "⌃⌥⌘Space", description: "Push-to-Talk (Hold)")
-                        ShortcutHelpRow(keys: "⌃⌘V", description: "Paste last utterance")
-                        ShortcutHelpRow(keys: "⌃⌥⌘1", description: "Mode: ON")
-                        ShortcutHelpRow(keys: "⌃⌥⌘2", description: "Mode: SLEEP")
-                        ShortcutHelpRow(keys: "⌃⌥⌘0", description: "Mode: OFF")
-                        ShortcutHelpRow(keys: "⌘,", description: "Open Settings")
+                        ForEach(globalShortcutHelpItems, id: \.keys) { item in
+                            ShortcutHelpRow(keys: item.keys, description: item.description)
+                        }
                     }
                     .padding(4)
                 }
@@ -958,6 +964,17 @@ struct VoiceCommandsSettingsView: View {
     @State private var selectedCommand: VoiceCommand?
     @State private var showingAddSheet = false
     @State private var searchText = ""
+    @State private var showingShortcuts = false
+    @State private var sectionFilter: CommandSectionFilter = .all
+
+    enum CommandSectionFilter: String, CaseIterable, Identifiable {
+        case all = "All"
+        case system = "System"
+        case keywords = "Keywords"
+        case user = "Yours"
+
+        var id: String { rawValue }
+    }
 
     var filteredSystemCommands: [(phrase: String, description: String)] {
         if searchText.isEmpty {
@@ -976,6 +993,16 @@ struct VoiceCommandsSettingsView: View {
         return appState.voiceCommands.filter {
             $0.phrase.localizedCaseInsensitiveContains(searchText) ||
             ($0.replacementText ?? "").localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    var filteredSpecialKeywords: [(phrase: String, description: String)] {
+        if searchText.isEmpty {
+            return AppState.specialKeywordList
+        }
+        return AppState.specialKeywordList.filter {
+            $0.phrase.localizedCaseInsensitiveContains(searchText) ||
+            $0.description.localizedCaseInsensitiveContains(searchText)
         }
     }
 
@@ -1023,49 +1050,115 @@ struct VoiceCommandsSettingsView: View {
                     Image(systemName: "arrow.counterclockwise")
                 }
                 .help("Reset to default commands")
+
+                Button(action: { showingShortcuts = true }) {
+                    Image(systemName: "keyboard")
+                }
+                .help("View global shortcuts")
+                .popover(isPresented: $showingShortcuts) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Global Shortcuts")
+                            .font(.system(size: 12, weight: .semibold))
+                        ForEach(globalShortcutHelpItems, id: \.keys) { item in
+                            ShortcutHelpRow(keys: item.keys, description: item.description)
+                        }
+                        Divider()
+                        Button("Open General Settings") {
+                            NotificationCenter.default.post(name: .openSettings, object: nil)
+                            showingShortcuts = false
+                        }
+                        .font(.system(size: 11))
+                    }
+                    .padding(12)
+                    .frame(width: 300)
+                }
             }
             .padding()
 
             Divider()
 
+            HStack {
+                Text("Sections")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Picker("", selection: $sectionFilter) {
+                    ForEach(CommandSectionFilter.allCases) { section in
+                        Text(section.rawValue).tag(section)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+
             // Command list
             List {
                 // System Commands at top (pinned)
-                Section(header: HStack {
-                    Image(systemName: "pin.fill")
-                        .font(.system(size: 9))
-                        .foregroundColor(.orange)
-                    Text("System Commands")
-                }) {
-                    ForEach(filteredSystemCommands, id: \.phrase) { command in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("\"\(command.phrase)\"")
-                                    .font(.system(size: 13, weight: .medium))
-                                Text(command.description)
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
+                if sectionFilter == .all || sectionFilter == .system {
+                    Section(header: HStack {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 9))
+                            .foregroundColor(.orange)
+                        Text("System Commands")
+                    }) {
+                        ForEach(filteredSystemCommands, id: \.phrase) { command in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\"\(command.phrase)\"")
+                                        .font(.system(size: 13, weight: .medium))
+                                    Text(command.description)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Text("Built-in")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .foregroundColor(.orange)
+                                    .background(Color.orange.opacity(0.15))
+                                    .cornerRadius(4)
                             }
-                            Spacer()
-                            Text("Built-in")
-                                .font(.system(size: 9, weight: .bold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .foregroundColor(.orange)
-                                .background(Color.orange.opacity(0.15))
-                                .cornerRadius(4)
+                            .padding(.vertical, 4)
                         }
-                        .padding(.vertical, 4)
+                    }
+                }
+
+                // Special Keywords
+                if sectionFilter == .all || sectionFilter == .keywords {
+                    Section(header: Text("Special Keywords")) {
+                        ForEach(filteredSpecialKeywords, id: \.phrase) { keyword in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\"\(keyword.phrase)\"")
+                                        .font(.system(size: 13, weight: .medium))
+                                    Text(keyword.description)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Text("Keyword")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .foregroundColor(.blue)
+                                    .background(Color.blue.opacity(0.15))
+                                    .cornerRadius(4)
+                            }
+                            .padding(.vertical, 4)
+                        }
                     }
                 }
 
                 // User Commands
-                Section(header: Text("Your Commands")) {
-                    ForEach(filteredUserCommands) { command in
-                        VoiceCommandRow(command: command)
-                            .tag(command)
+                if sectionFilter == .all || sectionFilter == .user {
+                    Section(header: Text("Your Commands")) {
+                        ForEach(filteredUserCommands) { command in
+                            VoiceCommandRow(command: command)
+                                .tag(command)
+                        }
+                        .onDelete(perform: deleteCommands)
                     }
-                    .onDelete(perform: deleteCommands)
                 }
             }
             .listStyle(.inset)

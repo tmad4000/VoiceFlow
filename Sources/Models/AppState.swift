@@ -128,6 +128,8 @@ class AppState: ObservableObject {
     @Published var activeBehavior: ActiveBehavior = .mixed
     @Published var lastCommandName: String? = nil
     @Published var isCommandFlashActive: Bool = false
+    @Published var lastKeywordName: String? = nil
+    @Published var isKeywordFlashActive: Bool = false
     @Published var debugLog: [String] = []
     @Published var dictationHistory: [String] = []
     @Published var vocabularyPrompt: String = ""
@@ -146,8 +148,10 @@ class AppState: ObservableObject {
         ("wake up", "Switch to On mode"),
         ("microphone on", "Switch to On mode"),
         ("flow on", "Switch to On mode"),
+        ("speech on", "Switch to On mode"),
         ("go to sleep", "Switch to Sleep mode"),
         ("flow sleep", "Switch to Sleep mode"),
+        ("speech off", "Switch to Sleep mode"),
         ("flow off", "Turn microphone completely Off"),
         ("microphone off", "Turn microphone completely Off"),
         ("stop dictation", "Turn microphone completely Off"),
@@ -164,6 +168,15 @@ class AppState: ObservableObject {
         ("save to idea flow", "Copy last dictation and open Idea Flow")
     ]
 
+    /// Special dictation keywords (not commands)
+    static let specialKeywordList: [(phrase: String, description: String)] = [
+        ("say [text]", "Speak literally; disables command parsing for this utterance"),
+        ("new line", "Insert a line break"),
+        ("newline", "Insert a line break"),
+        ("space bar", "Insert a space"),
+        ("spacebar", "Insert a space")
+    ]
+
     var panelVisibilityHandler: ((Bool) -> Void)?
 
     /// Current issues that should be surfaced to the user
@@ -173,7 +186,20 @@ class AppState: ObservableObject {
         // Connection/API errors - show prominently
         if let error = errorMessage {
             let isAuthError = error.lowercased().contains("unauthorized") || error.lowercased().contains("invalid")
-            let message = isAuthError ? "Invalid API Key - check Settings" : error
+            let message: String
+            if isAuthError {
+                // Determine which service is active to show specific API key name
+                switch dictationProvider {
+                case .deepgram:
+                    message = "Invalid Deepgram API Key - check Settings"
+                case .online, .auto:
+                    message = "Invalid AssemblyAI API Key - check Settings"
+                case .offline:
+                    message = "API Error - check Settings"
+                }
+            } else {
+                message = error
+            }
             warnings.append(AppWarning(id: "connection_error", message: message, severity: .error))
         }
 
@@ -222,6 +248,8 @@ class AppState: ObservableObject {
     private var sleepTimer: Timer?
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
+    private var currentUtteranceIsLiteral = false
+    private var lastHaltingCommandEndIndex = -1
     private var wakeUpTime: Date?
     private let wakeUpGracePeriod: TimeInterval = 0.8  // Don't type for 0.8s after waking
     private let commandPrefixToken = "voiceflow"
@@ -230,6 +258,10 @@ class AppState: ObservableObject {
     private var lastCommandExecutionTime: Date?
     private let cancelWindowSeconds: TimeInterval = 2
     private let undoShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command])
+    private let commandFlashDurationSeconds: TimeInterval = 2.0
+    private let keywordFlashDurationSeconds: TimeInterval = 1.6
+    private let keywordMaxGapSeconds: TimeInterval = 1.2
+    private var didTriggerSayKeyword = false
     private var typedFinalWordCount = 0
     private var didTypeDictationThisUtterance = false
     private var hasTypedInSession = false  // Tracks if we've typed anything since going On
@@ -921,6 +953,8 @@ class AppState: ObservableObject {
             if !expectsFormattedTurns || turn.isFormatted || isForceEndTurn {
                 resetUtteranceState()
             }
+            currentUtteranceIsLiteral = false
+            didTriggerSayKeyword = false
         }
     }
 
@@ -940,8 +974,11 @@ class AppState: ObservableObject {
             forceEndRequestedAt = nil
         }
 
+        let isLiteralTurn = isSayPrefix(turn.transcript)
         let rawTranscript: String
-        if let utterance = turn.utterance, utterance.count > turn.transcript.count {
+        if isLiteralTurn, !turn.transcript.isEmpty {
+            rawTranscript = turn.transcript
+        } else if let utterance = turn.utterance, utterance.count > turn.transcript.count {
             rawTranscript = utterance
         } else if turn.transcript.isEmpty {
             rawTranscript = turn.utterance ?? ""
@@ -950,11 +987,16 @@ class AppState: ObservableObject {
         }
 
         var textToType = rawTranscript
+        var wordsForKeywords: [TranscriptWord]? = turn.words.isEmpty ? nil : turn.words
         
         // If utterance had a command, we might have already flushed the prefix.
         // We only want to type what came AFTER the commands.
         if currentUtteranceHadCommand && !isForceEnd {
             let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
+            if lastCommandEndIndex >= 0 && lastHaltingCommandEndIndex == lastCommandEndIndex {
+                logger.debug("Last command halts processing; skipping dictation after command")
+                return
+            }
             if lastCommandEndIndex >= 0 && lastCommandEndIndex < turn.words.count - 1 {
                 let wordsAfter = turn.words[(lastCommandEndIndex + 1)...]
                 // Filter out punctuation-only words that often trail commands
@@ -963,13 +1005,12 @@ class AppState: ObservableObject {
                     return !stripped.isEmpty
                 }
                 textToType = assembleDisplayText(from: Array(filteredWords))
+                wordsForKeywords = Array(filteredWords)
                 logDebug("Utterance had command: typing only remaining words: \"\(textToType)\"")
             } else {
                 // Command was at the end or covers everything, nothing more to type
-                logger.debug("Command was at end of utterance")
-                if didTypeDictationThisUtterance {
-                    return
-                }
+                logger.debug("Command was at end of utterance; skipping dictation typing")
+                return
             }
         }
         
@@ -999,10 +1040,15 @@ class AppState: ObservableObject {
             logger.info("Force end typing unformatted utterance")
         }
 
-        let processedText = preprocessDictation(textToType)
+        let processedText = preprocessDictation(textToType, forceLiteral: isLiteralTurn, words: wordsForKeywords)
+        let trimmedProcessed = processedText.trimmingCharacters(in: .whitespaces)
+        guard !trimmedProcessed.isEmpty else {
+            logDebug("Skipping type: processed text is empty after filtering")
+            return
+        }
         logDebug("Initiating type action for turn \(turn.turnOrder ?? -1): \"\(processedText.prefix(20))...\"")
         typeText(processedText, appendSpace: true)
-        if !processedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !trimmedProcessed.isEmpty {
             didTypeDictationThisUtterance = true
             hasTypedInSession = true
         }
@@ -1016,21 +1062,179 @@ class AppState: ObservableObject {
         }
     }
 
-    private func preprocessDictation(_ text: String) -> String {
+    private func applyKeywordReplacements(_ text: String, words: [TranscriptWord]?, isLiteral: Bool) -> (String, String?) {
+        guard !isLiteral else { return (text, nil) }
+        if let words, !words.isEmpty {
+            return applyKeywordReplacementsFromWords(words)
+        }
+
+        var result = text
+        var keyword: String? = nil
+
+        // Match "new line" or "newline" with optional trailing punctuation
+        if let regex = try? NSRegularExpression(pattern: "(?i)\\bnew\\s*line\\b(?:[\\.,!?])?", options: []) {
+            if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
+                keyword = keyword ?? "New line"
+            }
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "\n")
+        }
+
+        // Remove punctuation that immediately follows a newline command (e.g., "new line.")
+        if let regex = try? NSRegularExpression(pattern: "\\n\\s*[\\.,!?]", options: []) {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "\n")
+        }
+
+        // Replace "spacebar" / "space bar" with a space
+        if let regex = try? NSRegularExpression(pattern: "(?i)\\bspace\\s*bar\\b", options: []) {
+            if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
+                keyword = keyword ?? "Spacebar"
+            }
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: " ")
+        }
+
+        return (result, keyword)
+    }
+
+    private func timeScale(for word: TranscriptWord) -> Double {
+        guard let start = word.startTime, let end = word.endTime else {
+            return 1.0
+        }
+        let duration = end - start
+        return duration > 10 ? 0.001 : 1.0
+    }
+
+    private func isKeywordGapAcceptable(previous: TranscriptWord, next: TranscriptWord) -> Bool {
+        guard let previousEnd = previous.endTime, let nextStart = next.startTime else {
+            return true
+        }
+        let previousScale = timeScale(for: previous)
+        let nextScale = timeScale(for: next)
+        let scaledGap = (nextStart * nextScale) - (previousEnd * previousScale)
+        return max(0, scaledGap) <= keywordMaxGapSeconds
+    }
+
+    private func applyKeywordReplacementsFromWords(_ words: [TranscriptWord]) -> (String, String?) {
+        var output = ""
+        var keyword: String? = nil
+
+        func appendNewline() {
+            while output.last == " " {
+                output.removeLast()
+            }
+            if output.last != "\n" {
+                output.append("\n")
+            }
+        }
+
+        func appendSpace() {
+            output.append(" ")
+        }
+
+        func appendToken(_ token: String) {
+            let isPunctuationOnly = token.rangeOfCharacter(from: CharacterSet.alphanumerics) == nil
+            if isPunctuationOnly {
+                if output.last == " " {
+                    output.removeLast()
+                }
+                output.append(token)
+                return
+            }
+            if output.isEmpty || output.last == " " || output.last == "\n" {
+                output.append(token)
+            } else {
+                output.append(" ")
+                output.append(token)
+            }
+        }
+
+        func isSkippablePunctuation(_ text: String) -> Bool {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.count == 1 && ".,!?".contains(trimmed)
+        }
+
+        var index = 0
+        while index < words.count {
+            let word = words[index]
+            let token = normalizeToken(word.text)
+
+            if token == "newline" {
+                keyword = keyword ?? "New line"
+                appendNewline()
+                index += 1
+                continue
+            }
+
+            if token == "new", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "line" {
+                    if isKeywordGapAcceptable(previous: word, next: next) {
+                        keyword = keyword ?? "New line"
+                        appendNewline()
+                        if index + 2 < words.count, isSkippablePunctuation(words[index + 2].text) {
+                            index += 3
+                        } else {
+                            index += 2
+                        }
+                        continue
+                    } else if let previousEnd = word.endTime, let nextStart = next.startTime {
+                        let gap = nextStart - previousEnd
+                        logDebug("Keyword \"new line\" skipped due to pause gap (\(String(format: "%.2f", gap))s)")
+                    }
+                }
+            }
+
+            if token == "spacebar" {
+                keyword = keyword ?? "Spacebar"
+                appendSpace()
+                index += 1
+                continue
+            }
+
+            if token == "space", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "bar", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Spacebar"
+                    appendSpace()
+                    index += 2
+                    continue
+                }
+            }
+
+            appendToken(word.text)
+            index += 1
+        }
+
+        return (output, keyword)
+    }
+
+    private func preprocessDictation(_ text: String, forceLiteral: Bool = false, words: [TranscriptWord]? = nil) -> String {
         var processed = text
         
         // 1. Handle "say" prefix (escape mode)
         // Use regex to find "say" at the beginning, ignoring optional trailing punctuation and whitespace
-        var isLiteral = false
+        var isLiteral = forceLiteral
         let sayPattern = "^say[\\.,?!]?\\s*"
         if let regex = try? NSRegularExpression(pattern: sayPattern, options: [.caseInsensitive]),
            let match = regex.firstMatch(in: processed, options: [], range: NSRange(location: 0, length: processed.utf16.count)) {
             isLiteral = true
             // Remove the "say" prefix and the following whitespace/punctuation
             processed = (processed as NSString).substring(from: match.range.length)
+            if !didTriggerSayKeyword {
+                triggerKeywordFlash(name: "Say")
+                didTriggerSayKeyword = true
+            }
         } else if processed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "say" {
             isLiteral = true
             processed = ""
+            if !didTriggerSayKeyword {
+                triggerKeywordFlash(name: "Say")
+                didTriggerSayKeyword = true
+            }
         }
         
         // 1b. Handle "spell" prefix
@@ -1046,19 +1250,26 @@ class AppState: ObservableObject {
             return "" // Handled by processVoiceCommands
         }
 
-        // 1c. Strip wake-up phrases that might leak through after mode switch
-        let wakeUpPhrases = ["wake up", "microphone on", "flow on"]
-        for phrase in wakeUpPhrases {
-            if processed.lowercased().hasPrefix(phrase) {
-                processed = String(processed.dropFirst(phrase.count))
-                processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
-                break
-            }
-        }
-
-        // 2. Handle trailing mode-switch commands if they are at the very end
-        // This allows "Hello world microphone off" to just type "Hello world"
+        // 2. Handle inline text replacements (only if not literal)
         if !isLiteral {
+            let (keywordProcessed, keyword) = applyKeywordReplacements(processed, words: words, isLiteral: isLiteral)
+            processed = keywordProcessed
+            if let keyword {
+                triggerKeywordFlash(name: keyword)
+            }
+
+            // 3. Strip wake-up phrases that might leak through after mode switch
+            let wakeUpPhrases = ["wake up", "microphone on", "flow on"]
+            for phrase in wakeUpPhrases {
+                if processed.lowercased().hasPrefix(phrase) {
+                    processed = String(processed.dropFirst(phrase.count))
+                    processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
+                    break
+                }
+            }
+
+            // 4. Handle trailing mode-switch commands if they are at the very end
+            // This allows "Hello world microphone off" to just type "Hello world"
             let trailingCommands = ["microphone off", "flow off", "stop dictation", "go to sleep", "flow sleep", "submit dictation", "send dictation"]
             for cmd in trailingCommands {
                 if processed.lowercased().hasSuffix(cmd) {
@@ -1067,24 +1278,22 @@ class AppState: ObservableObject {
                     break
                 }
             }
-        }
 
-        // 3. Handle inline text replacements (only if not literal)
-        if !isLiteral {
-            // Replace various forms of "new line" (case-insensitive)
-            let newlinePatterns = ["new line", "newline"]
-            for pattern in newlinePatterns {
-                let range = NSRange(processed.startIndex..<processed.endIndex, in: processed)
-                let regex = try? NSRegularExpression(pattern: "(?i)\(pattern)", options: [])
-                processed = regex?.stringByReplacingMatches(in: processed, options: [], range: range, withTemplate: "\n") ?? processed
-            }
-            
-            // Replace various forms of "spacebar" (case-insensitive)
-            let spacePatterns = ["spacebar", "space bar"]
-            for pattern in spacePatterns {
-                let range = NSRange(processed.startIndex..<processed.endIndex, in: processed)
-                let regex = try? NSRegularExpression(pattern: "(?i)\(pattern)", options: [])
-                processed = regex?.stringByReplacingMatches(in: processed, options: [], range: range, withTemplate: " ") ?? processed
+            // Strip system command phrases that might leak through (with optional trailing punctuation)
+            let systemCommandPhrases = [
+                "window recent two", "window recent 2", "window recent",
+                "window previous", "window next",
+                "cancel that", "no wait",
+                "submit dictation", "send dictation",
+                "save to idea flow",
+                "copy that", "paste that", "cut that", "undo that", "redo that",
+                "select all", "save that", "find that"
+            ]
+            for phrase in systemCommandPhrases {
+                if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b?", options: []) {
+                    let range = NSRange(processed.startIndex..<processed.endIndex, in: processed)
+                    processed = regex.stringByReplacingMatches(in: processed, options: [], range: range, withTemplate: "")
+                }
             }
             
             // 4. (REMOVED) Strip trailing punctuation
@@ -1104,31 +1313,31 @@ class AppState: ObservableObject {
 
         // If utterance had a command, we only care about words AFTER the command
         let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
+        if lastCommandEndIndex >= 0 && lastHaltingCommandEndIndex == lastCommandEndIndex {
+            logger.debug("Last command halts processing; skipping live dictation after command")
+            return
+        }
         let startIndex = max(typedFinalWordCount, lastCommandEndIndex + 1)
+        let isLiteral = isSayPrefix(turn.transcript)
 
         // Helper to filter out punctuation-only words
         let filterPunctuation: (String) -> Bool = { word in
             !word.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).isEmpty
         }
 
-        // Helper to process inline replacements (new line, spacebar, etc.)
-        let processInlineReplacements: (String) -> String = { text in
-            var result = text
-            // Replace "new line" / "newline" with actual newline
-            let newlinePatterns = ["new line", "newline"]
-            for pattern in newlinePatterns {
-                if let regex = try? NSRegularExpression(pattern: "(?i)\(pattern)", options: []) {
-                    let range = NSRange(result.startIndex..<result.endIndex, in: result)
-                    result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "\n")
-                }
+        let stripLeadingSay: ([String]) -> [String] = { words in
+            guard isLiteral, startIndex == 0, let first = words.first, self.normalizeToken(first) == "say" else {
+                return words
             }
-            // Replace "spacebar" / "space bar" with space
-            let spacePatterns = ["spacebar", "space bar"]
-            for pattern in spacePatterns {
-                if let regex = try? NSRegularExpression(pattern: "(?i)\(pattern)", options: []) {
-                    let range = NSRange(result.startIndex..<result.endIndex, in: result)
-                    result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: " ")
-                }
+            return Array(words.dropFirst())
+        }
+
+        // Helper to process inline replacements (new line, spacebar, etc.)
+        let processInlineReplacements: (String, [TranscriptWord]?, Bool) -> String = { text, words, isLiteral in
+            let (keywordProcessed, keyword) = self.applyKeywordReplacements(text, words: words, isLiteral: isLiteral)
+            var result = keywordProcessed
+            if let keyword {
+                self.triggerKeywordFlash(name: keyword)
             }
             // Strip system command phrases that might leak through (with optional trailing punctuation)
             let systemCommandPhrases = [
@@ -1147,20 +1356,26 @@ class AppState: ObservableObject {
                     result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
                 }
             }
-            return result.trimmingCharacters(in: .whitespacesAndNewlines)
+            return result.trimmingCharacters(in: .whitespaces)
         }
 
         // If it's a formatted turn (Cloud model with formatting ON), we use word-level isFinal
         if turn.isFormatted {
             let finalWords = turn.words.filter { $0.isFinal == true }.map { $0.text }
             guard finalWords.count > startIndex else { return }
-            let newWords = finalWords[startIndex...].filter(filterPunctuation)
+            var newWords = finalWords[startIndex...].filter(filterPunctuation)
+            newWords = stripLeadingSay(Array(newWords))
             guard !newWords.isEmpty else { return }
             // Add space if continuing within utterance OR if we've typed before in this session
             let needsSpace = startIndex > 0 || hasTypedInSession
             let prefix = needsSpace ? " " : ""
             let rawText = prefix + newWords.joined(separator: " ")
-            let textToType = processInlineReplacements(rawText)
+            let finalWordObjects = turn.words.filter { $0.isFinal == true }
+            let wordSlice = Array(finalWordObjects[startIndex...].filter { filterPunctuation($0.text) })
+            var textToType = processInlineReplacements(rawText, wordSlice, isLiteral)
+            if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
+                textToType = " " + textToType
+            }
             logDebug("Live typing delta (formatted): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
             if !textToType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1179,7 +1394,8 @@ class AppState: ObservableObject {
                 typedFinalWordCount = 0 // Reset for next utterance
                 return
             }
-            let newWords = allWords[startIndex...].filter(filterPunctuation)
+            var newWords = allWords[startIndex...].filter(filterPunctuation)
+            newWords = stripLeadingSay(Array(newWords))
             guard !newWords.isEmpty else {
                 typedFinalWordCount = 0
                 return
@@ -1188,7 +1404,11 @@ class AppState: ObservableObject {
             let needsSpace = startIndex > 0 || hasTypedInSession
             let prefix = needsSpace ? " " : ""
             let rawText = prefix + newWords.joined(separator: " ")
-            let textToType = processInlineReplacements(rawText)
+            let wordSlice = Array(turn.words[startIndex...].filter { filterPunctuation($0.text) })
+            var textToType = processInlineReplacements(rawText, wordSlice, isLiteral)
+            if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
+                textToType = " " + textToType
+            }
             logDebug("Live typing delta (final): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
             if !textToType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1219,18 +1439,27 @@ class AppState: ObservableObject {
     }
 
     private func processVoiceCommands(_ turn: TranscriptTurn) {
+        if isSayPrefix(turn.transcript) {
+            currentUtteranceIsLiteral = true
+            if !didTriggerSayKeyword {
+                triggerKeywordFlash(name: "Say")
+                didTriggerSayKeyword = true
+            }
+            logger.debug("Utterance starts with 'say', skipping command processing")
+            return
+        }
+
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         guard !normalizedTokens.isEmpty else { return }
         
         // If the first word is "say", skip command processing for this utterance
-        // Also check if the transcript starts with "say" (robustly with regex)
         let firstToken = normalizedTokens.first?.token
-        let sayPattern = "^say[\\.,?!]?(\\s|$)"
-        let regex = try? NSRegularExpression(pattern: sayPattern, options: [.caseInsensitive])
-        let transcript = turn.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isSayMatch = regex?.firstMatch(in: transcript, options: [], range: NSRange(location: 0, length: transcript.utf16.count)) != nil
-                                     
-        if firstToken == "say" || isSayMatch {
+        if firstToken == "say" {
+            currentUtteranceIsLiteral = true
+            if !didTriggerSayKeyword {
+                triggerKeywordFlash(name: "Say")
+                didTriggerSayKeyword = true
+            }
             logger.debug("Utterance starts with 'say', skipping command processing")
             return
         }
@@ -1253,8 +1482,24 @@ class AppState: ObservableObject {
             let appName = String(turn.transcript.dropFirst(6)).trimmingCharacters(in: .whitespaces)
             if !appName.isEmpty && turn.endOfTurn {
                 logDebug("Focusing App: \"\(appName)\"")
-                windowManager.focusApp(named: appName)
-                triggerCommandFlash(name: "Focus")
+                let result = windowManager.focusApp(named: appName)
+                switch result {
+                case .focused(let name, let matchType):
+                    logDebug("Focus success (\(matchType)): \"\(name)\"")
+                    triggerCommandFlash(name: "Focus: \(name)")
+                case .notFound(let query):
+                    logDebug("Focus failed: no running app matching \"\(query)\"")
+                    triggerCommandFlash(name: "Focus: not found (\(query))")
+                case .emptyQuery:
+                    logDebug("Focus failed: empty query")
+                    triggerCommandFlash(name: "Focus: empty query")
+                }
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.focus"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
                 return
             }
         }
@@ -1271,6 +1516,7 @@ class AppState: ObservableObject {
                 (phrase: "wake up", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void),
                 (phrase: "microphone on", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void),
                 (phrase: "flow on", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void),
+                (phrase: "speech on", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void),
                 // Also allow turning off from sleep mode
                 (phrase: "microphone off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in self?.setMode(.off) } as () -> Void),
                 (phrase: "flow off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in self?.setMode(.off) } as () -> Void),
@@ -1285,6 +1531,11 @@ class AppState: ObservableObject {
                     }
                 } as () -> Void),
                 (phrase: "flow sleep", key: "system.go_to_sleep", name: "Sleep", haltsProcessing: true, action: { [weak self] in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        self?.setMode(.sleep)
+                    }
+                } as () -> Void),
+                (phrase: "speech off", key: "system.go_to_sleep", name: "Sleep", haltsProcessing: true, action: { [weak self] in
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         self?.setMode(.sleep)
                     }
@@ -1423,11 +1674,23 @@ class AppState: ObservableObject {
         logger.info("resetUtteranceState called")
         lastExecutedEndWordIndexByCommand.removeAll()
         currentUtteranceHadCommand = false
+        currentUtteranceIsLiteral = false
+        lastHaltingCommandEndIndex = -1
+        didTriggerSayKeyword = false
         pendingCommandExecutions.removeAll()
         typedFinalWordCount = 0
         didTypeDictationThisUtterance = false
         forceEndPending = false
         forceEndRequestedAt = nil
+    }
+
+    private func isSayPrefix(_ text: String) -> Bool {
+        let sayPattern = "^say[\\.,?!]?(\\s|$)"
+        guard let regex = try? NSRegularExpression(pattern: sayPattern, options: [.caseInsensitive]) else {
+            return false
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return regex.firstMatch(in: trimmed, options: [], range: NSRange(location: 0, length: trimmed.utf16.count)) != nil
     }
 
     private func executeMatch(_ match: PendingCommandMatch) {
@@ -1494,6 +1757,9 @@ class AppState: ObservableObject {
 
         lastExecutedEndWordIndexByCommand[match.key] = match.endWordIndex
         currentUtteranceHadCommand = true
+        if match.haltsProcessing {
+            lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, match.endWordIndex)
+        }
         if match.key.hasPrefix("user.") {
             lastCommandExecutionTime = Date()
         }
@@ -1528,8 +1794,17 @@ class AppState: ObservableObject {
         isCommandFlashActive = true
         
         // Reset flash after a short delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + commandFlashDurationSeconds) { [weak self] in
             self?.isCommandFlashActive = false
+        }
+    }
+
+    private func triggerKeywordFlash(name: String) {
+        lastKeywordName = name
+        isKeywordFlashActive = true
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + keywordFlashDurationSeconds) { [weak self] in
+            self?.isKeywordFlashActive = false
         }
     }
 
@@ -2016,41 +2291,49 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Force end of current utterance immediately
-    func forceEndUtterance() {
-        logger.info("Force end utterance requested (connected=\(self.isConnected ? "true" : "false"))")
+    private func flushDictationBuffer(isForceEnd: Bool) {
+        guard !currentTranscript.isEmpty, microphoneMode == .on else { return }
+        // Construct a temporary turn to process commands from the current buffer
+        let tempTurn = TranscriptTurn(
+            transcript: currentTranscript,
+            words: currentWords,
+            endOfTurn: true,
+            isFormatted: true, // Mark as formatted so it definitely types
+            turnOrder: (lastTypedTurnOrder + 1),
+            utterance: currentTranscript
+        )
         
-        // 1. Check for commands and immediately type whatever is currently in the buffer if it's not empty
-        if !currentTranscript.isEmpty && microphoneMode == .on {
-            // Construct a temporary turn to process commands from the current buffer
-            let tempTurn = TranscriptTurn(
-                transcript: currentTranscript,
-                words: currentWords,
-                endOfTurn: true,
-                isFormatted: true, // Mark as formatted so it definitely types
-                turnOrder: (lastTypedTurnOrder + 1),
-                utterance: currentTranscript
-            )
-            
-            logger.info("Force pushing buffer: \"\(self.currentTranscript)\"")
-            handleDictationTurn(tempTurn, isForceEnd: true)
-            
-            currentTranscript = ""
-            currentWords = []
-        }
+        logger.info("Force pushing buffer: \"\(self.currentTranscript)\"")
+        handleDictationTurn(tempTurn, isForceEnd: isForceEnd)
+        
+        currentTranscript = ""
+        currentWords = []
+    }
 
-        // 2. Set pending flag so we can ignore any late responses for this turn from the server
-        forceEndPending = true
-        forceEndRequestedAt = Date()
+    /// Force end of current utterance immediately
+    func forceEndUtterance(contactServices: Bool = false) {
+        logger.info("Force end utterance requested (connected=\(self.isConnected ? "true" : "false"), contactServices=\(contactServices))")
         
-        // 3. Request services to end current utterance
-        assemblyAIService?.forceEndUtterance()
-        appleSpeechService?.forceEndUtterance()
-        
-        // 4. Note: resetUtteranceState() will be called when we receive the end-of-turn
-        // or when the forceEndPending timeout hits in handleDictationTurn.
-        // We DON'T call it here immediately because that clears the command history 
-        // that handleDictationTurn might need to filter out already-executed commands.
+        // 1. Type whatever is currently in the buffer if it's not empty
+        flushDictationBuffer(isForceEnd: true)
+
+        if contactServices {
+            // 2. Set pending flag so we can ignore any late responses for this turn from the server
+            forceEndPending = true
+            forceEndRequestedAt = Date()
+            
+            // 3. Request services to end current utterance
+            assemblyAIService?.forceEndUtterance()
+            appleSpeechService?.forceEndUtterance()
+            
+            // 4. Note: resetUtteranceState() will be called when we receive the end-of-turn
+            // or when the forceEndPending timeout hits in handleDictationTurn.
+            // We DON'T call it here immediately because that clears the command history
+            // that handleDictationTurn might need to filter out already-executed commands.
+        } else {
+            forceEndPending = false
+            forceEndRequestedAt = nil
+        }
     }
 
     func saveToIdeaFlow() {

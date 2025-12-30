@@ -133,17 +133,29 @@ struct FloatingPanelView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(alignment: .bottom) {
-            if appState.isCommandFlashActive, let commandName = appState.lastCommandName {
-                Text("Command: \(commandName)")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.green.opacity(0.8))
-                    .clipShape(Capsule())
-                    .padding(.bottom, 20)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            VStack(spacing: 6) {
+                if appState.isCommandFlashActive, let commandName = appState.lastCommandName {
+                    Text("Command: \(commandName)")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.green.opacity(0.8))
+                        .clipShape(Capsule())
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                if appState.isKeywordFlashActive, let keywordName = appState.lastKeywordName {
+                    Text("Keyword: \(keywordName)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.blue.opacity(0.75))
+                        .clipShape(Capsule())
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
+            .padding(.bottom, 20)
         }
         .overlay(alignment: .bottom) {
             if showingHideToast {
