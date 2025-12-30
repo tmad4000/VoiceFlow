@@ -27,9 +27,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var onMenuItem: NSMenuItem?
     var sleepMenuItem: NSMenuItem?
     var showHideMenuItem: NSMenuItem?
-    var settingsWindow: NSWindow?
+    private var settingsWindow: NSWindow?
     private var panelWindow: FloatingPanelWindow?
     private var cancellables = Set<AnyCancellable>()
+    private var pttMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -91,6 +92,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+        
+        // Hidden shortcut for pasting last utterance (Ctrl+Cmd+V)
+        let pasteItem = NSMenuItem(title: "Paste Last Utterance", action: #selector(pasteLastUtterance), keyEquivalent: "v")
+        pasteItem.keyEquivalentModifierMask = [.control, .command]
+        pasteItem.target = self
+        pasteItem.isHidden = true // Hide from menu but keep shortcut active
+        menu.addItem(pasteItem)
+
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit VoiceFlow", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem?.menu = menu
@@ -111,13 +120,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.setPanelVisible(self.appState.isPanelVisible)
         }
 
-        // Listen for open settings notification from panel
+        // Listen for notifications from panel
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(openSettings),
             name: Notification.Name("openSettings"),
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(openSettings),
+            name: Notification.Name("openHistory"),
+            object: nil
+        )
+
+        setupPTT()
     }
 
     func showPanelWindow() {
@@ -252,6 +269,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
+    @objc func pasteLastUtterance() {
+        Task { @MainActor in
+            appState.pasteLastUtterance()
+        }
+    }
+
     func updateIcon(_ name: String) {
         statusItem?.button?.image = NSImage(systemSymbolName: name, accessibilityDescription: "VoiceFlow")
     }
@@ -262,6 +285,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             offMenuItem?.state = mode == .off ? .on : .off
             onMenuItem?.state = mode == .on ? .on : .off
             sleepMenuItem?.state = mode == .sleep ? .on : .off
+        }
+    }
+
+    private func setupPTT() {
+        pttMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+            guard let self = self else { return }
+            
+            // PTT Shortcut: Ctrl+Option+Cmd+Space (Hold)
+            let pttModifiers: NSEvent.ModifierFlags = [.control, .option, .command]
+            let currentModifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            
+            if currentModifiers == pttModifiers && event.keyCode == 49 { // Space bar
+                Task { @MainActor in
+                    if event.type == .keyDown {
+                        if self.appState.microphoneMode != .on {
+                            self.appState.setMode(.on)
+                            self.appState.logDebug("PTT: ON")
+                        }
+                    } else if event.type == .keyUp {
+                        if self.appState.microphoneMode == .on {
+                            // Delay slightly to ensure last words are caught
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                Task { @MainActor in
+                                    // Only switch back if we are still in ON mode (user hasn't clicked something else)
+                                    if self.appState.microphoneMode == .on {
+                                        self.appState.setMode(.sleep)
+                                        self.appState.logDebug("PTT: SLEEP")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

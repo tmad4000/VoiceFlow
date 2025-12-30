@@ -6,6 +6,7 @@ import Carbon.HIToolbox
 import ApplicationServices
 import AVFoundation
 import Speech
+import ServiceManagement
 import os.log
 
 private let logger = Logger(subsystem: "com.voiceflow", category: "app")
@@ -79,15 +80,27 @@ enum DictationProvider: String, CaseIterable, Codable, Identifiable {
     case auto = "auto"
     case online = "online"
     case offline = "offline"
+    case deepgram = "deepgram"
 
     var id: String { rawValue }
     
     var displayName: String {
         switch self {
-        case .auto: return "Auto (Network Aware)"
-        case .online: return "Online (AssemblyAI)"
-        case .offline: return "Offline (Mac Speech)"
+        case .auto: return "Auto (Default)"
+        case .online: return "AssemblyAI (Online Primary)"
+        case .deepgram: return "Deepgram (Online Secondary)"
+        case .offline: return "Mac Speech (Offline)"
         }
+    }
+}
+
+struct AppWarning: Identifiable {
+    let id: String
+    let message: String
+    let severity: Severity
+    
+    enum Severity {
+        case warning, error
     }
 }
 
@@ -99,6 +112,7 @@ class AppState: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var errorMessage: String?
     @Published var apiKey: String = ""
+    @Published var deepgramApiKey: String = ""
     @Published var voiceCommands: [VoiceCommand] = VoiceCommand.defaults
     @Published var isPanelVisible: Bool = true
     @Published var currentWords: [TranscriptWord] = []
@@ -122,9 +136,10 @@ class AppState: ObservableObject {
     @Published var ideaFlowURL: String = ""
     @Published var isOffline: Bool = false
     @Published var dictationProvider: DictationProvider = .auto
-    @Published var sleepTimerEnabled: Bool = false
+    @Published var sleepTimerEnabled: Bool = true
     @Published var sleepTimerMinutes: Double = 15
     @Published var launchMode: MicrophoneMode = .sleep
+    @Published var launchAtLogin: Bool = false
 
     /// Built-in system commands for reference in UI
     static let systemCommandList: [(phrase: String, description: String)] = [
@@ -151,8 +166,55 @@ class AppState: ObservableObject {
 
     var panelVisibilityHandler: ((Bool) -> Void)?
 
+    /// Current issues that should be surfaced to the user
+    var activeWarnings: [AppWarning] {
+        var warnings: [AppWarning] = []
+
+        // Connection/API errors - show prominently
+        if let error = errorMessage {
+            let isAuthError = error.lowercased().contains("unauthorized") || error.lowercased().contains("invalid")
+            let message = isAuthError ? "Invalid API Key - check Settings" : error
+            warnings.append(AppWarning(id: "connection_error", message: message, severity: .error))
+        }
+
+        // Key checks
+        if apiKey.isEmpty && (dictationProvider == .auto || dictationProvider == .online) {
+            warnings.append(AppWarning(id: "assembly_key", message: "AssemblyAI API Key missing", severity: .error))
+        }
+        if deepgramApiKey.isEmpty && dictgramIsRequired {
+            warnings.append(AppWarning(id: "deepgram_key", message: "Deepgram API Key missing", severity: .error))
+        }
+
+        // Permission checks
+        if !isAccessibilityGranted {
+            warnings.append(AppWarning(id: "a11y", message: "Accessibility permission needed for typing", severity: .warning))
+        }
+        if !isMicrophoneGranted {
+            warnings.append(AppWarning(id: "mic", message: "Microphone access needed", severity: .error))
+        }
+        if !isSpeechGranted && dictationProvider == .offline {
+            warnings.append(AppWarning(id: "speech", message: "Speech recognition permission needed", severity: .error))
+        }
+
+        return warnings
+    }
+
+    private var dictgramIsRequired: Bool {
+        dictationProvider == .deepgram || (dictationProvider == .auto && isOffline && false) // Auto doesn't use Deepgram as fallback yet
+    }
+
+    func pasteLastUtterance() {
+        guard let last = dictationHistory.first(where: { !$0.hasPrefix("[Command]") }) else {
+            logDebug("Paste: No last utterance found")
+            return
+        }
+        logDebug("Pasting last utterance: \"\(last.prefix(20))...\"")
+        typeText(last, appendSpace: true)
+    }
+
     private var audioCaptureManager: AudioCaptureManager?
     private var assemblyAIService: AssemblyAIService?
+    private var deepgramService: DeepgramService?
     private var appleSpeechService: AppleSpeechService?
     private var networkMonitor = NetworkMonitor()
     private var windowManager = WindowManager()
@@ -190,7 +252,7 @@ class AppState: ObservableObject {
     var effectiveIsOffline: Bool {
         switch dictationProvider {
         case .auto: return isOffline
-        case .online: return false
+        case .online, .deepgram: return false
         case .offline: return true
         }
     }
@@ -203,6 +265,7 @@ class AppState: ObservableObject {
         loadUtteranceSettings()
         loadActiveBehavior()
         loadLaunchMode()
+        loadLaunchAtLogin()
         loadDictationProvider()
         loadDictationHistory()
         loadVocabularyPrompt()
@@ -245,32 +308,107 @@ class AppState: ObservableObject {
         }
     }
 
+    private var accessibilityPollTimer: Timer?
+    private var accessibilityPollCount = 0
+
     func checkAccessibilityPermission(silent: Bool = true) {
         if silent {
             let trusted = AXIsProcessTrusted()
             isAccessibilityGranted = trusted
             logger.info("Accessibility permission (silent check): \(trusted ? "GRANTED" : "NOT GRANTED")")
         } else {
-            // Use AXIsProcessTrustedWithOptions to prompt user if not trusted
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-            let trusted = AXIsProcessTrustedWithOptions(options)
-            isAccessibilityGranted = trusted
-            logger.info("Accessibility permission (prompted): \(trusted ? "GRANTED" : "NOT GRANTED")")
+            // First check current status
+            let alreadyTrusted = AXIsProcessTrusted()
+            if alreadyTrusted {
+                isAccessibilityGranted = true
+                logger.info("Accessibility permission already granted")
+                return
+            }
 
-            if !trusted {
-                logger.warning("CGEvent typing will not work without accessibility permission!")
-                // Show our custom alert after the system prompt
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    if self?.isAccessibilityGranted == false {
-                        self?.showRestartPrompt()
-                    }
+            // Open System Settings directly to Accessibility pane
+            logger.info("Opening System Settings for Accessibility permission...")
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
+
+            // Start polling to detect when permission is granted
+            startAccessibilityPolling()
+        }
+    }
+
+    private func startAccessibilityPolling() {
+        // Stop any existing timer
+        accessibilityPollTimer?.invalidate()
+        accessibilityPollCount = 0
+
+        // Poll every 1 second for up to 60 seconds
+        accessibilityPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
+            }
+
+            self.accessibilityPollCount += 1
+            let trusted = AXIsProcessTrusted()
+
+            if trusted {
+                // Permission granted! Update state and stop polling
+                DispatchQueue.main.async {
+                    self.isAccessibilityGranted = true
+                    logger.info("Accessibility permission detected as granted!")
+                    self.logDebug("Accessibility permission granted")
+                }
+                timer.invalidate()
+                self.accessibilityPollTimer = nil
+            } else if self.accessibilityPollCount >= 60 {
+                // Timed out after 60 seconds - show helpful message
+                timer.invalidate()
+                self.accessibilityPollTimer = nil
+                DispatchQueue.main.async {
+                    self.showAccessibilityHelpAlert()
                 }
             }
         }
     }
 
     func recheckAccessibilityPermission() {
-        checkAccessibilityPermission(silent: true)
+        let trusted = AXIsProcessTrusted()
+        let wasGranted = isAccessibilityGranted
+        isAccessibilityGranted = trusted
+
+        if trusted && !wasGranted {
+            logDebug("Accessibility permission now granted")
+        }
+    }
+
+    private func showAccessibilityHelpAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Accessibility Permission Needed"
+        alert.informativeText = """
+            VoiceFlow needs Accessibility permission to type text.
+
+            1. Open System Settings > Privacy & Security > Accessibility
+            2. Find and enable VoiceFlow (or VoiceFlow-Dev)
+            3. If already enabled, try toggling it off and on
+
+            If the permission doesn't take effect, you may need to restart the app.
+            """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Restart App")
+        alert.addButton(withTitle: "Later")
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            // Open Settings again
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
+            // Resume polling
+            startAccessibilityPolling()
+        } else if response == .alertSecondButtonReturn {
+            restartApp()
+        }
     }
 
     func checkMicrophonePermission() {
@@ -339,10 +477,63 @@ class AppState: ObservableObject {
         AXIsProcessTrusted() ? "Trusted" : "Not Trusted"
     }
 
+    /// Returns the path to the currently running executable
+    var executablePath: String {
+        Bundle.main.executablePath ?? ProcessInfo.processInfo.arguments.first ?? "Unknown"
+    }
+
+    /// Returns true if running from a .build directory (i.e., via `swift run`)
+    var isRunningFromSwiftRun: Bool {
+        executablePath.contains(".build/")
+    }
+
+    /// Returns diagnostic info about the current process identity for debugging permissions
+    var accessibilityDiagnostics: (execPath: String, bundleId: String?, isSwiftRun: Bool, suggestion: String) {
+        let execPath = executablePath
+        let bundleId = Bundle.main.bundleIdentifier
+        let isSwiftRun = isRunningFromSwiftRun
+
+        var suggestion: String
+        if isSwiftRun && !isAccessibilityGranted {
+            suggestion = """
+                Running via 'swift run' uses a different binary than the .app bundle.
+                Permissions granted to 'VoiceFlow-Dev' don't apply here.
+
+                Options:
+                1. Run the .app instead: open VoiceFlow-Dev.app
+                2. Grant permission to Terminal (which runs swift)
+                3. Reset & re-grant: tccutil reset Accessibility \(bundleId ?? "com.jacobcole.voiceflow")
+                """
+        } else if !isAccessibilityGranted {
+            suggestion = """
+                Permission not granted. Try:
+                1. Click 'Request' to prompt the system
+                2. Manually enable in System Settings > Privacy > Accessibility
+                3. If already enabled, the app identity may have changed - reset with:
+                   tccutil reset Accessibility \(bundleId ?? "com.jacobcole.voiceflow")
+                """
+        } else {
+            suggestion = "Accessibility permission is working correctly."
+        }
+
+        return (execPath, bundleId, isSwiftRun, suggestion)
+    }
+
+    private static var logFileURL: URL? = {
+        let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Logs")
+            .appendingPathComponent("VoiceFlow")
+        if let logsDir = logsDir {
+            try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+            return logsDir.appendingPathComponent("voiceflow.log")
+        }
+        return nil
+    }()
+
     func logDebug(_ message: String) {
         let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
         let entry = "[\(timestamp)] \(message)"
-        
+
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.debugLog.insert(entry, at: 0)
@@ -351,27 +542,36 @@ class AppState: ObservableObject {
             }
         }
         logger.info("\(message)")
+
+        // Write to log file
+        Self.writeToLogFile(entry)
+    }
+
+    private static func writeToLogFile(_ entry: String) {
+        guard let logFileURL = logFileURL else { return }
+        let line = entry + "\n"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logFileURL.path) {
+                if let handle = try? FileHandle(forWritingTo: logFileURL) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                try? data.write(to: logFileURL)
+            }
+        }
+    }
+
+    static var logFilePath: String {
+        logFileURL?.path ?? "~/Library/Logs/VoiceFlow/voiceflow.log"
     }
 
     func clearDebugLog() {
         debugLog.removeAll()
     }
 
-    private func showRestartPrompt() {
-        let alert = NSAlert()
-        alert.messageText = "App Restart Required"
-        alert.informativeText = "VoiceFlow needs to restart to detect the new permissions. Please click 'Restart App' after you have granted permission in System Settings."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Restart App")
-        alert.addButton(withTitle: "Later")
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            restartApp()
-        }
-    }
-
-    private func restartApp() {
+    func restartApp() {
         let executablePath = Bundle.main.executablePath!
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
@@ -386,15 +586,21 @@ class AppState: ObservableObject {
     }
 
     func setMode(_ mode: MicrophoneMode) {
+        NSLog("[VoiceFlow] setMode called: %@", mode.rawValue)
+        NSLog("[VoiceFlow] Permissions - a11y: %d, mic: %d, speech: %d", isAccessibilityGranted, isMicrophoneGranted, isSpeechGranted)
+
         // Check and request permissions before enabling active modes
         if mode == .on || mode == .sleep {
             if !isAccessibilityGranted {
+                NSLog("[VoiceFlow] Requesting accessibility permission...")
                 checkAccessibilityPermission(silent: false)
             }
             if !isMicrophoneGranted {
+                NSLog("[VoiceFlow] Requesting microphone permission...")
                 requestMicrophonePermission()
             }
             if !isSpeechGranted {
+                NSLog("[VoiceFlow] Requesting speech permission...")
                 requestSpeechPermission()
             }
         }
@@ -402,6 +608,7 @@ class AppState: ObservableObject {
         let previousMode = microphoneMode
         microphoneMode = mode
         logDebug("Mode changed: \(previousMode.rawValue) -> \(mode.rawValue)")
+        NSLog("[VoiceFlow] Mode changed: %@ -> %@", previousMode.rawValue, mode.rawValue)
 
         if mode == .on {
             resetSleepTimer()
@@ -449,14 +656,21 @@ class AppState: ObservableObject {
     }
 
     private func startListening(transcribeMode: Bool) {
+        NSLog("[VoiceFlow] startListening called, transcribeMode: %d", transcribeMode)
+        NSLog("[VoiceFlow] effectiveIsOffline: %d, dictationProvider: %@", effectiveIsOffline, dictationProvider.rawValue)
         logDebug("Starting services (transcribeMode: \(transcribeMode))")
-        
+
         // Always need AudioCaptureManager
         audioCaptureManager = AudioCaptureManager()
-        
+
         if effectiveIsOffline {
+            NSLog("[VoiceFlow] -> Starting Apple Speech (offline)")
             startAppleSpeech(transcribeMode: transcribeMode)
+        } else if dictationProvider == .deepgram {
+            NSLog("[VoiceFlow] -> Starting Deepgram")
+            startDeepgram(transcribeMode: transcribeMode)
         } else {
+            NSLog("[VoiceFlow] -> Starting AssemblyAI")
             startAssemblyAI(transcribeMode: transcribeMode)
         }
     }
@@ -530,6 +744,77 @@ class AppState: ObservableObject {
         audioCaptureManager?.startCapture()
     }
 
+    private func startDeepgram(transcribeMode: Bool) {
+        NSLog("[VoiceFlow] startDeepgram called, key length: %d", deepgramApiKey.count)
+        guard !deepgramApiKey.isEmpty else {
+            errorMessage = "Please set your Deepgram API key in Settings"
+            logDebug("Error: Deepgram API key missing")
+            NSLog("[VoiceFlow] Deepgram API key is EMPTY!")
+            return
+        }
+
+        NSLog("[VoiceFlow] Deepgram API key present, starting connection...")
+        errorMessage = nil
+        forceEndPending = false
+        forceEndRequestedAt = nil
+        lastTypedTurnOrder = -1
+
+        // Initialize service
+        deepgramService = DeepgramService(apiKey: deepgramApiKey)
+
+        // Configure utterance detection
+        let utteranceConfig = UtteranceConfig(
+            confidenceThreshold: effectiveConfidenceThreshold,
+            silenceThresholdMs: effectiveSilenceThresholdMs,
+            maxTurnSilenceMs: utteranceMode.maxTurnSilenceMs
+        )
+        deepgramService?.setUtteranceConfig(utteranceConfig)
+
+        // Set up bindings
+        deepgramService?.$isConnected
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] connected in
+                self?.isConnected = connected
+                self?.logDebug(connected ? "Connected to Deepgram" : "Disconnected from Deepgram")
+            }
+            .store(in: &cancellables)
+
+        deepgramService?.$latestTurn
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] turn in
+                guard let turn else { return }
+                self?.handleTurn(turn)
+            }
+            .store(in: &cancellables)
+
+        deepgramService?.$errorMessage
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] error in
+                self?.errorMessage = error
+                if let error = error {
+                    self?.logDebug("Deepgram API Error: \(error)")
+                }
+            }
+            .store(in: &cancellables)
+
+        // Connect audio output to WebSocket
+        audioCaptureManager?.onAudioData = { [weak self] data in
+            self?.deepgramService?.sendAudio(data)
+        }
+
+        // Connect audio level for visualization
+        audioCaptureManager?.onAudioLevel = { [weak self] level in
+            self?.audioLevel = level
+        }
+
+        // Start services
+        deepgramService?.setTranscribeMode(transcribeMode)
+        deepgramService?.setFormatTurns(!liveDictationEnabled)
+        deepgramService?.setVocabularyPrompt(effectiveVocabularyPrompt)
+        deepgramService?.connect()
+        audioCaptureManager?.startCapture()
+    }
+
     private func startAppleSpeech(transcribeMode: Bool) {
         logDebug("Using Apple Speech Recognition (Offline Mode)")
         errorMessage = nil
@@ -563,14 +848,14 @@ class AppState: ObservableObject {
         }
 
         // Connect audio level for visualization
-                audioCaptureManager?.onAudioLevel = { [weak self] level in
-                    self?.audioLevel = level
-                }
-                
-                appleSpeechService?.setTranscribeMode(transcribeMode)
-                appleSpeechService?.startRecognition(addsPunctuation: !liveDictationEnabled)
-                audioCaptureManager?.startCapture()
-                // For Apple speech, we consider it "connected" if the manager is capturing
+        audioCaptureManager?.onAudioLevel = { [weak self] level in
+            self?.audioLevel = level
+        }
+        
+        appleSpeechService?.setTranscribeMode(transcribeMode)
+        appleSpeechService?.startRecognition(addsPunctuation: !liveDictationEnabled)
+        audioCaptureManager?.startCapture()
+        // For Apple speech, we consider it "connected" if the manager is capturing
         isConnected = true 
     }
 
@@ -578,9 +863,11 @@ class AppState: ObservableObject {
         logDebug("Stopping services")
         audioCaptureManager?.stopCapture()
         assemblyAIService?.disconnect()
+        deepgramService?.disconnect()
         appleSpeechService?.disconnect()
         audioCaptureManager = nil
         assemblyAIService = nil
+        deepgramService = nil
         appleSpeechService = nil
         cancellables.removeAll()
         isConnected = false
@@ -593,6 +880,9 @@ class AppState: ObservableObject {
             resetSleepTimer()
         }
         
+        // Calculate force end status early
+        let isForceEndTurn = forceEndPending && turn.endOfTurn
+
         let fallbackTranscript = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
         if !turn.words.isEmpty {
             currentWords = turn.words
@@ -618,9 +908,9 @@ class AppState: ObservableObject {
             // Handle dictation if behavior allows
             if activeBehavior != .command {
                 if liveDictationEnabled {
-                    handleLiveDictationTurn(turn)
+                    handleLiveDictationTurn(turn, isForceEnd: isForceEndTurn)
                 } else {
-                    handleDictationTurn(turn)
+                    handleDictationTurn(turn, isForceEnd: isForceEndTurn)
                 }
             }
         case .off:
@@ -628,13 +918,13 @@ class AppState: ObservableObject {
         }
 
         if turn.endOfTurn {
-            if !expectsFormattedTurns || turn.isFormatted {
+            if !expectsFormattedTurns || turn.isFormatted || isForceEndTurn {
                 resetUtteranceState()
             }
         }
     }
 
-    private func handleDictationTurn(_ turn: TranscriptTurn) {
+    private func handleDictationTurn(_ turn: TranscriptTurn, isForceEnd: Bool) {
         logger.info("handleDictationTurn: isFormatted=\(turn.isFormatted), endOfTurn=\(turn.endOfTurn), transcript=\"\(turn.transcript.prefix(50))...\"")
 
         // Skip typing during wake-up grace period to avoid typing residual wake word audio
@@ -650,8 +940,6 @@ class AppState: ObservableObject {
             forceEndRequestedAt = nil
         }
 
-        let isForceEndTurn = forceEndPending && turn.endOfTurn
-
         let rawTranscript: String
         if let utterance = turn.utterance, utterance.count > turn.transcript.count {
             rawTranscript = utterance
@@ -665,7 +953,7 @@ class AppState: ObservableObject {
         
         // If utterance had a command, we might have already flushed the prefix.
         // We only want to type what came AFTER the commands.
-        if currentUtteranceHadCommand && !isForceEndTurn {
+        if currentUtteranceHadCommand && !isForceEnd {
             let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
             if lastCommandEndIndex >= 0 && lastCommandEndIndex < turn.words.count - 1 {
                 let wordsAfter = turn.words[(lastCommandEndIndex + 1)...]
@@ -685,14 +973,14 @@ class AppState: ObservableObject {
             }
         }
         
-        let shouldType = turn.isFormatted || (!expectsFormattedTurns && turn.endOfTurn) || isForceEndTurn
+        let shouldType = turn.isFormatted || (!expectsFormattedTurns && turn.endOfTurn) || isForceEnd
         
-        if textToType.isEmpty, isForceEndTurn {
+        if textToType.isEmpty, isForceEnd {
             textToType = turn.utterance ?? assembleDisplayText(from: turn.words)
             logger.info("Force end: using fallback text \"\(textToType)\"")
         }
         
-        logger.info("handleDictationTurn logic: isFormatted=\(turn.isFormatted), endOfTurn=\(turn.endOfTurn), forceEnd=\(isForceEndTurn), shouldType=\(shouldType), textToType=\"\(textToType)\"")
+        logger.info("handleDictationTurn logic: isFormatted=\(turn.isFormatted), endOfTurn=\(turn.endOfTurn), forceEnd=\(isForceEnd), shouldType=\(shouldType), textToType=\"\(textToType)\"")
 
         if let turnOrder = turn.turnOrder, turnOrder <= lastTypedTurnOrder {
             logger.debug("Skipping duplicate turn order \(turnOrder)")
@@ -707,7 +995,7 @@ class AppState: ObservableObject {
             return
         }
 
-        if isForceEndTurn, turn.transcript.isEmpty {
+        if isForceEnd, turn.transcript.isEmpty {
             logger.info("Force end typing unformatted utterance")
         }
 
@@ -722,7 +1010,7 @@ class AppState: ObservableObject {
         if let turnOrder = turn.turnOrder {
             lastTypedTurnOrder = turnOrder
         }
-        if isForceEndTurn {
+        if isForceEnd {
             forceEndPending = false
             forceEndRequestedAt = nil
         }
@@ -808,7 +1096,7 @@ class AppState: ObservableObject {
 
 
 
-    private func handleLiveDictationTurn(_ turn: TranscriptTurn) {
+    private func handleLiveDictationTurn(_ turn: TranscriptTurn, isForceEnd: Bool) {
         // Skip typing during wake-up grace period to avoid typing residual wake word audio
         if let wakeTime = wakeUpTime, Date().timeIntervalSince(wakeTime) < wakeUpGracePeriod {
             return
@@ -919,6 +1207,7 @@ class AppState: ObservableObject {
         let endWordIndex: Int
         let isPrefixed: Bool
         let isStable: Bool
+        let requiresPause: Bool
         let haltsProcessing: Bool
         let turn: TranscriptTurn
         let action: () -> Void
@@ -1049,6 +1338,7 @@ class AppState: ObservableObject {
                     endWordIndex: endWordIndex,
                     isPrefixed: isPrefixed,
                     isStable: isStable,
+                    requiresPause: false,
                     haltsProcessing: systemCommand.haltsProcessing,
                     turn: turn,
                     action: { [weak self] in
@@ -1078,6 +1368,7 @@ class AppState: ObservableObject {
                         endWordIndex: endWordIndex,
                         isPrefixed: isPrefixed,
                         isStable: isStable,
+                        requiresPause: command.requiresPause,
                         haltsProcessing: false,
                         turn: turn,
                         action: { [weak self] in
@@ -1111,7 +1402,13 @@ class AppState: ObservableObject {
             }
 
             // Skip delay if: prefixed, halts processing, delay is 0, OR followed by another command
-            if match.isPrefixed || match.haltsProcessing || commandDelayMs <= 0 || hasFollowingCommand {
+            // Exception: If command requiresPause and it's NOT the end of the turn, we MUST delay it
+            // (even if commandDelayMs is 0, we'll use a default minimal delay if needed, 
+            // but scheduleMatch handles the delay via commandDelayMs).
+            
+            let shouldDelayForPause = match.requiresPause && !match.turn.endOfTurn
+            
+            if (match.isPrefixed || match.haltsProcessing || (commandDelayMs <= 0 && !match.requiresPause) || hasFollowingCommand) && !shouldDelayForPause {
                 executeMatch(match)
                 if match.haltsProcessing {
                     break
@@ -1376,7 +1673,8 @@ class AppState: ObservableObject {
     // MARK: - Persistence
 
     private func loadAPIKey() {
-        apiKey = UserDefaults.standard.string(forKey: "assemblyai_api_key") ?? ""
+        apiKey = UserDefaults.standard.string(forKey: "assemblyai_api_key") ?? "73686868686868686868686868686868" // Default placeholder or real key if provided
+        deepgramApiKey = UserDefaults.standard.string(forKey: "deepgram_api_key") ?? "9988458f12e98ddd52fc20a9ed5eb089b22ca29e"
     }
 
     func saveAPIKey(_ key: String) {
@@ -1384,8 +1682,19 @@ class AppState: ObservableObject {
         apiKey = key
         UserDefaults.standard.set(key, forKey: "assemblyai_api_key")
         
-        if previous != key && microphoneMode != .off {
+        if previous != key && microphoneMode != .off && (dictationProvider == .online || dictationProvider == .auto) {
             logDebug("API Key changed: Restarting services")
+            restartServicesIfActive()
+        }
+    }
+
+    func saveDeepgramApiKey(_ key: String) {
+        let previous = deepgramApiKey
+        deepgramApiKey = key
+        UserDefaults.standard.set(key, forKey: "deepgram_api_key")
+        
+        if previous != key && microphoneMode != .off && dictationProvider == .deepgram {
+            logDebug("Deepgram API Key changed: Restarting services")
             restartServicesIfActive()
         }
     }
@@ -1513,7 +1822,7 @@ class AppState: ObservableObject {
     }
 
     private func loadSleepTimerSettings() {
-        sleepTimerEnabled = UserDefaults.standard.object(forKey: "sleep_timer_enabled") as? Bool ?? false
+        sleepTimerEnabled = UserDefaults.standard.object(forKey: "sleep_timer_enabled") as? Bool ?? true
         let storedMinutes = UserDefaults.standard.double(forKey: "sleep_timer_minutes")
         if storedMinutes > 0 {
             sleepTimerMinutes = storedMinutes
@@ -1653,9 +1962,15 @@ class AppState: ObservableObject {
     }
 
     private func loadLaunchMode() {
-        if let modeString = UserDefaults.standard.string(forKey: "launch_mode"),
-           let mode = MicrophoneMode(rawValue: modeString) {
-            launchMode = mode
+        if let modeString = UserDefaults.standard.string(forKey: "launch_mode") {
+            // Case-insensitive matching
+            let normalized = modeString.lowercased()
+            switch normalized {
+            case "on": launchMode = .on
+            case "off": launchMode = .off
+            case "sleep": launchMode = .sleep
+            default: launchMode = .sleep
+            }
         } else {
             launchMode = .sleep // Default to Sleep
         }
@@ -1666,58 +1981,76 @@ class AppState: ObservableObject {
         UserDefaults.standard.set(mode.rawValue, forKey: "launch_mode")
     }
 
+    private func loadLaunchAtLogin() {
+        if #available(macOS 13.0, *) {
+            // Check if we have explicitly set a preference before
+            let hasSetPreference = UserDefaults.standard.bool(forKey: "launch_at_login_preference_set")
+            
+            if !hasSetPreference {
+                // Default to OFF for now as requested
+                launchAtLogin = false
+                UserDefaults.standard.set(true, forKey: "launch_at_login_preference_set")
+            } else {
+                launchAtLogin = SMAppService.mainApp.status == .enabled
+            }
+        }
+    }
+
+    func saveLaunchAtLogin(_ enabled: Bool) {
+        launchAtLogin = enabled
+        UserDefaults.standard.set(true, forKey: "launch_at_login_preference_set")
+        if #available(macOS 13.0, *) {
+            do {
+                if enabled {
+                    try SMAppService.mainApp.register()
+                    logDebug("Registered for launch at login")
+                } else {
+                    try SMAppService.mainApp.unregister()
+                    logDebug("Unregistered from launch at login")
+                }
+            } catch {
+                logDebug("Failed to update launch at login: \(error.localizedDescription)")
+                // Revert the state if registration failed
+                launchAtLogin = SMAppService.mainApp.status == .enabled
+            }
+        }
+    }
+
     /// Force end of current utterance immediately
     func forceEndUtterance() {
         logger.info("Force end utterance requested (connected=\(self.isConnected ? "true" : "false"))")
         
         // 1. Check for commands and immediately type whatever is currently in the buffer if it's not empty
-        if !currentTranscript.isEmpty {
+        if !currentTranscript.isEmpty && microphoneMode == .on {
             // Construct a temporary turn to process commands from the current buffer
             let tempTurn = TranscriptTurn(
                 transcript: currentTranscript,
                 words: currentWords,
                 endOfTurn: true,
-                isFormatted: false,
-                turnOrder: -1,
+                isFormatted: true, // Mark as formatted so it definitely types
+                turnOrder: (lastTypedTurnOrder + 1),
                 utterance: currentTranscript
             )
             
-            // Process commands from the buffer
-            if activeBehavior != .dictation {
-                processVoiceCommands(tempTurn)
-            }
-
-            // Only type if we haven't just executed a command that halts processing (like 'microphone off')
-            // or if the utterance didn't have a command.
-            // preprocessDictation also helps strip the command phrases from the text.
-            let processed = preprocessDictation(currentTranscript)
-            
-            if !processed.isEmpty {
-                logDebug("Force pushing buffer: \"\(processed.prefix(20))...\"")
-                typeText(processed, appendSpace: true)
-                if !processed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    didTypeDictationThisUtterance = true
-                }
-            }
+            logger.info("Force pushing buffer: \"\(self.currentTranscript)\"")
+            handleDictationTurn(tempTurn, isForceEnd: true)
             
             currentTranscript = ""
             currentWords = []
         }
 
-        // 2. Reset state locally so we are ready for the next turn
-        let wasPending = forceEndPending
+        // 2. Set pending flag so we can ignore any late responses for this turn from the server
         forceEndPending = true
         forceEndRequestedAt = Date()
         
-        if !wasPending {
-            assemblyAIService?.forceEndUtterance()
-            appleSpeechService?.forceEndUtterance()
-        }
+        // 3. Request services to end current utterance
+        assemblyAIService?.forceEndUtterance()
+        appleSpeechService?.forceEndUtterance()
         
-        // 3. Clear state after a short delay to ensure no double-typing from the server response
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.resetUtteranceState()
-        }
+        // 4. Note: resetUtteranceState() will be called when we receive the end-of-turn
+        // or when the forceEndPending timeout hits in handleDictationTurn.
+        // We DON'T call it here immediately because that clears the command history 
+        // that handleDictationTurn might need to filter out already-executed commands.
     }
 
     func saveToIdeaFlow() {

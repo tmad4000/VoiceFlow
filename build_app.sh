@@ -61,14 +61,17 @@ EOF
 # Convert Info.plist to binary format
 plutil -convert binary1 "${CONTENTS_DIR}/Info.plist"
 
-# Clean up any existing signature
-echo "Removing existing signature..."
-codesign --remove-signature "${APP_BUNDLE}" 2>/dev/null || true
+# Define entitlements and signing identity
+ENTITLEMENTS="VoiceFlow.entitlements"
+# Use Developer ID for distribution builds (can be notarized)
+SIGNING_IDENTITY="Developer ID Application: IdeaFlow, Inc. (JESMXK96LG)"
 
-# Sign the App Bundle
-echo "Signing App Bundle..."
-# Self-sign with ad-hoc signature
-codesign --force --deep --sign - "${APP_BUNDLE}"
+# Sign the App Bundle with Developer ID and entitlements
+echo "Signing App Bundle with: ${SIGNING_IDENTITY}"
+codesign --force --sign "${SIGNING_IDENTITY}" \
+    --entitlements "${ENTITLEMENTS}" \
+    --options runtime \
+    "${APP_BUNDLE}"
 
 echo "Verifying Signature..."
 codesign -dv --verbose=4 "${APP_BUNDLE}"

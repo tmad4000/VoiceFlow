@@ -2,30 +2,41 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
+    @State private var selectedTab: Int = 0
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             GeneralSettingsView()
                 .tabItem {
                     Label("General", systemImage: "gear")
                 }
+                .tag(0)
 
             VoiceCommandsSettingsView()
                 .tabItem {
                     Label("Commands", systemImage: "command")
                 }
+                .tag(1)
 
             DictationHistoryView()
                 .tabItem {
                     Label("History", systemImage: "clock.arrow.circlepath")
                 }
+                .tag(2)
 
             DebugConsoleView()
                 .tabItem {
                     Label("Debug", systemImage: "terminal")
                 }
+                .tag(3)
         }
         .frame(width: 480, height: 580)
+        .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
+            selectedTab = 0
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openHistory)) { _ in
+            selectedTab = 2
+        }
     }
 }
 
@@ -118,6 +129,7 @@ struct SectionHeader: View {
 struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
     @State private var apiKeyInput: String = ""
+    @State private var deepgramApiKeyInput: String = ""
     @State private var showAdvancedUtterance = false
     @State private var showDebugInfo = false
 
@@ -125,7 +137,7 @@ struct GeneralSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
 
-                // API Key Section
+                // AssemblyAI API Key Section
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("AssemblyAI API Key")
@@ -150,11 +162,86 @@ struct GeneralSettingsView: View {
                     .padding(4)
                 }
 
+                // Deepgram API Key Section
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Deepgram API Key")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        SecureField("Enter your API key", text: $deepgramApiKeyInput)
+                            .textFieldStyle(.roundedBorder)
+                            .onAppear { deepgramApiKeyInput = appState.deepgramApiKey }
+
+                        HStack {
+                            Button("Save") {
+                                appState.saveDeepgramApiKey(deepgramApiKeyInput)
+                            }
+                            .disabled(deepgramApiKeyInput.isEmpty)
+
+                            Spacer()
+
+                            Link("Get API Key", destination: URL(string: "https://console.deepgram.com/signup")!)
+                                .font(.system(size: 11))
+                        }
+                    }
+                    .padding(4)
+                }
+
                 // Permissions Section
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Permissions")
-                            .font(.system(size: 13, weight: .semibold))
+                        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "VoiceFlow"
+
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("Permissions")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("(look for \"\(appName)\" in System Settings)")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+
+                        // Swift run warning banner
+                        if appState.isRunningFromSwiftRun && !appState.isAccessibilityGranted {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(.orange)
+                                    Text("Running via 'swift run'")
+                                        .font(.system(size: 12, weight: .semibold))
+                                }
+                                Text("Permissions granted to VoiceFlow-Dev.app don't apply to the swift run binary. Either run the .app or grant permissions to Terminal.")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                                HStack(spacing: 8) {
+                                    Button("Run .app Instead") {
+                                        // Try to find and launch the app bundle
+                                        let possiblePaths = [
+                                            "./VoiceFlow-Dev.app",
+                                            "~/Applications/VoiceFlow-Dev.app",
+                                            "/Applications/VoiceFlow-Dev.app"
+                                        ]
+                                        for path in possiblePaths {
+                                            let expandedPath = NSString(string: path).expandingTildeInPath
+                                            if FileManager.default.fileExists(atPath: expandedPath) {
+                                                NSWorkspace.shared.open(URL(fileURLWithPath: expandedPath))
+                                                NSApp.terminate(nil)
+                                                return
+                                            }
+                                        }
+                                    }
+                                    .font(.system(size: 11))
+
+                                    Button("Copy tccutil Command") {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString("tccutil reset Accessibility com.jacobcole.voiceflow && open ./VoiceFlow-Dev.app", forType: .string)
+                                    }
+                                    .font(.system(size: 11))
+                                }
+                            }
+                            .padding(10)
+                            .background(Color.orange.opacity(0.1))
+                            .cornerRadius(8)
+                        }
 
                         PermissionRow(
                             name: "Microphone",
@@ -179,10 +266,27 @@ struct GeneralSettingsView: View {
                         
                         Divider()
                         
-                        Button("Refresh All Permissions") {
-                            appState.checkMicrophonePermission()
-                            appState.checkSpeechPermission()
-                            appState.recheckAccessibilityPermission()
+                        HStack {
+                            Button("Refresh") {
+                                appState.checkMicrophonePermission()
+                                appState.checkSpeechPermission()
+                                appState.recheckAccessibilityPermission()
+                            }
+
+                            Spacer()
+
+                            Button("Reset All") {
+                                resetAllPermissions()
+                            }
+                            .foregroundColor(.red)
+                            .help("Revokes all permissions for this app. Requires restart.")
+
+                            CopyCommandButton()
+
+                            Button("Restart App") {
+                                appState.restartApp()
+                            }
+                            .help("Restart VoiceFlow to pick up permission changes")
                         }
                         .font(.system(size: 11))
                     }
@@ -211,7 +315,16 @@ struct GeneralSettingsView: View {
                         Text("The mode VoiceFlow will enter when first launched.")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
-                        
+
+                        Divider()
+
+                        Toggle("Launch at Login", isOn: launchAtLoginBinding)
+                            .font(.system(size: 13))
+
+                        Text("Automatically start VoiceFlow when you log in.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
                         Divider()
                         
                         VStack(alignment: .leading, spacing: 8) {
@@ -256,7 +369,7 @@ struct GeneralSettingsView: View {
                             .frame(width: 180)
                         }
 
-                        Text("Choose between cloud-based AssemblyAI (higher quality) or local Mac speech recognition.")
+                        Text("Choose between cloud-based (AssemblyAI, Deepgram) or local Mac speech recognition.")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
 
@@ -311,6 +424,22 @@ struct GeneralSettingsView: View {
                         Text("Configure how to trigger Idea Flow when saying \"save to idea flow\".")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
+                    }
+                    .padding(4)
+                }
+
+                // Shortcuts Help Section
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Global Shortcuts")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        ShortcutHelpRow(keys: "⌃⌥⌘Space", description: "Push-to-Talk (Hold)")
+                        ShortcutHelpRow(keys: "⌃⌘V", description: "Paste last utterance")
+                        ShortcutHelpRow(keys: "⌃⌥⌘1", description: "Mode: ON")
+                        ShortcutHelpRow(keys: "⌃⌥⌘2", description: "Mode: SLEEP")
+                        ShortcutHelpRow(keys: "⌃⌥⌘0", description: "Mode: OFF")
+                        ShortcutHelpRow(keys: "⌘,", description: "Open Settings")
                     }
                     .padding(4)
                 }
@@ -423,11 +552,70 @@ struct GeneralSettingsView: View {
                 .buttonStyle(.plain)
 
                 if showDebugInfo {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Mic: \(appState.microphoneAuthStatusDescription)")
-                        Text("Accessibility: \(appState.accessibilityStatusDescription)")
-                        Text("isMicGranted: \(appState.isMicrophoneGranted ? "true" : "false")")
-                        Text("isA11yGranted: \(appState.isAccessibilityGranted ? "true" : "false")")
+                    let diagnostics = appState.accessibilityDiagnostics
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        // Warning banner if running from swift run without permission
+                        if diagnostics.isSwiftRun && !appState.isAccessibilityGranted {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text("Running via 'swift run' - permissions may not apply")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .padding(8)
+                            .background(Color.orange.opacity(0.15))
+                            .cornerRadius(6)
+                        }
+
+                        // Status
+                        Group {
+                            Text("Mic: \(appState.microphoneAuthStatusDescription)")
+                            Text("Accessibility: \(appState.accessibilityStatusDescription)")
+                            Text("isMicGranted: \(appState.isMicrophoneGranted ? "true" : "false")")
+                            Text("isA11yGranted: \(appState.isAccessibilityGranted ? "true" : "false")")
+                        }
+
+                        Divider()
+
+                        // Process identity info
+                        Group {
+                            HStack(alignment: .top) {
+                                Text("Executable:")
+                                    .foregroundColor(.secondary)
+                                Text(diagnostics.execPath)
+                                    .textSelection(.enabled)
+                            }
+                            HStack {
+                                Text("Bundle ID:")
+                                    .foregroundColor(.secondary)
+                                Text(diagnostics.bundleId ?? "nil")
+                                    .textSelection(.enabled)
+                            }
+                            HStack {
+                                Text("swift run:")
+                                    .foregroundColor(.secondary)
+                                Text(diagnostics.isSwiftRun ? "Yes" : "No")
+                                    .foregroundColor(diagnostics.isSwiftRun ? .orange : .green)
+                            }
+                        }
+
+                        // Suggestion box
+                        if !appState.isAccessibilityGranted {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Suggestion:")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text(diagnostics.suggestion)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                            .padding(8)
+                            .background(Color.blue.opacity(0.1))
+                            .cornerRadius(6)
+                        }
+
+                        Divider()
 
                         HStack(spacing: 8) {
                             Button("Refresh") {
@@ -446,16 +634,17 @@ struct GeneralSettingsView: View {
                                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
                             }
                             .font(.system(size: 11))
-                        }
-                        .padding(.top, 4)
 
-                        Text("Reset command: tccutil reset Accessibility \(Bundle.main.bundleIdentifier ?? "")")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .textSelection(.enabled)
+                            Button("Copy Reset Cmd") {
+                                let cmd = "tccutil reset Accessibility \(Bundle.main.bundleIdentifier ?? "com.jacobcole.voiceflow")"
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(cmd, forType: .string)
+                            }
+                            .font(.system(size: 11))
+                        }
                     }
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.primary)
                     .padding(.leading, 16)
                 }
 
@@ -524,6 +713,13 @@ struct GeneralSettingsView: View {
         Binding(
             get: { appState.launchMode },
             set: { appState.saveLaunchMode($0) }
+        )
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { appState.launchAtLogin },
+            set: { appState.saveLaunchAtLogin($0) }
         )
     }
 
@@ -597,6 +793,22 @@ struct GeneralSettingsView: View {
         )
     }
 
+    private func resetAllPermissions() {
+        guard let bundleId = Bundle.main.bundleIdentifier else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        process.arguments = ["reset", "All", bundleId]
+        try? process.run()
+        process.waitUntilExit()
+        
+        // Refresh status
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            appState.checkMicrophonePermission()
+            appState.checkSpeechPermission()
+            appState.recheckAccessibilityPermission()
+        }
+    }
+
     private func resetAccessibilityPermission() {
         guard let bundleId = Bundle.main.bundleIdentifier else { return }
         let process = Process()
@@ -608,6 +820,97 @@ struct GeneralSettingsView: View {
         // Refresh status after reset
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             appState.recheckAccessibilityPermission()
+        }
+    }
+}
+
+struct CopyCommandButton: View {
+    @State private var showingPopover = false
+    @State private var copied = false
+
+    private var command: String {
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.jacobcole.voiceflow"
+        return "tccutil reset All \(bundleId)"
+    }
+
+    var body: some View {
+        Button(action: {
+            showingPopover = true
+        }) {
+            Image(systemName: "terminal")
+        }
+        .popover(isPresented: $showingPopover, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Reset Permissions")
+                    .font(.system(size: 13, weight: .semibold))
+
+                Text("If permissions aren't working correctly, you can reset them by running this command in Terminal:")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack {
+                    Text(command)
+                        .font(.system(size: 10, design: .monospaced))
+                        .padding(6)
+                        .background(Color.black.opacity(0.8))
+                        .foregroundColor(.green)
+                        .cornerRadius(4)
+                        .textSelection(.enabled)
+
+                    Button(action: {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(command, forType: .string)
+                        copied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            copied = false
+                        }
+                    }) {
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                            .foregroundColor(copied ? .green : .primary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Text("After running, restart the app and re-grant permissions in System Settings.")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack {
+                    Spacer()
+                    if copied {
+                        Text("Copied!")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.green)
+                    }
+                    Button("Done") {
+                        showingPopover = false
+                    }
+                    .font(.system(size: 11))
+                }
+            }
+            .padding(12)
+            .frame(width: 280)
+        }
+    }
+}
+
+struct ShortcutHelpRow: View {
+    let keys: String
+    let description: String
+
+    var body: some View {
+        HStack {
+            Text(description)
+                .font(.system(size: 12))
+            Spacer()
+            Text(keys)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.secondary.opacity(0.15))
+                .cornerRadius(4)
         }
     }
 }
@@ -712,6 +1015,14 @@ struct VoiceCommandsSettingsView: View {
                     Image(systemName: "plus")
                 }
                 .help("Add new voice command")
+
+                Button(action: {
+                    appState.voiceCommands = VoiceCommand.defaults
+                    appState.saveVoiceCommands()
+                }) {
+                    Image(systemName: "arrow.counterclockwise")
+                }
+                .help("Reset to default commands")
             }
             .padding()
 
@@ -760,10 +1071,19 @@ struct VoiceCommandsSettingsView: View {
             .listStyle(.inset)
 
             // Footer info
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text("Say a phrase in On mode to trigger a shortcut.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
+
+                HStack(spacing: 4) {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Text("See **General** tab for global keyboard shortcuts")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
             }
             .padding()
         }
@@ -796,9 +1116,17 @@ struct VoiceCommandRow: View {
                 Text("\"\(command.phrase)\"")
                     .font(.system(size: 13, weight: .medium))
 
-                Text(command.replacementText ?? command.shortcut?.description ?? "")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                HStack(spacing: 6) {
+                    Text(command.replacementText ?? command.shortcut?.description ?? "")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    
+                    if command.requiresPause {
+                        Text("• Requires Pause")
+                            .font(.system(size: 10))
+                            .foregroundColor(.orange.opacity(0.8))
+                    }
+                }
             }
 
             Spacer()
@@ -822,6 +1150,7 @@ struct AddCommandSheet: View {
     @State private var useShift = false
     @State private var useOption = false
     @State private var useControl = false
+    @State private var requiresPause = false
     @State private var type: CommandType = .shortcut
 
     enum CommandType: String, CaseIterable {
@@ -870,6 +1199,12 @@ struct AddCommandSheet: View {
                         Toggle("⌃", isOn: $useControl)
                     }
                 }
+
+                Toggle("Requires Pause", isOn: $requiresPause)
+                    .font(.system(size: 13))
+                Text("Only trigger if there is a pause before or after. Recommended for common words to avoid accidental triggers.")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
             }
 
             HStack {
@@ -893,18 +1228,15 @@ struct AddCommandSheet: View {
 
     func createCommand() -> VoiceCommand {
         if type == .snippet {
-            return VoiceCommand(phrase: phrase, shortcut: nil, replacementText: replacementText)
+            return VoiceCommand(phrase: phrase, shortcut: nil, replacementText: replacementText, requiresPause: requiresPause)
         } else {
             var modifiers = KeyboardModifiers()
             if useCommand { modifiers.insert(.command) }
             if useShift { modifiers.insert(.shift) }
             if useOption { modifiers.insert(.option) }
             if useControl { modifiers.insert(.control) }
-
-            let keyCode = keyCodeForString(selectedKey)
-            let shortcut = KeyboardShortcut(keyCode: keyCode, modifiers: modifiers)
-
-            return VoiceCommand(phrase: phrase, shortcut: shortcut, replacementText: nil)
+            let shortcut = KeyboardShortcut(keyCode: keyCodeForString(selectedKey), modifiers: modifiers)
+            return VoiceCommand(phrase: phrase, shortcut: shortcut, replacementText: nil, requiresPause: requiresPause)
         }
     }
 
@@ -966,7 +1298,8 @@ struct AddCommandSheet: View {
 
 struct DictationHistoryView: View {
     @EnvironmentObject var appState: AppState
-    @State private var selection = Set<String>()
+    @State private var selection = Set<Int>()
+    @State private var lastSelectedIndex: Int?
     @State private var shouldAutoScroll = true
     @State private var lastScrollTime = Date()
     @State private var searchText = ""
@@ -1017,8 +1350,9 @@ struct DictationHistoryView: View {
 
                 if !selection.isEmpty {
                     Button("Copy Selected") {
-                        let selectedText = reversedHistory
-                            .filter { selection.contains($0) }
+                        let selectedText = reversedHistory.enumerated()
+                            .filter { selection.contains($0.offset) }
+                            .map { $0.element }
                             .joined(separator: "\n")
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(selectedText, forType: .string)
@@ -1158,18 +1492,30 @@ struct DictationHistoryView: View {
                                     .padding(.horizontal, 12)
                                     .background(
                                         isCurrentMatch ? Color.yellow.opacity(0.3) :
-                                        (selection.contains(entry) ? Color.accentColor.opacity(0.2) : Color.clear)
+                                        (selection.contains(index) ? Color.accentColor.opacity(0.2) : Color.clear)
                                     )
                                     .contentShape(Rectangle())
                                     .onTapGesture {
-                                        if NSEvent.modifierFlags.contains(.command) {
-                                            if selection.contains(entry) {
-                                                selection.remove(entry)
-                                            } else {
-                                                selection.insert(entry)
+                                        let modifiers = NSEvent.modifierFlags
+                                        if modifiers.contains(.shift), let last = lastSelectedIndex {
+                                            let start = min(last, index)
+                                            let end = max(last, index)
+                                            if !modifiers.contains(.command) {
+                                                selection.removeAll()
                                             }
+                                            for i in start...end {
+                                                selection.insert(i)
+                                            }
+                                        } else if modifiers.contains(.command) {
+                                            if selection.contains(index) {
+                                                selection.remove(index)
+                                            } else {
+                                                selection.insert(index)
+                                            }
+                                            lastSelectedIndex = index
                                         } else {
-                                            selection = [entry]
+                                            selection = [index]
+                                            lastSelectedIndex = index
                                         }
                                     }
                                 }
@@ -1199,7 +1545,7 @@ struct DictationHistoryView: View {
                 }
 
                 // Footer hint
-                Text("Click to select • Cmd+click for multiple • Drag to select text")
+                Text("Click to select • Cmd+click for multiple • Shift+click for range • Drag to select text")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
                     .padding(.horizontal)

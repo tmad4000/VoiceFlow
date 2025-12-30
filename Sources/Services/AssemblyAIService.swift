@@ -87,6 +87,11 @@ class AssemblyAIService: NSObject, ObservableObject {
         request.setValue(apiKey, forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 30
 
+        // Debug logging with NSLog
+        NSLog("[AssemblyAI] Connecting to: %@", url.absoluteString)
+        NSLog("[AssemblyAI] API Key (first 8 chars): %@...", String(apiKey.prefix(8)))
+        NSLog("[AssemblyAI] API Key length: %d", apiKey.count)
+
         socket = WebSocket(request: request)
         socket?.delegate = self
         socket?.connect()

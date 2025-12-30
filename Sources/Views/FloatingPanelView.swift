@@ -9,7 +9,7 @@ struct FloatingPanelView: View {
         VStack(spacing: 0) {
             // Header with mode buttons, volume indicator, and close button
             HStack(spacing: 8) {
-                // Dev indicator - shows when not running from release bundle
+                // ... DEV indicator ...
                 if Bundle.main.bundleIdentifier?.contains("release") != true {
                     Text("DEV")
                         .font(.system(size: 8, weight: .bold, design: .monospaced))
@@ -29,6 +29,7 @@ struct FloatingPanelView: View {
                 // Mic volume indicator
                 if appState.microphoneMode != .off {
                     MicLevelIndicator(level: appState.audioLevel)
+                        .padding(.trailing, 4)
 
                     // Force end utterance button - appears when connected
                     if appState.isConnected {
@@ -41,6 +42,15 @@ struct FloatingPanelView: View {
                         .help("Force send current dictation")
                     }
                 }
+
+                // History button
+                Button(action: openHistory) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Open dictation history")
 
                 // Settings button
                 Button(action: openSettings) {
@@ -71,6 +81,13 @@ struct FloatingPanelView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(Color.black.opacity(0.05))
+
+            // Warning Banners
+            VStack(spacing: 0) {
+                ForEach(appState.activeWarnings) { warning in
+                    WarningBanner(warning: warning)
+                }
+            }
 
             Divider()
                 .padding(.horizontal, 10)
@@ -150,13 +167,46 @@ struct FloatingPanelView: View {
         NotificationCenter.default.post(name: .openSettings, object: nil)
     }
 
+    private func openHistory() {
+        NotificationCenter.default.post(name: .openHistory, object: nil)
+    }
+
     private func quitApp() {
         NSApp.terminate(nil)
     }
 }
 
+struct WarningBanner: View {
+    let warning: AppWarning
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: warning.severity == .error ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
+                .foregroundColor(warning.severity == .error ? .red : .orange)
+                .font(.system(size: 12))
+            
+            Text(warning.message)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.primary)
+            
+            Spacer()
+            
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(warning.severity == .error ? Color.red.opacity(0.1) : Color.orange.opacity(0.1))
+        .onTapGesture {
+            NotificationCenter.default.post(name: .openSettings, object: nil)
+        }
+    }
+}
+
 extension Notification.Name {
     static let openSettings = Notification.Name("openSettings")
+    static let openHistory = Notification.Name("openHistory")
 }
 
 private struct ModeSelectionView: View {
@@ -174,6 +224,7 @@ private struct ModeSelectionView: View {
                 }
             }
         }
+        .fixedSize()
     }
 
     private var onModePill: some View {
@@ -186,25 +237,9 @@ private struct ModeSelectionView: View {
             }
             .padding(.trailing, -4) // Pull arrow closer
 
-            // Use menuIndicator to ensure proper menu presentation
-            Menu {
-                ForEach(ActiveBehavior.allCases) { behavior in
-                    Button {
-                        appState.saveActiveBehavior(behavior)
-                    } label: {
-                        Label(behavior.rawValue, systemImage: behavior.icon)
-                    }
-                }
-            } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 6, weight: .semibold))
-                    .foregroundColor(color.opacity(isSelected ? 0.6 : 0.4))
-                    .frame(width: 12, height: 16)
-                    .contentShape(Rectangle())
-            }
-            .menuIndicator(.hidden)
-            .menuStyle(.borderlessButton)
+            onModeMenu(color: color, isSelected: isSelected)
         }
+        .fixedSize() // Ensure pill doesn't expand
         .background(isSelected ? Color.green.opacity(0.15) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
@@ -212,35 +247,50 @@ private struct ModeSelectionView: View {
                 .stroke(isSelected ? Color.green.opacity(0.3) : Color.clear, lineWidth: 1)
         )
     }
+
+    private func onModeMenu(color: Color, isSelected: Bool) -> some View {
+        Menu {
+            ForEach(ActiveBehavior.allCases) { behavior in
+                Button {
+                    appState.saveActiveBehavior(behavior)
+                } label: {
+                    Label(behavior.rawValue, systemImage: behavior.icon)
+                }
+            }
+        } label: {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 6, weight: .semibold))
+                .foregroundColor(color.opacity(isSelected ? 0.6 : 0.4))
+                .frame(width: 12, height: 16)
+                .contentShape(Rectangle())
+        }
+        .menuIndicator(.hidden)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
 }
 
 private struct MicLevelIndicator: View {
     let level: Float  // 0.0 to 1.0
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(0..<5, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(barColor(for: index))
-                    .frame(width: 3, height: CGFloat(4 + index * 2))
-            }
+        ZStack(alignment: .bottom) {
+            // Background bar
+            RoundedRectangle(cornerRadius: 1)
+                .fill(Color.secondary.opacity(0.2))
+                .frame(width: 3, height: 16)
+            
+            // Level overlay
+            RoundedRectangle(cornerRadius: 1)
+                .fill(barColor)
+                .frame(width: 3, height: max(2, CGFloat(level) * 16))
         }
-        .frame(height: 14)
     }
 
-    private func barColor(for index: Int) -> Color {
-        let threshold = Float(index + 1) / 5.0
-        if level >= threshold {
-            if index >= 4 {
-                return .red
-            } else if index >= 3 {
-                return .orange
-            } else {
-                return .green
-            }
-        } else {
-            return .gray.opacity(0.3)
-        }
+    private var barColor: Color {
+        if level > 0.8 { return .red }
+        if level > 0.5 { return .orange }
+        return .green
     }
 }
 

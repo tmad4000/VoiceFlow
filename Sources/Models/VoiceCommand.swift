@@ -8,6 +8,7 @@ struct VoiceCommand: Codable, Identifiable, Equatable, Hashable {
     var shortcut: KeyboardShortcut?
     var replacementText: String?
     var isEnabled: Bool = true
+    var requiresPause: Bool = false
 
     var isSnippet: Bool {
         replacementText != nil && !replacementText!.isEmpty
@@ -18,8 +19,8 @@ struct VoiceCommand: Codable, Identifiable, Equatable, Hashable {
         VoiceCommand(phrase: "tab forward", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Tab), modifiers: [.control])),
         VoiceCommand(phrase: "new tab", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_T), modifiers: [.command])),
         VoiceCommand(phrase: "close tab", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_W), modifiers: [.command])),
-        VoiceCommand(phrase: "undo that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command])),
-        VoiceCommand(phrase: "redo that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command, .shift])),
+        VoiceCommand(phrase: "undo that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command]), requiresPause: true),
+        VoiceCommand(phrase: "redo that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command, .shift]), requiresPause: true),
         VoiceCommand(phrase: "copy that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_C), modifiers: [.command])),
         VoiceCommand(phrase: "paste that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_V), modifiers: [.command])),
         VoiceCommand(phrase: "cut that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_X), modifiers: [.command])),
