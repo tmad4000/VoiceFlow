@@ -176,7 +176,7 @@ struct PlaceholderView: View {
                 return "Please add your AssemblyAI API key in Settings (⌘,)"
             }
             return appState.isConnected
-                ? "Listening for 'Wake up'...\nSay \"microphone on\" to start dictating"
+                ? "Listening for 'Speech on'...\nSay \"speech on\" to start dictating"
                 : "Connecting to AssemblyAI..."
         }
     }
@@ -226,7 +226,7 @@ struct StatusBar: View {
         switch appState.microphoneMode {
         case .off: return "Microphone off"
         case .on: return appState.isConnected ? "Transcribing" : "Connecting..."
-        case .sleep: return appState.isConnected ? "Listening for 'Wake up'" : "Connecting..."
+        case .sleep: return appState.isConnected ? "Listening for 'Speech on'" : "Connecting..."
         }
     }
 }

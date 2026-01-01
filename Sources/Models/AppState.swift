@@ -155,7 +155,7 @@ class AppState: ObservableObject {
     @Published var launchAtLogin: Bool = false
 
     // AI Formatter
-    @Published var aiFormatterEnabled: Bool = false
+    @Published var aiFormatterEnabled: Bool = true
     @Published var anthropicApiKey: String = ""
     let focusContextManager = FocusContextManager()
     private(set) lazy var aiFormatterService: AIFormatterService = {
@@ -989,25 +989,21 @@ class AppState: ObservableObject {
             currentTranscript = fallbackTranscript
         }
 
-        switch microphoneMode {
-        case .sleep:
+        let initialMode = microphoneMode
+        if initialMode == .sleep || (initialMode == .on && activeBehavior != .dictation) {
             processVoiceCommands(turn)
-        case .on:
-            // Always check for commands if behavior allows
-            if activeBehavior != .dictation {
-                processVoiceCommands(turn)
+        }
+
+        if microphoneMode == .on && activeBehavior != .command {
+            if liveDictationEnabled {
+                handleLiveDictationTurn(turn, isForceEnd: isForceEndTurn)
+            } else {
+                handleDictationTurn(turn, isForceEnd: isForceEndTurn)
             }
-            
-            // Handle dictation if behavior allows
-            if activeBehavior != .command {
-                if liveDictationEnabled {
-                    handleLiveDictationTurn(turn, isForceEnd: isForceEndTurn)
-                } else {
-                    handleDictationTurn(turn, isForceEnd: isForceEndTurn)
-                }
-            }
-        case .off:
-            break
+        }
+        
+        if microphoneMode == .off {
+            // Do nothing
         }
 
         if turn.endOfTurn {
@@ -1036,11 +1032,6 @@ class AppState: ObservableObject {
     private func handleDictationTurn(_ turn: TranscriptTurn, isForceEnd: Bool) {
         logger.info("handleDictationTurn: isFormatted=\(turn.isFormatted), endOfTurn=\(turn.endOfTurn), transcript=\"\(turn.transcript.prefix(50))...\"")
 
-        // Skip typing during wake-up grace period
-        if let wakeTime = wakeUpTime, Date().timeIntervalSince(wakeTime) < wakeUpGracePeriod {
-            return
-        }
-
         if forceEndPending, let requestedAt = forceEndRequestedAt,
            Date().timeIntervalSince(requestedAt) > forceEndTimeoutSeconds {
             forceEndPending = false
@@ -1061,6 +1052,15 @@ class AppState: ObservableObject {
             if effectiveWords.isEmpty && !turn.words.isEmpty {
                  logger.debug("Skipping turn: all words filtered out by speaker isolation")
                  return
+            }
+        }
+
+        let lastCommandEndIndex = currentUtteranceHadCommand ? (lastExecutedEndWordIndexByCommand.values.max() ?? -1) : -1
+
+        // Skip typing during wake-up grace period, UNLESS we have a matched command to skip precisely
+        if let wakeTime = wakeUpTime, Date().timeIntervalSince(wakeTime) < wakeUpGracePeriod {
+            if lastCommandEndIndex < 0 {
+                return
             }
         }
 
@@ -1086,12 +1086,11 @@ class AppState: ObservableObject {
         var wordsForKeywords: [TranscriptWord]? = effectiveWords.isEmpty ? nil : effectiveWords
         
         // If utterance had a command, we might have already flushed the prefix.
-        if currentUtteranceHadCommand && !isForceEnd {
-            let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
-            if lastCommandEndIndex >= 0 && lastHaltingCommandEndIndex == lastCommandEndIndex {
+        if lastCommandEndIndex >= 0 && !isForceEnd {
+            if lastHaltingCommandEndIndex == lastCommandEndIndex {
                 return
             }
-            if lastCommandEndIndex >= 0 && lastCommandEndIndex < effectiveWords.count - 1 {
+            if lastCommandEndIndex < effectiveWords.count - 1 {
                 let wordsAfter = effectiveWords[(lastCommandEndIndex + 1)...]
                 let filteredWords = wordsAfter.filter { word in
                     let stripped = word.text.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
@@ -1451,11 +1450,6 @@ class AppState: ObservableObject {
 
 
     private func handleLiveDictationTurn(_ turn: TranscriptTurn, isForceEnd: Bool) {
-        // Skip typing during wake-up grace period
-        if let wakeTime = wakeUpTime, Date().timeIntervalSince(wakeTime) < wakeUpGracePeriod {
-            return
-        }
-
         // SPEAKER ISOLATION FILTER
         // Filter the words in the turn to only include the isolated speaker
         var effectiveWords = turn.words
@@ -1469,6 +1463,14 @@ class AppState: ObservableObject {
         
         // If utterance had a command, we only care about words AFTER the command
         let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
+
+        // Skip typing during wake-up grace period, UNLESS we have a matched command to skip precisely
+        if let wakeTime = wakeUpTime, Date().timeIntervalSince(wakeTime) < wakeUpGracePeriod {
+            if lastCommandEndIndex < 0 {
+                return
+            }
+        }
+        
         if lastCommandEndIndex >= 0 && lastHaltingCommandEndIndex == lastCommandEndIndex {
             return
         }
@@ -1667,10 +1669,10 @@ class AppState: ObservableObject {
         
         if microphoneMode == .sleep {
             systemCommands.append(contentsOf: [
-                (phrase: "wake up", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void),
-                (phrase: "microphone on", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void),
-                (phrase: "flow on", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void),
-                (phrase: "speech on", key: "system.wake_up", name: "On", haltsProcessing: true, action: { [weak self] in self?.setMode(.on) } as () -> Void),
+                (phrase: "wake up", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
+                (phrase: "microphone on", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
+                (phrase: "flow on", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
+                (phrase: "speech on", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
                 // Also allow turning off from sleep mode
                 (phrase: "microphone off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in self?.setMode(.off) } as () -> Void),
                 (phrase: "flow off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in self?.setMode(.off) } as () -> Void),

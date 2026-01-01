@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
-    @State private var selectedTab: Int = 0
+    @AppStorage("settings_selected_tab") private var selectedTab: Int = 0
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -31,9 +31,6 @@ struct SettingsView: View {
                 .tag(3)
         }
         .frame(width: 480, height: 580)
-        .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
-            selectedTab = 0
-        }
         .onReceive(NotificationCenter.default.publisher(for: .openHistory)) { _ in
             selectedTab = 2
         }
@@ -143,6 +140,24 @@ struct GeneralSettingsView: View {
     @State private var showAdvancedUtterance = false
     @State private var showDebugInfo = false
 
+    // API Key test states
+    @State private var assemblyTestStatus: TestStatus = .idle
+    @State private var deepgramTestStatus: TestStatus = .idle
+    @State private var anthropicTestStatus: TestStatus = .idle
+
+    enum TestStatus {
+        case idle, testing, success, failed(String)
+
+        var color: Color {
+            switch self {
+            case .idle: return .secondary
+            case .testing: return .orange
+            case .success: return .green
+            case .failed: return .red
+            }
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -162,6 +177,13 @@ struct GeneralSettingsView: View {
                                 appState.saveAPIKey(apiKeyInput)
                             }
                             .disabled(apiKeyInput.isEmpty)
+
+                            Button("Test") {
+                                testAssemblyAIKey()
+                            }
+                            .disabled(apiKeyInput.isEmpty)
+
+                            testStatusView(assemblyTestStatus)
 
                             Spacer()
 
@@ -187,6 +209,13 @@ struct GeneralSettingsView: View {
                                 appState.saveDeepgramApiKey(deepgramApiKeyInput)
                             }
                             .disabled(deepgramApiKeyInput.isEmpty)
+
+                            Button("Test") {
+                                testDeepgramKey()
+                            }
+                            .disabled(deepgramApiKeyInput.isEmpty)
+
+                            testStatusView(deepgramTestStatus)
 
                             Spacer()
 
@@ -219,10 +248,31 @@ struct GeneralSettingsView: View {
                                 .font(.system(size: 11))
                                 .foregroundColor(.secondary)
 
+                            // Warning if no API key
+                            if appState.anthropicApiKey.isEmpty {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(.orange)
+                                    Text("No API key set - using local heuristics only (basic capitalization)")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.orange)
+                                }
+                                .padding(8)
+                                .background(Color.orange.opacity(0.1))
+                                .cornerRadius(6)
+                            }
+
                             Divider()
 
-                            Text("Anthropic API Key (optional, for enhanced formatting)")
-                                .font(.system(size: 12, weight: .medium))
+                            HStack {
+                                Text("Anthropic API Key")
+                                    .font(.system(size: 12, weight: .medium))
+                                if !appState.anthropicApiKey.isEmpty {
+                                    Text("(saved)")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.green)
+                                }
+                            }
 
                             SecureField("Enter your Anthropic API key", text: $anthropicApiKeyInput)
                                 .textFieldStyle(.roundedBorder)
@@ -236,11 +286,24 @@ struct GeneralSettingsView: View {
                                 .disabled(anthropicApiKeyInput.isEmpty)
                                 .font(.system(size: 11))
 
-                                Spacer()
+                                Button("Test") {
+                                    testAnthropicKey()
+                                }
+                                .disabled(anthropicApiKeyInput.isEmpty)
+                                .font(.system(size: 11))
 
-                                Text("Without API key, uses local heuristics only")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
+                                testStatusView(anthropicTestStatus)
+
+                                if !appState.anthropicApiKey.isEmpty {
+                                    Button("Clear") {
+                                        appState.saveAnthropicApiKey("")
+                                        anthropicApiKeyInput = ""
+                                    }
+                                    .foregroundColor(.red)
+                                    .font(.system(size: 11))
+                                }
+
+                                Spacer()
 
                                 Link("Get API Key", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
                                     .font(.system(size: 11))
@@ -947,6 +1010,132 @@ struct GeneralSettingsView: View {
         // Refresh status after reset
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             appState.recheckAccessibilityPermission()
+        }
+    }
+
+    // MARK: - API Key Test Helpers
+
+    @ViewBuilder
+    private func testStatusView(_ status: TestStatus) -> some View {
+        switch status {
+        case .idle:
+            EmptyView()
+        case .testing:
+            ProgressView()
+                .scaleEffect(0.6)
+                .frame(width: 16, height: 16)
+        case .success:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(.green)
+                .font(.system(size: 12))
+        case .failed(let message):
+            HStack(spacing: 2) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.red)
+                    .font(.system(size: 12))
+                Text(message)
+                    .font(.system(size: 10))
+                    .foregroundColor(.red)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func testAssemblyAIKey() {
+        assemblyTestStatus = .testing
+        Task {
+            do {
+                let url = URL(string: "https://api.assemblyai.com/v2/transcript")!
+                var request = URLRequest(url: url)
+                request.httpMethod = "GET"
+                request.setValue(apiKeyInput, forHTTPHeaderField: "Authorization")
+
+                let (_, response) = try await URLSession.shared.data(for: request)
+                let httpResponse = response as? HTTPURLResponse
+
+                await MainActor.run {
+                    if httpResponse?.statusCode == 401 {
+                        assemblyTestStatus = .failed("Invalid key")
+                    } else if httpResponse?.statusCode == 200 || httpResponse?.statusCode == 400 {
+                        // 400 means key is valid but request is malformed (expected)
+                        assemblyTestStatus = .success
+                    } else {
+                        assemblyTestStatus = .failed("Error \(httpResponse?.statusCode ?? 0)")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    assemblyTestStatus = .failed("Network error")
+                }
+            }
+        }
+    }
+
+    private func testDeepgramKey() {
+        deepgramTestStatus = .testing
+        Task {
+            do {
+                let url = URL(string: "https://api.deepgram.com/v1/projects")!
+                var request = URLRequest(url: url)
+                request.httpMethod = "GET"
+                request.setValue("Token \(deepgramApiKeyInput)", forHTTPHeaderField: "Authorization")
+
+                let (_, response) = try await URLSession.shared.data(for: request)
+                let httpResponse = response as? HTTPURLResponse
+
+                await MainActor.run {
+                    if httpResponse?.statusCode == 401 || httpResponse?.statusCode == 403 {
+                        deepgramTestStatus = .failed("Invalid key")
+                    } else if httpResponse?.statusCode == 200 {
+                        deepgramTestStatus = .success
+                    } else {
+                        deepgramTestStatus = .failed("Error \(httpResponse?.statusCode ?? 0)")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    deepgramTestStatus = .failed("Network error")
+                }
+            }
+        }
+    }
+
+    private func testAnthropicKey() {
+        anthropicTestStatus = .testing
+        Task {
+            do {
+                let url = URL(string: "https://api.anthropic.com/v1/messages")!
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue(anthropicApiKeyInput, forHTTPHeaderField: "x-api-key")
+                request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+
+                // Minimal request body
+                let body: [String: Any] = [
+                    "model": "claude-3-5-haiku-20241022",
+                    "max_tokens": 1,
+                    "messages": [["role": "user", "content": "hi"]]
+                ]
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+                let (_, response) = try await URLSession.shared.data(for: request)
+                let httpResponse = response as? HTTPURLResponse
+
+                await MainActor.run {
+                    if httpResponse?.statusCode == 401 {
+                        anthropicTestStatus = .failed("Invalid key")
+                    } else if httpResponse?.statusCode == 200 {
+                        anthropicTestStatus = .success
+                    } else {
+                        anthropicTestStatus = .failed("Error \(httpResponse?.statusCode ?? 0)")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    anthropicTestStatus = .failed("Network error")
+                }
+            }
         }
     }
 }

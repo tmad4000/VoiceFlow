@@ -556,7 +556,7 @@ private struct TranscriptContentView: View {
         case .on:
             return appState.isConnected ? "Listening…" : "Connecting…"
         case .sleep:
-            return appState.isConnected ? "Listening for 'Wake up'…" : "Connecting…"
+            return appState.isConnected ? "Listening for 'Speech on'…" : "Connecting…"
         }
     }
 }

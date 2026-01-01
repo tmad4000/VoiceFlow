@@ -185,13 +185,28 @@ extension AIFormatterService {
             return text
         }
 
-        // Capitalize first letter if new segment or after sentence-ending punctuation
+        // For document and chat contexts, always capitalize the first letter of each utterance
+        // Each utterance from ASR typically represents a new thought/sentence
+        // Even without sentence-ending punctuation from the previous utterance
         if context.isNewSegment {
+            // First utterance in a new app focus segment
             result = capitalizeFirst(result)
+            NSLog("[AIFormatter] Capitalizing (new segment)")
         } else if let prev = context.previousEnding {
             if prev.hasSuffix(".") || prev.hasSuffix("!") || prev.hasSuffix("?") {
+                // Previous utterance ended with sentence-ending punctuation
                 result = capitalizeFirst(result)
+                NSLog("[AIFormatter] Capitalizing (after punctuation: \"\(prev)\")")
+            } else {
+                // Previous utterance didn't end with punctuation, but this is still a new utterance
+                // In natural speech, each pause/utterance typically starts a new thought
+                result = capitalizeFirst(result)
+                NSLog("[AIFormatter] Capitalizing (new utterance, prev: \"\(prev)\")")
             }
+        } else {
+            // No previous utterance but not marked as new segment (edge case)
+            result = capitalizeFirst(result)
+            NSLog("[AIFormatter] Capitalizing (fallback)")
         }
 
         return result
