@@ -40,6 +40,7 @@ struct FloatingPanelView: View {
                                 .foregroundColor(.accentColor)
                         }
                         .buttonStyle(.plain)
+                        .pointerCursor()
                         .help("Force send current dictation")
                     }
                 }
@@ -51,6 +52,7 @@ struct FloatingPanelView: View {
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
+                .pointerCursor()
                 .help("Open dictation history")
 
                 // Settings button
@@ -60,6 +62,7 @@ struct FloatingPanelView: View {
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
+                .pointerCursor()
                 .help("Open settings")
                 
                 // Close menu button
@@ -77,6 +80,7 @@ struct FloatingPanelView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .frame(width: 20)
+                .pointerCursor()
                 .help("Hide or Quit")
             }
             .padding(.horizontal, 10)
@@ -98,16 +102,11 @@ struct FloatingPanelView: View {
                 ZStack(alignment: .bottomTrailing) {
                     ScrollView {
                         TranscriptContentView()
-                            .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 10)
-                            .background(
-                                GeometryReader { geo in
-                                    Color.clear
-                                        .preference(key: ScrollOffsetPreferenceKey.self, value: geo.frame(in: .named("scroll")).minY)
-                                }
-                            )
+                            .textSelection(.enabled)
+                            .contentShape(Rectangle())
                         
                         // Invisible anchor for scrolling
                         Color.clear.frame(height: 1).id("bottom")
@@ -178,6 +177,7 @@ struct FloatingPanelView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
                     .buttonStyle(.plain)
+                    .pointerCursor()
                     .padding(.top, 4)
                     .padding(.trailing, 4)
                     .help("Copy all visible text to clipboard")
@@ -339,14 +339,12 @@ private struct UnifiedModeButton: View {
                 .padding(.vertical, 4)
             }
             .buttonStyle(.plain)
-            .onHover { hovering in
-                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-            }
+            .pointerCursor()
             .help(toggleHelpText)
 
             // Dropdown menu
             Menu {
-                // Mode section
+                // ... menu items ...
                 Section("Mode") {
                     ForEach(MicrophoneMode.allCases) { m in
                         Button {
@@ -391,6 +389,7 @@ private struct UnifiedModeButton: View {
             }
             .menuIndicator(.hidden)
             .menuStyle(.borderlessButton)
+            .pointerCursor()
             .fixedSize()
         }
         .background(modeColor.opacity(0.15))
@@ -446,9 +445,7 @@ private struct SpeakerFilterPill: View {
             .clipShape(RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
-        .onHover { hovering in
-            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .pointerCursor()
         .help("Click to listen to all speakers")
     }
 }
@@ -525,8 +522,16 @@ private struct TranscriptContentView: View {
                     Text(appState.currentTranscript)
                         .font(.system(size: 16, weight: .regular, design: .rounded))
                         .foregroundColor(.primary.opacity(0.6)) // Active is gray
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            
+            // Add a bit of selectable "breathing room" at the bottom
+            // This makes it much easier to click and drag from below the last line.
+            Text("\n ")
+                .font(.system(size: 12))
+                .opacity(0.01)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -636,6 +641,8 @@ private struct TranscriptWordsText: View {
             .font(.system(size: 16, weight: .regular, design: .rounded))
             .lineSpacing(3)
             .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
     }
 
     private var textView: Text {

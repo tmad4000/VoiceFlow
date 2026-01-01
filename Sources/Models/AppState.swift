@@ -1352,7 +1352,7 @@ class AppState: ObservableObject {
                 }
             }
 
-            // Strip system command phrases that might leak through (with optional trailing punctuation)
+            // Strip system command phrases that might leak through
             let systemCommandPhrases = [
                 "window recent two", "window recent 2", "window recent",
                 "window previous", "window next",
@@ -1360,13 +1360,13 @@ class AppState: ObservableObject {
                 "submit dictation", "send dictation",
                 "save to idea flow",
                 "copy that", "paste that", "cut that", "undo that", "redo that",
-                "select all", "save that", "find that",
+                "select all", "save that",
                 "tab back", "tab forward", "new tab", "close tab",
                 "go back", "go forward", "page up", "page down",
                 "scroll up", "scroll down", "press escape", "press enter"
             ]
             for phrase in systemCommandPhrases {
-                if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b?", options: []) {
+                if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b", options: []) {
                     let range = NSRange(processed.startIndex..<processed.endIndex, in: processed)
                     processed = regex.stringByReplacingMatches(in: processed, options: [], range: range, withTemplate: "")
                 }
@@ -1482,13 +1482,13 @@ class AppState: ObservableObject {
                 "submit dictation", "send dictation",
                 "save to idea flow",
                 "copy that", "paste that", "cut that", "undo that", "redo that",
-                "select all", "save that", "find that",
+                "select all", "save that",
                 "tab back", "tab forward", "new tab", "close tab",
                 "go back", "go forward", "page up", "page down",
                 "scroll up", "scroll down", "press escape", "press enter"
             ]
             for phrase in systemCommandPhrases {
-                if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b?", options: []) {
+                if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b", options: []) {
                     let range = NSRange(result.startIndex..<result.endIndex, in: result)
                     result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
                 }
@@ -2046,6 +2046,12 @@ class AppState: ObservableObject {
         var eventsPosted = 0
         for char in output {
             if char == "\n" {
+                // BRAINSTORM FIX: Tiny delay to let preceding characters "settle" in the destination buffer
+                // before the Return key triggers a submission.
+                if eventsPosted > 0 {
+                    Thread.sleep(forTimeInterval: 0.01) // 10ms
+                }
+                
                 let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
                 let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
                 keyDown?.post(tap: .cghidEventTap)

@@ -118,6 +118,7 @@ struct ModeButton: View {
             .contentShape(RoundedRectangle(cornerRadius: compact ? 6 : 8))
         }
         .buttonStyle(.plain)
+        .pointerCursor()
         .help(mode.description)
     }
 }

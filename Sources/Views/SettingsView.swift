@@ -281,6 +281,7 @@ struct GeneralSettingsView: View {
                                 appState.checkSpeechPermission()
                                 appState.recheckAccessibilityPermission()
                             }
+                            .pointerCursor()
 
                             Spacer()
 
@@ -288,13 +289,16 @@ struct GeneralSettingsView: View {
                                 resetAllPermissions()
                             }
                             .foregroundColor(.red)
+                            .pointerCursor()
                             .help("Revokes all permissions for this app. Requires restart.")
 
                             CopyCommandButton()
+                            .pointerCursor()
 
                             Button("Restart App") {
                                 appState.restartApp()
                             }
+                            .pointerCursor()
                             .help("Restart VoiceFlow to pick up permission changes")
                         }
                         .font(.system(size: 11))
@@ -346,6 +350,7 @@ struct GeneralSettingsView: View {
                                 Button("Open Keyboard Shortcuts...") {
                                     appState.openKeyboardShortcutsSettings()
                                 }
+                                .pointerCursor()
                                 .font(.system(size: 11))
                             }
                             .padding(10)
@@ -1743,12 +1748,6 @@ struct DictationHistoryView: View {
         }
 
         return Text(attributedString).eraseToAnyView()
-    }
-}
-
-extension View {
-    func eraseToAnyView() -> AnyView {
-        AnyView(self)
     }
 }
 
