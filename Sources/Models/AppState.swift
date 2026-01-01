@@ -1145,6 +1145,12 @@ class AppState: ObservableObject {
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "\n")
         }
 
+        // Remove spaces that immediately precede a newline (e.g., "Hello new line" -> "Hello\n")
+        if let regex = try? NSRegularExpression(pattern: "\\s+\\n", options: []) {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "\n")
+        }
+
         // Remove punctuation that immediately follows a newline command (e.g., "new line.")
         if let regex = try? NSRegularExpression(pattern: "\\n\\s*[\\.,!?]", options: []) {
             let range = NSRange(result.startIndex..<result.endIndex, in: result)
