@@ -8,6 +8,7 @@ import AVFoundation
 import Speech
 import ServiceManagement
 import os.log
+import NaturalLanguage
 
 private let logger = Logger(subsystem: "com.voiceflow", category: "app")
 
@@ -1373,8 +1374,57 @@ class AppState: ObservableObject {
             // 4. (REMOVED) Strip trailing punctuation
             // User requested to keep this for now to avoid unnecessary complexity.
         }
-        
+
+        // 5. Smart period removal - strip trailing period from fragments
+        processed = smartPeriodRemoval(processed)
+
         return processed
+    }
+
+    /// Remove trailing periods from text that doesn't appear to be a complete sentence.
+    /// Uses word count heuristic and NaturalLanguage framework for verb detection.
+    private func smartPeriodRemoval(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+
+        // Only process if ends with a period
+        guard trimmed.hasSuffix(".") else { return text }
+
+        // Don't strip if it ends with ellipsis
+        if trimmed.hasSuffix("...") { return text }
+
+        // Strip the period to analyze the content
+        let withoutPeriod = String(trimmed.dropLast())
+        let words = withoutPeriod.split(whereSeparator: \.isWhitespace)
+
+        // Heuristic 1: Very short utterances (1-2 words) are likely fragments
+        if words.count <= 2 {
+            logDebug("Smart period: stripped (≤2 words)")
+            return withoutPeriod
+        }
+
+        // Heuristic 2: Use NLTagger to check for verbs
+        let tagger = NLTagger(tagSchemes: [.lexicalClass])
+        tagger.string = withoutPeriod
+
+        var hasVerb = false
+        tagger.enumerateTags(in: withoutPeriod.startIndex..<withoutPeriod.endIndex,
+                             unit: .word,
+                             scheme: .lexicalClass) { tag, _ in
+            if tag == .verb {
+                hasVerb = true
+                return false // Stop enumeration
+            }
+            return true // Continue
+        }
+
+        // If no verb detected, it's likely a fragment - strip the period
+        if !hasVerb {
+            logDebug("Smart period: stripped (no verb detected)")
+            return withoutPeriod
+        }
+
+        // Keep the period - appears to be a complete sentence
+        return text
     }
 
 
