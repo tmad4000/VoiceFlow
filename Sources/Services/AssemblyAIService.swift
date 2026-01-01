@@ -53,7 +53,6 @@ class AssemblyAIService: NSObject, ObservableObject {
         urlComponents.queryItems = [
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "format_turns", value: String(formatTurns)),
-            URLQueryItem(name: "speaker_labels", value: "true"),
             URLQueryItem(name: "end_of_turn_confidence_threshold", value: String(utteranceConfig.confidenceThreshold)),
             URLQueryItem(name: "min_end_of_turn_silence_when_confident", value: String(utteranceConfig.silenceThresholdMs)),
             URLQueryItem(name: "max_turn_silence", value: String(utteranceConfig.maxTurnSilenceMs))

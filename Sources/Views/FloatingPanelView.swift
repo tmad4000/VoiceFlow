@@ -158,11 +158,17 @@ struct FloatingPanelView: View {
                 }
             }
             .overlay(alignment: .topTrailing) {
-                if !appState.currentTranscript.isEmpty {
+                if !appState.recentTurns.isEmpty || !appState.currentTranscript.isEmpty {
                     Button(action: {
+                        // Combine all turns plus current transcript
+                        var allText = appState.recentTurns.map { $0.transcript }.joined(separator: " ")
+                        if !appState.currentTranscript.isEmpty {
+                            if !allText.isEmpty { allText += " " }
+                            allText += appState.currentTranscript
+                        }
                         let pasteboard = NSPasteboard.general
                         pasteboard.clearContents()
-                        pasteboard.setString(appState.currentTranscript, forType: .string)
+                        pasteboard.setString(allText, forType: .string)
                     }) {
                         Image(systemName: "doc.on.doc")
                             .font(.system(size: 12))
@@ -174,7 +180,7 @@ struct FloatingPanelView: View {
                     .buttonStyle(.plain)
                     .padding(.top, 4)
                     .padding(.trailing, 4)
-                    .help("Copy transcript to clipboard")
+                    .help("Copy all visible text to clipboard")
                 }
             }
         }
@@ -346,7 +352,17 @@ private struct UnifiedModeButton: View {
                         Button {
                             appState.setMode(m)
                         } label: {
-                            Label(m.rawValue, systemImage: m.icon)
+                            Label {
+                                HStack {
+                                    Text(m.rawValue)
+                                    Spacer()
+                                    Text(m.voiceCommandHint)
+                                        .foregroundColor(.secondary)
+                                        .font(.caption)
+                                }
+                            } icon: {
+                                Image(systemName: m.icon)
+                            }
                         }
                         .disabled(m == mode)
                     }

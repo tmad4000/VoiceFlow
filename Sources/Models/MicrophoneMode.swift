@@ -36,6 +36,15 @@ enum MicrophoneMode: String, CaseIterable, Identifiable {
         case .on: return "Active"
         }
     }
+
+    /// Voice command hint shown in dropdown
+    var voiceCommandHint: String {
+        switch self {
+        case .off: return "\"microphone off\""
+        case .sleep: return "\"go to sleep\""
+        case .on: return "\"speech on\""
+        }
+    }
 }
 
 /// Behaviors for the 'On' microphone mode
