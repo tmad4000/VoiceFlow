@@ -139,6 +139,7 @@ struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
     @State private var apiKeyInput: String = ""
     @State private var deepgramApiKeyInput: String = ""
+    @State private var anthropicApiKeyInput: String = ""
     @State private var showAdvancedUtterance = false
     @State private var showDebugInfo = false
 
@@ -191,6 +192,59 @@ struct GeneralSettingsView: View {
 
                             Link("Get API Key", destination: URL(string: "https://console.deepgram.com/signup")!)
                                 .font(.system(size: 11))
+                        }
+                    }
+                    .padding(4)
+                }
+
+                // AI Formatter Section (Experimental)
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("AI Formatter")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("(Experimental)")
+                                .font(.system(size: 11))
+                                .foregroundColor(.orange)
+                        }
+
+                        Toggle("Enable context-aware formatting", isOn: Binding(
+                            get: { appState.aiFormatterEnabled },
+                            set: { appState.saveAIFormatterEnabled($0) }
+                        ))
+                        .font(.system(size: 12))
+
+                        if appState.aiFormatterEnabled {
+                            Text("Uses focus context to improve capitalization. Capitalizes after sentences and at the start of new app focus sessions.")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+
+                            Divider()
+
+                            Text("Anthropic API Key (optional, for enhanced formatting)")
+                                .font(.system(size: 12, weight: .medium))
+
+                            SecureField("Enter your Anthropic API key", text: $anthropicApiKeyInput)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12))
+                                .onAppear { anthropicApiKeyInput = appState.anthropicApiKey }
+
+                            HStack {
+                                Button("Save") {
+                                    appState.saveAnthropicApiKey(anthropicApiKeyInput)
+                                }
+                                .disabled(anthropicApiKeyInput.isEmpty)
+                                .font(.system(size: 11))
+
+                                Spacer()
+
+                                Text("Without API key, uses local heuristics only")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+
+                                Link("Get API Key", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
+                                    .font(.system(size: 11))
+                            }
                         }
                     }
                     .padding(4)

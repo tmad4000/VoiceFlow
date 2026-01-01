@@ -154,6 +154,14 @@ class AppState: ObservableObject {
     @Published var launchMode: MicrophoneMode = .sleep
     @Published var launchAtLogin: Bool = false
 
+    // AI Formatter
+    @Published var aiFormatterEnabled: Bool = false
+    @Published var anthropicApiKey: String = ""
+    let focusContextManager = FocusContextManager()
+    private(set) lazy var aiFormatterService: AIFormatterService = {
+        AIFormatterService(focusContext: focusContextManager)
+    }()
+
     /// Built-in system commands for reference in UI
     static let systemCommandList: [(phrase: String, description: String)] = [
         ("wake up", "Switch to On mode"),
@@ -314,6 +322,7 @@ class AppState: ObservableObject {
         loadVocabularyPrompt()
         loadIdeaFlowSettings()
         loadSleepTimerSettings()
+        loadAIFormatterSettings()
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
         checkSpeechPermission()
@@ -1109,11 +1118,22 @@ class AppState: ObservableObject {
             return
         }
 
-        let processedText = preprocessDictation(textToType, forceLiteral: isLiteralTurn, words: wordsForKeywords)
+        var processedText = preprocessDictation(textToType, forceLiteral: isLiteralTurn, words: wordsForKeywords)
+
+        // Apply AI formatting if enabled (quick local heuristics for now)
+        if aiFormatterEnabled {
+            let context = focusContextManager.getFormattingContext()
+            processedText = aiFormatterService.quickFormat(processedText, context: context)
+        }
+
         let trimmedProcessed = processedText.trimmingCharacters(in: .whitespaces)
         guard !trimmedProcessed.isEmpty else {
             return
         }
+
+        // Track utterance in focus context for future formatting decisions
+        focusContextManager.addUtterance(trimmedProcessed)
+
         typeText(processedText, appendSpace: true)
         if !trimmedProcessed.isEmpty {
             didTypeDictationThisUtterance = true
@@ -2296,6 +2316,30 @@ class AppState: ObservableObject {
         guard microphoneMode == .on else { return }
         logDebug("Inactivity timeout: Switching to Sleep mode")
         setMode(.sleep)
+    }
+
+    // MARK: - AI Formatter Settings
+
+    private func loadAIFormatterSettings() {
+        aiFormatterEnabled = UserDefaults.standard.bool(forKey: "ai_formatter_enabled")
+        anthropicApiKey = UserDefaults.standard.string(forKey: "anthropic_api_key") ?? ""
+
+        // Sync to service
+        aiFormatterService.config.enabled = aiFormatterEnabled
+        aiFormatterService.config.apiKey = anthropicApiKey
+    }
+
+    func saveAIFormatterEnabled(_ value: Bool) {
+        aiFormatterEnabled = value
+        UserDefaults.standard.set(value, forKey: "ai_formatter_enabled")
+        aiFormatterService.config.enabled = value
+        logDebug("AI Formatter \(value ? "enabled" : "disabled")")
+    }
+
+    func saveAnthropicApiKey(_ value: String) {
+        anthropicApiKey = value
+        UserDefaults.standard.set(value, forKey: "anthropic_api_key")
+        aiFormatterService.config.apiKey = value
     }
 
     private func loadDictationHistory() {
