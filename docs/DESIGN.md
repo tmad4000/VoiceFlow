@@ -474,3 +474,173 @@ if let window = NSApp.windows.first(where: { $0.title == "VoiceFlow" }) {
     window.styleMask.remove(.titled)
 }
 ```
+
+---
+
+## Future: AI-Enhanced Formatting & App Store Lite Version
+
+### Background & Motivation
+
+The Mac App Store sandbox prohibits Accessibility APIs (AXUIElement), which we use for reading text field context. However, we can build a "lite" version that:
+- Works within App Store sandbox restrictions
+- Still provides intelligent punctuation/capitalization
+- Uses context from transcript history + focused app detection
+
+### Sandbox Permission Compatibility
+
+| API | App Store Allowed? | Use Case |
+|-----|-------------------|----------|
+| Accessibility (AXUIElement) | ❌ No | Read text field content |
+| Input Monitoring (CGEventTap) | ✅ Yes | Type at cursor |
+| NSWorkspace app detection | ✅ Yes | Know focused app/window |
+| Speech Recognition | ✅ Yes | Transcription |
+
+### Architecture: Focus-Based Context Segmentation
+
+When the user switches apps, start a new "context segment". Only use transcript from the current segment for formatting decisions.
+
+```
+┌─────────────────────────────────────────────────────┐
+│ 10:00 - Focus: Slack                                │
+│   "hey can you send me that report"                 │
+│   "thanks"                                          │
+├─────────────────────────────────────────────────────┤
+│ 10:02 - Focus: Notes  ← NEW CONTEXT SEGMENT         │
+│   "meeting notes"  → AI sees: new segment, "Notes"  │
+│                      → Capitalizes "Meeting notes"  │
+│   "action items"   → sees prev was incomplete       │
+│                      → "Action items" (new line?)   │
+├─────────────────────────────────────────────────────┤
+│ 10:05 - Focus: Terminal ← NEW CONTEXT SEGMENT       │
+│   "cd projects"    → AI sees: Terminal context      │
+│                      → lowercase, no punctuation    │
+└─────────────────────────────────────────────────────┘
+```
+
+### Implementation: Focus Change Detection
+
+```swift
+// Watch for app focus changes (no accessibility required)
+NSWorkspace.shared.notificationCenter.addObserver(
+    forName: NSWorkspace.didActivateApplicationNotification,
+    object: nil,
+    queue: .main
+) { notification in
+    let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+
+    // Start new context segment
+    contextManager.startNewSegment(
+        appName: app?.localizedName,
+        bundleId: app?.bundleIdentifier,
+        timestamp: Date()
+    )
+}
+```
+
+### AI Formatter Pipeline
+
+```
+┌─────────────────────────────────────────┐
+│  Your speech → AssemblyAI/Deepgram      │
+│              ↓                          │
+│  Raw transcript (basic punctuation)     │
+│              ↓                          │
+│  Context packet:                        │
+│    - App name (e.g., "Notes")           │
+│    - Recent transcript in this segment  │
+│    - Time since segment start           │
+│    - Previous utterance ending          │
+│              ↓                          │
+│  AI Formatter (local LLM or API)        │
+│    - Fix capitalization                 │
+│    - Add/correct punctuation            │
+│    - App-specific formatting            │
+│              ↓                          │
+│  Properly formatted text                │
+│              ↓                          │
+│  Type via Input Monitoring              │
+└─────────────────────────────────────────┘
+```
+
+### Context Packet Structure
+
+```swift
+struct FormattingContext {
+    let appName: String?           // "Notes", "Terminal", "Slack"
+    let bundleId: String?          // "com.apple.Notes"
+    let segmentTranscript: [String] // Recent utterances in this segment
+    let previousEnding: String?    // Last few chars of previous utterance
+    let isNewSegment: Bool         // Just switched apps?
+    let segmentDuration: TimeInterval
+}
+```
+
+### AI Formatting Prompt (Example)
+
+```
+You are a text formatter for voice dictation. Given the context, fix capitalization and punctuation.
+
+Context:
+- App: {appName}
+- Previous text in this session: "{segmentTranscript}"
+- Previous ending: "{previousEnding}"
+- New session: {isNewSegment}
+
+Raw input: "{rawTranscript}"
+
+Rules:
+- Capitalize after periods, at start of new sessions
+- Don't capitalize after commas
+- Terminal/code contexts: prefer lowercase, minimal punctuation
+- Chat apps: casual punctuation
+- Notes/documents: formal punctuation
+
+Output only the corrected text, nothing else.
+```
+
+### App-Specific Formatting Hints
+
+| App Type | Capitalization | Punctuation | Notes |
+|----------|---------------|-------------|-------|
+| Terminal | lowercase | minimal | Commands, paths |
+| Code Editor | context-dependent | minimal | Variable names, code |
+| Notes/Docs | sentence case | full | Formal writing |
+| Chat/Slack | casual | optional periods | Conversational |
+| Email | formal | full | Professional |
+
+### Latency Considerations
+
+- **Local LLM (Ollama)**: ~50-200ms, no network, privacy-friendly
+- **Cloud API (Claude)**: ~200-500ms, higher quality, requires internet
+- **Hybrid**: Use local for simple cases, cloud for ambiguous
+
+### Data Flow: Lite vs Pro Comparison
+
+**App Store Lite:**
+```
+Speech → Transcription → Focus Context → AI Formatter → Type
+                              ↑
+                    (app name, transcript history)
+```
+
+**Direct Pro:**
+```
+Speech → Transcription → Full Context → AI Formatter → Type
+                              ↑
+                    (app name, transcript history,
+                     text field content, cursor position)
+```
+
+### Open Questions
+
+1. **Latency budget**: How much delay is acceptable for formatting?
+2. **Batch vs streaming**: Format per-utterance or accumulate?
+3. **Fallback**: What if AI formatter fails/times out?
+4. **Privacy**: Local-first or cloud-acceptable?
+5. **Token limits**: How much context to include?
+
+### Related Issues
+
+- VoiceFlow-2at: Hybrid App Store + Direct Distribution Strategy
+- VoiceFlow-083: Context-aware capitalization using accessibility
+- VoiceFlow-0n2: Feature: Context-Aware Dictation (Smart Punctuation)
