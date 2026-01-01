@@ -282,60 +282,158 @@ private struct ModeSelectionView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            ForEach(MicrophoneMode.allCases) { mode in
-                if mode == .on && appState.microphoneMode == .on {
-                    onModePill
-                } else {
-                    ModeButton(mode: mode, isSelected: appState.microphoneMode == mode, compact: true) {
-                        appState.setMode(mode)
-                    }
-                }
+            // Unified mode button with dropdown
+            UnifiedModeButton()
+
+            // Speaker isolation indicator (when active)
+            if let speakerId = appState.isolatedSpeakerId {
+                SpeakerFilterPill(speakerId: speakerId)
             }
         }
         .fixedSize()
     }
+}
 
-    private var onModePill: some View {
-        let isSelected = appState.microphoneMode == .on
-        let color = isSelected ? Color.green : Color.secondary
+/// Unified mode button: click toggles, dropdown for full options
+private struct UnifiedModeButton: View {
+    @EnvironmentObject var appState: AppState
 
-        return HStack(spacing: 2) {
-            ModeButton(mode: .on, isSelected: isSelected, compact: true, plain: true) {
-                appState.setMode(.on)
-            }
+    private var mode: MicrophoneMode { appState.microphoneMode }
 
-            onModeMenu(color: color, isSelected: isSelected)
-                .padding(.trailing, 4)
+    private var modeColor: Color {
+        switch mode {
+        case .off: return .gray
+        case .on: return .green
+        case .sleep: return .orange
         }
-        .fixedSize()
-        .background(isSelected ? Color.green.opacity(0.15) : Color.clear)
-        .contentShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Main clickable area - toggles mode
+            Button(action: toggleMode) {
+                HStack(spacing: 4) {
+                    Image(systemName: mode.icon)
+                        .font(.system(size: 10, weight: .semibold))
+
+                    Text(mode.rawValue)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+
+                    // Show behavior icon when On
+                    if mode == .on {
+                        Image(systemName: appState.activeBehavior.icon)
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(modeColor.opacity(0.7))
+                    }
+                }
+                .foregroundColor(modeColor)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering in
+                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+            .help(toggleHelpText)
+
+            // Dropdown menu
+            Menu {
+                // Mode section
+                Section("Mode") {
+                    ForEach(MicrophoneMode.allCases) { m in
+                        Button {
+                            appState.setMode(m)
+                        } label: {
+                            Label(m.rawValue, systemImage: m.icon)
+                        }
+                        .disabled(m == mode)
+                    }
+                }
+
+                // Behavior section (only relevant when On or will be On)
+                Section("Dictation Behavior") {
+                    ForEach(ActiveBehavior.allCases) { behavior in
+                        Button {
+                            appState.saveActiveBehavior(behavior)
+                        } label: {
+                            if behavior == appState.activeBehavior {
+                                Label(behavior.rawValue, systemImage: "checkmark")
+                            } else {
+                                Label(behavior.rawValue, systemImage: behavior.icon)
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 6, weight: .semibold))
+                    .foregroundColor(modeColor.opacity(0.6))
+                    .frame(width: 14, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .menuIndicator(.hidden)
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .background(modeColor.opacity(0.15))
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(isSelected ? Color.green.opacity(0.3) : Color.clear, lineWidth: 1)
+                .stroke(modeColor.opacity(0.3), lineWidth: 1)
         )
     }
 
-    private func onModeMenu(color: Color, isSelected: Bool) -> some View {
-        Menu {
-            ForEach(ActiveBehavior.allCases) { behavior in
-                Button {
-                    appState.saveActiveBehavior(behavior)
-                } label: {
-                    Label(behavior.rawValue, systemImage: behavior.icon)
-                }
-            }
-        } label: {
-            Image(systemName: "chevron.down")
-                .font(.system(size: 6, weight: .semibold))
-                .foregroundColor(color.opacity(isSelected ? 0.6 : 0.4))
-                .frame(width: 12, height: 16)
-                .contentShape(Rectangle())
+    /// Toggle behavior: Sleep↔On, Off→On
+    private func toggleMode() {
+        switch mode {
+        case .off:
+            appState.setMode(.on)
+        case .on:
+            appState.setMode(.sleep)
+        case .sleep:
+            appState.setMode(.on)
         }
-        .menuIndicator(.hidden)
-        .menuStyle(.borderlessButton)
-        .fixedSize()
+    }
+
+    private var toggleHelpText: String {
+        switch mode {
+        case .off: return "Click to turn On"
+        case .on: return "Click to Sleep"
+        case .sleep: return "Click to turn On"
+        }
+    }
+}
+
+/// Shows when speaker isolation is active
+private struct SpeakerFilterPill: View {
+    @EnvironmentObject var appState: AppState
+    let speakerId: Int
+
+    var body: some View {
+        Button {
+            appState.toggleSpeakerIsolation(speakerId: speakerId)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "person.wave.2.fill")
+                    .font(.system(size: 9))
+                Text("S\(speakerId) only")
+                    .font(.system(size: 9, weight: .medium))
+                Image(systemName: "xmark")
+                    .font(.system(size: 7, weight: .bold))
+            }
+            .foregroundColor(.blue)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.blue.opacity(0.15))
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+        .help("Click to listen to all speakers")
     }
 }
 
