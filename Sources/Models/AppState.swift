@@ -1002,15 +1002,16 @@ class AppState: ObservableObject {
         }
 
         if turn.endOfTurn {
-            // Push to recent history for UI persistent display
-            if !turn.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Only add the "final" version to history: formatted turn when expecting formatted, or any when not
+            let shouldAddToHistory = !expectsFormattedTurns || turn.isFormatted || isForceEndTurn
+            if shouldAddToHistory && !turn.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 recentTurns.append(turn)
                 if recentTurns.count > 10 {
                     recentTurns.removeFirst()
                 }
             }
 
-            if !expectsFormattedTurns || turn.isFormatted || isForceEndTurn {
+            if shouldAddToHistory {
                 resetUtteranceState()
             }
             currentUtteranceIsLiteral = false
