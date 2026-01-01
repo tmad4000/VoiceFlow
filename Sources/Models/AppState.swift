@@ -2023,7 +2023,9 @@ class AppState: ObservableObject {
             return
         }
 
-        let output = appendSpace ? text + " " : text
+        // Don't append space after newlines - it looks wrong
+        let shouldAppendSpace = appendSpace && !text.hasSuffix("\n")
+        let output = shouldAppendSpace ? text + " " : text
         logDebug("Posting CGKEvents for: \"\(output.replacingOccurrences(of: "\n", with: "\\n"))\" (\(output.count) chars)")
 
         // Add to history (only non-empty text)
