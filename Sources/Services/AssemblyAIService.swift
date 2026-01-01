@@ -1,22 +1,6 @@
 import Foundation
 import Starscream
 
-struct TranscriptWord {
-    let text: String
-    let isFinal: Bool?
-    let startTime: Double?
-    let endTime: Double?
-}
-
-struct TranscriptTurn {
-    let transcript: String
-    let words: [TranscriptWord]
-    let endOfTurn: Bool
-    let isFormatted: Bool
-    let turnOrder: Int?
-    let utterance: String?
-}
-
 /// Configuration for utterance detection
 struct UtteranceConfig {
     let confidenceThreshold: Double
@@ -69,6 +53,7 @@ class AssemblyAIService: NSObject, ObservableObject {
         urlComponents.queryItems = [
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "format_turns", value: String(formatTurns)),
+            URLQueryItem(name: "speaker_labels", value: "true"),
             URLQueryItem(name: "end_of_turn_confidence_threshold", value: String(utteranceConfig.confidenceThreshold)),
             URLQueryItem(name: "min_end_of_turn_silence_when_confident", value: String(utteranceConfig.silenceThresholdMs)),
             URLQueryItem(name: "max_turn_silence", value: String(utteranceConfig.maxTurnSilenceMs))
@@ -145,6 +130,7 @@ class AssemblyAIService: NSObject, ObservableObject {
             let utterance = message["utterance"] as? String
 
             var words: [TranscriptWord] = []
+            var turnSpeaker: String? = nil
             if let wordDictionaries = message["words"] as? [[String: Any]] {
                 words = wordDictionaries.compactMap { word in
                     let text = (word["text"] as? String) ?? (word["word"] as? String)
@@ -152,7 +138,14 @@ class AssemblyAIService: NSObject, ObservableObject {
                     let isFinal = (word["word_is_final"] as? Bool) ?? (word["is_final"] as? Bool)
                     let startTime = (word["start"] as? Double) ?? (word["start"] as? NSNumber)?.doubleValue
                     let endTime = (word["end"] as? Double) ?? (word["end"] as? NSNumber)?.doubleValue
-                    return TranscriptWord(text: text, isFinal: isFinal, startTime: startTime, endTime: endTime)
+                    let speakerRaw = word["speaker"] as? String
+                    let speaker = speakerRaw.flatMap { Int($0.replacingOccurrences(of: "Speaker ", with: "")) ?? Int($0) }
+                    
+                    if turnSpeaker == nil {
+                        turnSpeaker = speakerRaw
+                    }
+                    
+                    return TranscriptWord(text: text, isFinal: isFinal, startTime: startTime, endTime: endTime, speaker: speaker)
                 }
             }
 
@@ -162,7 +155,8 @@ class AssemblyAIService: NSObject, ObservableObject {
                 endOfTurn: endOfTurn,
                 isFormatted: isFormatted,
                 turnOrder: turnOrder,
-                utterance: utterance
+                utterance: utterance,
+                speaker: turnSpeaker.flatMap { Int($0.replacingOccurrences(of: "Speaker ", with: "")) ?? Int($0) }
             )
 
             DispatchQueue.main.async { [weak self] in
@@ -180,13 +174,17 @@ class AssemblyAIService: NSObject, ObservableObject {
             let isFinal = type == "FinalTranscript"
             
             var words: [TranscriptWord] = []
+            var turnSpeaker: Int? = nil
             if let wordDictionaries = message["words"] as? [[String: Any]] {
                 words = wordDictionaries.compactMap { word in
                     let text = word["text"] as? String
                     guard let text else { return nil }
                     let startTime = (word["start"] as? Double) ?? (word["start"] as? NSNumber)?.doubleValue
                     let endTime = (word["end"] as? Double) ?? (word["end"] as? NSNumber)?.doubleValue
-                    return TranscriptWord(text: text, isFinal: isFinal, startTime: startTime, endTime: endTime)
+                    let speakerRaw = word["speaker"] as? String
+                    let speaker = speakerRaw.flatMap { Int($0.replacingOccurrences(of: "Speaker ", with: "")) ?? Int($0) }
+                    if turnSpeaker == nil { turnSpeaker = speaker }
+                    return TranscriptWord(text: text, isFinal: isFinal, startTime: startTime, endTime: endTime, speaker: speaker)
                 }
             }
 
@@ -196,7 +194,8 @@ class AssemblyAIService: NSObject, ObservableObject {
                 endOfTurn: isFinal,
                 isFormatted: false,
                 turnOrder: nil,
-                utterance: transcript
+                utterance: transcript,
+                speaker: turnSpeaker
             )
 
             DispatchQueue.main.async { [weak self] in

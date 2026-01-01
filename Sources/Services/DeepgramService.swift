@@ -55,6 +55,7 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
         var queryItems = [
             URLQueryItem(name: "model", value: "nova-2"),
             URLQueryItem(name: "smart_format", value: String(formatTurns)),
+            URLQueryItem(name: "diarize", value: "true"),
             URLQueryItem(name: "encoding", value: "linear16"),
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "channels", value: "1"),
@@ -132,9 +133,17 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
 
     func sendAudio(_ data: Data) {
         guard isConnected else { return }
-        webSocketTask?.send(.data(data)) { error in
+        webSocketTask?.send(.data(data)) { [weak self] error in
             if let error = error {
-                NSLog("[Deepgram] Send error: %@", error.localizedDescription)
+                // Ignore "Operation canceled" errors - they're expected during disconnect
+                let desc = error.localizedDescription
+                if desc.contains("canceled") || desc.contains("cancelled") {
+                    return
+                }
+                // Only log if we're still supposed to be connected
+                if self?.isConnected == true {
+                    NSLog("[Deepgram] Send error: %@", desc)
+                }
             }
         }
     }
@@ -174,13 +183,19 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
         let transcript = firstAlt["transcript"] as? String ?? ""
 
         var words: [TranscriptWord] = []
+        var turnSpeaker: Int? = nil
+        
         if let wordDicts = firstAlt["words"] as? [[String: Any]] {
             words = wordDicts.compactMap {
                 let text = ($0["word"] as? String) ?? ($0["punctuated_word"] as? String)
                 guard let text else { return nil }
                 let startTime = ($0["start"] as? Double) ?? ($0["start"] as? NSNumber)?.doubleValue
                 let endTime = ($0["end"] as? Double) ?? ($0["end"] as? NSNumber)?.doubleValue
-                return TranscriptWord(text: text, isFinal: isFinal, startTime: startTime, endTime: endTime)
+                let speaker = $0["speaker"] as? Int
+                if turnSpeaker == nil && speaker != nil {
+                    turnSpeaker = speaker
+                }
+                return TranscriptWord(text: text, isFinal: isFinal, startTime: startTime, endTime: endTime, speaker: speaker)
             }
         }
 
@@ -191,9 +206,10 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
             transcript: transcript,
             words: words,
             endOfTurn: isFinal,
-            isFormatted: formatTurns,
+            isFormatted: formatTurns && isFinal,
             turnOrder: isFinal ? turnOrder : nil,
-            utterance: transcript
+            utterance: transcript,
+            speaker: turnSpeaker
         )
 
         if isFinal {

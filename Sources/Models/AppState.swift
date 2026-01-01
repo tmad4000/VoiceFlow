@@ -109,7 +109,17 @@ struct AppWarning: Identifiable {
 class AppState: ObservableObject {
     @Published var microphoneMode: MicrophoneMode = .off
     @Published var currentTranscript: String = ""
+    @Published var recentTurns: [TranscriptTurn] = []
+    @Published var isolatedSpeakerId: Int? = nil
     @Published var isConnected: Bool = false
+
+    func toggleSpeakerIsolation(speakerId: Int) {
+        if isolatedSpeakerId == speakerId {
+            isolatedSpeakerId = nil // Unlock
+        } else {
+            isolatedSpeakerId = speakerId // Lock to new speaker
+        }
+    }
     @Published var errorMessage: String?
     @Published var apiKey: String = ""
     @Published var deepgramApiKey: String = ""
@@ -603,6 +613,35 @@ class AppState: ObservableObject {
         debugLog.removeAll()
     }
 
+    /// The default Push-to-Talk shortcut description
+    static let pttShortcutDescription = "⌥⌘Space (Option+Cmd+Space)"
+
+    /// Checks if macOS Spotlight "Search Mac" shortcut (Opt+Cmd+Space) is enabled
+    /// This conflicts with VoiceFlow's PTT shortcut
+    static func isSpotlightSearchMacShortcutEnabled() -> Bool {
+        // The Spotlight "Search Mac" shortcut is stored in com.apple.symbolichotkeys.plist
+        // Key 65 is the "Search Mac" shortcut (different from key 64 which is "Show Spotlight")
+        let prefsPath = NSHomeDirectory() + "/Library/Preferences/com.apple.symbolichotkeys.plist"
+
+        guard let plist = NSDictionary(contentsOfFile: prefsPath),
+              let hotkeys = plist["AppleSymbolicHotKeys"] as? [String: Any],
+              let key65 = hotkeys["65"] as? [String: Any],
+              let enabled = key65["enabled"] as? Bool else {
+            // If we can't read the preference, assume it's enabled (default)
+            return true
+        }
+
+        return enabled
+    }
+
+    /// Opens System Settings to the Keyboard Shortcuts pane
+    func openKeyboardShortcutsSettings() {
+        // macOS Ventura+ uses System Settings with this URL
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?Shortcuts") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     func restartApp() {
         let executablePath = Bundle.main.executablePath!
         let process = Process()
@@ -652,9 +691,21 @@ class AppState: ObservableObject {
         if previousMode == .sleep && mode == .on {
             currentTranscript = ""
             currentWords = []
+            recentTurns = []
+            isolatedSpeakerId = nil
             // Mark that we just woke up to prevent the "wake up" phrase from typing
             currentUtteranceHadCommand = true
             wakeUpTime = Date()  // Grace period to ignore residual wake word audio
+        }
+
+        if (previousMode == .off || previousMode == .sleep) && mode == .on {
+            recentTurns = []
+            isolatedSpeakerId = nil
+        }
+        
+        if mode == .sleep {
+            recentTurns = []
+            isolatedSpeakerId = nil
         }
 
         // Reset session typing state when leaving On mode or starting fresh
@@ -950,6 +1001,14 @@ class AppState: ObservableObject {
         }
 
         if turn.endOfTurn {
+            // Push to recent history for UI persistent display
+            if !turn.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                recentTurns.append(turn)
+                if recentTurns.count > 10 {
+                    recentTurns.removeFirst()
+                }
+            }
+
             if !expectsFormattedTurns || turn.isFormatted || isForceEndTurn {
                 resetUtteranceState()
             }
@@ -958,58 +1017,78 @@ class AppState: ObservableObject {
         }
     }
 
+    private func filterWordsForIsolation(_ words: [TranscriptWord]) -> [TranscriptWord] {
+        guard let isolatedId = isolatedSpeakerId else { return words }
+        return words.filter { $0.speaker == isolatedId }
+    }
+
     private func handleDictationTurn(_ turn: TranscriptTurn, isForceEnd: Bool) {
         logger.info("handleDictationTurn: isFormatted=\(turn.isFormatted), endOfTurn=\(turn.endOfTurn), transcript=\"\(turn.transcript.prefix(50))...\"")
 
-        // Skip typing during wake-up grace period to avoid typing residual wake word audio
+        // Skip typing during wake-up grace period
         if let wakeTime = wakeUpTime, Date().timeIntervalSince(wakeTime) < wakeUpGracePeriod {
-            logger.debug("Skipping dictation during wake-up grace period")
             return
         }
 
         if forceEndPending, let requestedAt = forceEndRequestedAt,
            Date().timeIntervalSince(requestedAt) > forceEndTimeoutSeconds {
-            logger.info("Force end request expired without end-of-turn")
             forceEndPending = false
             forceEndRequestedAt = nil
+        }
+        
+        // SPEAKER ISOLATION FILTER
+        // If the entire turn has a speaker assigned and it doesn't match, drop the whole turn.
+        if let isolatedId = isolatedSpeakerId, let turnSpeaker = turn.speaker, turnSpeaker != isolatedId {
+            logger.debug("Skipping turn from Speaker \(turnSpeaker) (Isolated to S\(isolatedId))")
+            return
+        }
+        
+        // If the turn has mixed speakers, filter words
+        var effectiveWords = turn.words
+        if isolatedSpeakerId != nil {
+            effectiveWords = filterWordsForIsolation(turn.words)
+            if effectiveWords.isEmpty && !turn.words.isEmpty {
+                 logger.debug("Skipping turn: all words filtered out by speaker isolation")
+                 return
+            }
         }
 
         let isLiteralTurn = isSayPrefix(turn.transcript)
         let rawTranscript: String
-        if isLiteralTurn, !turn.transcript.isEmpty {
-            rawTranscript = turn.transcript
-        } else if let utterance = turn.utterance, utterance.count > turn.transcript.count {
-            rawTranscript = utterance
-        } else if turn.transcript.isEmpty {
-            rawTranscript = turn.utterance ?? ""
+        
+        // Re-assemble transcript if words were filtered
+        if isolatedSpeakerId != nil && effectiveWords.count != turn.words.count {
+             rawTranscript = assembleDisplayText(from: effectiveWords)
         } else {
-            rawTranscript = turn.transcript
+             if isLiteralTurn, !turn.transcript.isEmpty {
+                 rawTranscript = turn.transcript
+             } else if let utterance = turn.utterance, utterance.count > turn.transcript.count {
+                 rawTranscript = utterance
+             } else if turn.transcript.isEmpty {
+                 rawTranscript = turn.utterance ?? ""
+             } else {
+                 rawTranscript = turn.transcript
+             }
         }
 
         var textToType = rawTranscript
-        var wordsForKeywords: [TranscriptWord]? = turn.words.isEmpty ? nil : turn.words
+        var wordsForKeywords: [TranscriptWord]? = effectiveWords.isEmpty ? nil : effectiveWords
         
         // If utterance had a command, we might have already flushed the prefix.
-        // We only want to type what came AFTER the commands.
         if currentUtteranceHadCommand && !isForceEnd {
             let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
             if lastCommandEndIndex >= 0 && lastHaltingCommandEndIndex == lastCommandEndIndex {
-                logger.debug("Last command halts processing; skipping dictation after command")
                 return
             }
-            if lastCommandEndIndex >= 0 && lastCommandEndIndex < turn.words.count - 1 {
-                let wordsAfter = turn.words[(lastCommandEndIndex + 1)...]
-                // Filter out punctuation-only words that often trail commands
+            if lastCommandEndIndex >= 0 && lastCommandEndIndex < effectiveWords.count - 1 {
+                let wordsAfter = effectiveWords[(lastCommandEndIndex + 1)...]
                 let filteredWords = wordsAfter.filter { word in
                     let stripped = word.text.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
                     return !stripped.isEmpty
                 }
                 textToType = assembleDisplayText(from: Array(filteredWords))
                 wordsForKeywords = Array(filteredWords)
-                logDebug("Utterance had command: typing only remaining words: \"\(textToType)\"")
             } else {
-                // Command was at the end or covers everything, nothing more to type
-                logger.debug("Command was at end of utterance; skipping dictation typing")
                 return
             }
         }
@@ -1017,36 +1096,22 @@ class AppState: ObservableObject {
         let shouldType = turn.isFormatted || (!expectsFormattedTurns && turn.endOfTurn) || isForceEnd
         
         if textToType.isEmpty, isForceEnd {
-            textToType = turn.utterance ?? assembleDisplayText(from: turn.words)
-            logger.info("Force end: using fallback text \"\(textToType)\"")
+            textToType = turn.utterance ?? assembleDisplayText(from: effectiveWords)
         }
         
-        logger.info("handleDictationTurn logic: isFormatted=\(turn.isFormatted), endOfTurn=\(turn.endOfTurn), forceEnd=\(isForceEnd), shouldType=\(shouldType), textToType=\"\(textToType)\"")
-
         if let turnOrder = turn.turnOrder, turnOrder <= lastTypedTurnOrder {
-            logger.debug("Skipping duplicate turn order \(turnOrder)")
             return
         }
 
         guard shouldType, !textToType.isEmpty else {
-            logger.debug("Not typing: shouldType=\(shouldType), isEmpty=\(textToType.isEmpty)")
-            if shouldType && textToType.isEmpty {
-                logDebug("Skipping type: text is empty")
-            }
             return
-        }
-
-        if isForceEnd, turn.transcript.isEmpty {
-            logger.info("Force end typing unformatted utterance")
         }
 
         let processedText = preprocessDictation(textToType, forceLiteral: isLiteralTurn, words: wordsForKeywords)
         let trimmedProcessed = processedText.trimmingCharacters(in: .whitespaces)
         guard !trimmedProcessed.isEmpty else {
-            logDebug("Skipping type: processed text is empty after filtering")
             return
         }
-        logDebug("Initiating type action for turn \(turn.turnOrder ?? -1): \"\(processedText.prefix(20))...\"")
         typeText(processedText, appendSpace: true)
         if !trimmedProcessed.isEmpty {
             didTypeDictationThisUtterance = true
@@ -1287,7 +1352,10 @@ class AppState: ObservableObject {
                 "submit dictation", "send dictation",
                 "save to idea flow",
                 "copy that", "paste that", "cut that", "undo that", "redo that",
-                "select all", "save that", "find that"
+                "select all", "save that", "find that",
+                "tab back", "tab forward", "new tab", "close tab",
+                "go back", "go forward", "page up", "page down",
+                "scroll up", "scroll down", "press escape", "press enter"
             ]
             for phrase in systemCommandPhrases {
                 if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b?", options: []) {
@@ -1306,15 +1374,25 @@ class AppState: ObservableObject {
 
 
     private func handleLiveDictationTurn(_ turn: TranscriptTurn, isForceEnd: Bool) {
-        // Skip typing during wake-up grace period to avoid typing residual wake word audio
+        // Skip typing during wake-up grace period
         if let wakeTime = wakeUpTime, Date().timeIntervalSince(wakeTime) < wakeUpGracePeriod {
             return
         }
 
+        // SPEAKER ISOLATION FILTER
+        // Filter the words in the turn to only include the isolated speaker
+        var effectiveWords = turn.words
+        if isolatedSpeakerId != nil {
+            effectiveWords = filterWordsForIsolation(turn.words)
+            if effectiveWords.isEmpty && !turn.words.isEmpty {
+                 logger.debug("Skipping live dictation: all words filtered out by speaker isolation")
+                 return
+            }
+        }
+        
         // If utterance had a command, we only care about words AFTER the command
         let lastCommandEndIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
         if lastCommandEndIndex >= 0 && lastHaltingCommandEndIndex == lastCommandEndIndex {
-            logger.debug("Last command halts processing; skipping live dictation after command")
             return
         }
         let startIndex = max(typedFinalWordCount, lastCommandEndIndex + 1)
@@ -1332,14 +1410,14 @@ class AppState: ObservableObject {
             return Array(words.dropFirst())
         }
 
-        // Helper to process inline replacements (new line, spacebar, etc.)
+        // Helper to process inline replacements
         let processInlineReplacements: (String, [TranscriptWord]?, Bool) -> String = { text, words, isLiteral in
             let (keywordProcessed, keyword) = self.applyKeywordReplacements(text, words: words, isLiteral: isLiteral)
             var result = keywordProcessed
             if let keyword {
                 self.triggerKeywordFlash(name: keyword)
             }
-            // Strip system command phrases that might leak through (with optional trailing punctuation)
+            // Strip system command phrases that might leak through
             let systemCommandPhrases = [
                 "window recent two", "window recent 2", "window recent",
                 "window previous", "window next",
@@ -1347,10 +1425,12 @@ class AppState: ObservableObject {
                 "submit dictation", "send dictation",
                 "save to idea flow",
                 "copy that", "paste that", "cut that", "undo that", "redo that",
-                "select all", "save that", "find that"
+                "select all", "save that", "find that",
+                "tab back", "tab forward", "new tab", "close tab",
+                "go back", "go forward", "page up", "page down",
+                "scroll up", "scroll down", "press escape", "press enter"
             ]
             for phrase in systemCommandPhrases {
-                // Match phrase with optional trailing punctuation
                 if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b?", options: []) {
                     let range = NSRange(result.startIndex..<result.endIndex, in: result)
                     result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
@@ -1359,18 +1439,18 @@ class AppState: ObservableObject {
             return result.trimmingCharacters(in: .whitespaces)
         }
 
-        // If it's a formatted turn (Cloud model with formatting ON), we use word-level isFinal
+        // If it's a formatted turn (Cloud model with formatting ON)
         if turn.isFormatted {
-            let finalWords = turn.words.filter { $0.isFinal == true }.map { $0.text }
+            let finalWords = effectiveWords.filter { $0.isFinal == true }.map { $0.text }
             guard finalWords.count > startIndex else { return }
             var newWords = finalWords[startIndex...].filter(filterPunctuation)
             newWords = stripLeadingSay(Array(newWords))
             guard !newWords.isEmpty else { return }
-            // Add space if continuing within utterance OR if we've typed before in this session
+            
             let needsSpace = startIndex > 0 || hasTypedInSession
             let prefix = needsSpace ? " " : ""
             let rawText = prefix + newWords.joined(separator: " ")
-            let finalWordObjects = turn.words.filter { $0.isFinal == true }
+            let finalWordObjects = effectiveWords.filter { $0.isFinal == true }
             let wordSlice = Array(finalWordObjects[startIndex...].filter { filterPunctuation($0.text) })
             var textToType = processInlineReplacements(rawText, wordSlice, isLiteral)
             if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
@@ -1386,12 +1466,11 @@ class AppState: ObservableObject {
             return
         }
 
-        // If it's unformatted (Live Dictation mode), the turn itself signals finality
+        // If it's unformatted (Live Dictation mode)
         if turn.endOfTurn {
-            // This is a FinalTranscript
-            let allWords = turn.words.map { $0.text }
+            let allWords = effectiveWords.map { $0.text }
             guard allWords.count > startIndex else {
-                typedFinalWordCount = 0 // Reset for next utterance
+                typedFinalWordCount = 0
                 return
             }
             var newWords = allWords[startIndex...].filter(filterPunctuation)
@@ -1400,11 +1479,11 @@ class AppState: ObservableObject {
                 typedFinalWordCount = 0
                 return
             }
-            // Add space if continuing within utterance OR if we've typed before in this session
+            
             let needsSpace = startIndex > 0 || hasTypedInSession
             let prefix = needsSpace ? " " : ""
             let rawText = prefix + newWords.joined(separator: " ")
-            let wordSlice = Array(turn.words[startIndex...].filter { filterPunctuation($0.text) })
+            let wordSlice = Array(effectiveWords[startIndex...].filter { filterPunctuation($0.text) })
             var textToType = processInlineReplacements(rawText, wordSlice, isLiteral)
             if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
                 textToType = " " + textToType
@@ -1416,8 +1495,6 @@ class AppState: ObservableObject {
                 hasTypedInSession = true
             }
             typedFinalWordCount = 0 // Reset after final
-        } else {
-            // PartialTranscript...
         }
     }
 
@@ -1672,6 +1749,8 @@ class AppState: ObservableObject {
 
     private func resetUtteranceState() {
         logger.info("resetUtteranceState called")
+        currentWords = []
+        currentTranscript = ""
         lastExecutedEndWordIndexByCommand.removeAll()
         currentUtteranceHadCommand = false
         currentUtteranceIsLiteral = false
@@ -1694,9 +1773,12 @@ class AppState: ObservableObject {
     }
 
     private func executeMatch(_ match: PendingCommandMatch) {
-        logDebug("Executing command: \(match.key)")
-        
-        // Pre-emptive Flush: Type any words BEFORE the command phrase
+        preExecuteMatch(match)
+        executeMatchAction(match)
+    }
+
+    private func preExecuteMatch(_ match: PendingCommandMatch) {
+        // 1. Pre-emptive Flush: Type any words BEFORE the command phrase
         if microphoneMode == .on && activeBehavior != .command {
             let wordsBefore = match.turn.words.prefix(match.startWordIndex)
             if !wordsBefore.isEmpty {
@@ -1729,10 +1811,14 @@ class AppState: ObservableObject {
             }
         }
 
-        match.action()
-        
-        // Add to dictation history with a command marker
-        // Try to find a human-readable name for the command
+        // 2. Mark as consumed IMMEDIATELY to prevent dictation handler from typing the command phrase
+        lastExecutedEndWordIndexByCommand[match.key] = match.endWordIndex
+        currentUtteranceHadCommand = true
+        if match.haltsProcessing {
+            lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, match.endWordIndex)
+        }
+
+        // 3. Add to history immediately so user sees command was recognized
         let commandName: String
         if match.key.hasPrefix("system.") {
             commandName = match.key.replacingOccurrences(of: "system.", with: "").replacingOccurrences(of: "_", with: " ").capitalized
@@ -1754,12 +1840,11 @@ class AppState: ObservableObject {
             }
             self.saveDictationHistory()
         }
+    }
 
-        lastExecutedEndWordIndexByCommand[match.key] = match.endWordIndex
-        currentUtteranceHadCommand = true
-        if match.haltsProcessing {
-            lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, match.endWordIndex)
-        }
+    private func executeMatchAction(_ match: PendingCommandMatch) {
+        logDebug("Executing action for command: \(match.key)")
+        match.action()
         if match.key.hasPrefix("user.") {
             lastCommandExecutionTime = Date()
         }
@@ -1770,14 +1855,17 @@ class AppState: ObservableObject {
         guard !pendingCommandExecutions.contains(pendingKey) else { return }
         pendingCommandExecutions.insert(pendingKey)
 
+        // Mark as consumed IMMEDIATELY before the delay so it doesn't get typed as dictation
+        preExecuteMatch(match)
+
         let delaySeconds = commandDelayMs / 1000
         DispatchQueue.main.asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
-            guard let self else { return }
+            guard let self = self else { return }
             self.pendingCommandExecutions.remove(pendingKey)
 
-            let lastEndIndex = self.lastExecutedEndWordIndexByCommand[match.key] ?? -1
-            guard match.endWordIndex > lastEndIndex else { return }
-            self.executeMatch(match)
+            // We don't need to check lastExecutedEndWordIndexByCommand here because preExecuteMatch 
+            // already updated it, and processVoiceCommands checked it before scheduling.
+            self.executeMatchAction(match)
         }
     }
 

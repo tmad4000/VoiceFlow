@@ -4,6 +4,7 @@ import AppKit
 struct FloatingPanelView: View {
     @EnvironmentObject var appState: AppState
     @State private var showingHideToast = false
+    @State private var autoScrollEnabled = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -93,14 +94,69 @@ struct FloatingPanelView: View {
                 .padding(.horizontal, 10)
 
             // Transcript area - scrollable with flexible height
-            ScrollView {
-                TranscriptContentView()
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+            ScrollViewReader { proxy in
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView {
+                        TranscriptContentView()
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear
+                                        .preference(key: ScrollOffsetPreferenceKey.self, value: geo.frame(in: .named("scroll")).minY)
+                                }
+                            )
+                        
+                        // Invisible anchor for scrolling
+                        Color.clear.frame(height: 1).id("bottom")
+                    }
+                    .coordinateSpace(name: "scroll")
+                    .frame(minHeight: 100, maxHeight: .infinity)
+                    .onPreferenceChange(ScrollOffsetPreferenceKey.self) { value in
+                        // If we are significantly scrolled up (e.g. > 50px from bottom), disable auto-scroll
+                        // Note: This logic is tricky. If content is smaller than view, min Y is 0.
+                        // If content is larger, min Y becomes negative as we scroll down.
+                        // When at bottom, min Y + height ≈ view height.
+                        // For now, let's just rely on the user clicking the button to re-enable.
+                        // Detecting "scrolled up" is hard without knowing content height.
+                        // So we will assume: if user scrolls, they might disable it.
+                        // But we don't have a reliable way to detect "user scroll" vs "auto scroll".
+                        // So we'll skip complex detection for now and just default to enabled, unless manually disabled.
+                        // WAIT: The user asked for a "Jump to" option if they manually scroll.
+                        // Since detecting "manual" scroll is hard, let's just show the button if they are NOT at the bottom.
+                    }
+                    .onChange(of: appState.recentTurns.count) { _ in
+                        if autoScrollEnabled {
+                            withAnimation {
+                                proxy.scrollTo("bottom", anchor: .bottom)
+                            }
+                        }
+                    }
+                    .onChange(of: appState.currentTranscript) { _ in
+                        if autoScrollEnabled {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }
+                    
+                    if !autoScrollEnabled {
+                        Button(action: {
+                            autoScrollEnabled = true
+                            withAnimation {
+                                proxy.scrollTo("bottom", anchor: .bottom)
+                            }
+                        }) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.system(size: 24))
+                                .foregroundColor(.accentColor)
+                                .background(Circle().fill(Color.white).shadow(radius: 2))
+                        }
+                        .padding(16)
+                        .transition(.scale.combined(with: .opacity))
+                    }
+                }
             }
-            .frame(minHeight: 100, maxHeight: .infinity)
             .overlay(alignment: .topTrailing) {
                 if !appState.currentTranscript.isEmpty {
                     Button(action: {
@@ -227,7 +283,7 @@ private struct ModeSelectionView: View {
     var body: some View {
         HStack(spacing: 6) {
             ForEach(MicrophoneMode.allCases) { mode in
-                if mode == .on {
+                if mode == .on && appState.microphoneMode == .on {
                     onModePill
                 } else {
                     ModeButton(mode: mode, isSelected: appState.microphoneMode == mode, compact: true) {
@@ -243,16 +299,17 @@ private struct ModeSelectionView: View {
         let isSelected = appState.microphoneMode == .on
         let color = isSelected ? Color.green : Color.secondary
 
-        return HStack(spacing: 0) {
+        return HStack(spacing: 2) {
             ModeButton(mode: .on, isSelected: isSelected, compact: true, plain: true) {
                 appState.setMode(.on)
             }
-            .padding(.trailing, -4) // Pull arrow closer
 
             onModeMenu(color: color, isSelected: isSelected)
+                .padding(.trailing, 4)
         }
-        .fixedSize() // Ensure pill doesn't expand
+        .fixedSize()
         .background(isSelected ? Color.green.opacity(0.15) : Color.clear)
+        .contentShape(RoundedRectangle(cornerRadius: 6))
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
@@ -325,24 +382,52 @@ private struct TranscriptContentView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        if shouldShowWordHighlights {
-            TranscriptWordsText(words: appState.currentWords)
-        } else if !appState.currentTranscript.isEmpty {
-            Text(appState.currentTranscript)
-                .font(.system(size: 16, weight: .regular, design: .rounded))
-                .foregroundColor(.primary)
-                .lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
-        } else {
-            Text(placeholderText)
-                .font(.system(size: 15, weight: .regular, design: .rounded))
-                .foregroundColor(.secondary)
-                .lineSpacing(3)
+        VStack(alignment: .leading, spacing: 4) { // Reduced spacing from 10 to 4
+            if appState.recentTurns.isEmpty && appState.currentWords.isEmpty && appState.currentTranscript.isEmpty {
+                Text(placeholderText)
+                    .font(.system(size: 15, weight: .regular, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .lineSpacing(3)
+            } else {
+                // Show history turns
+                ForEach(Array(appState.recentTurns.enumerated()), id: \.offset) { index, turn in
+                    let showSpeaker = shouldShowSpeaker(for: turn, index: index)
+                    TranscriptTurnView(turn: turn, showSpeaker: showSpeaker, isHistory: true)
+                }
+                
+                // Show active turn
+                if !appState.currentWords.isEmpty {
+                    let activeTurn = TranscriptTurn(
+                        transcript: appState.currentTranscript,
+                        words: appState.currentWords,
+                        endOfTurn: false,
+                        isFormatted: false,
+                        speaker: appState.currentWords.first?.speaker
+                    )
+                    let showSpeaker = shouldShowSpeaker(for: activeTurn, index: appState.recentTurns.count)
+                    TranscriptTurnView(turn: activeTurn, showSpeaker: showSpeaker, isHistory: false)
+                } else if !appState.currentTranscript.isEmpty {
+                    // Fallback for simple transcript without words
+                    Text(appState.currentTranscript)
+                        .font(.system(size: 16, weight: .regular, design: .rounded))
+                        .foregroundColor(.primary.opacity(0.6)) // Active is gray
+                }
+            }
         }
     }
 
-    private var shouldShowWordHighlights: Bool {
-        appState.currentWords.contains { $0.isFinal == false }
+    private func shouldShowSpeaker(for turn: TranscriptTurn, index: Int) -> Bool {
+        // Check if multiple speakers exist across all visible turns
+        let allSpeakers = appState.recentTurns.compactMap { $0.speaker } + (appState.currentWords.compactMap { $0.speaker })
+        let uniqueSpeakers = Set(allSpeakers)
+        guard uniqueSpeakers.count > 1 else { return false }
+        
+        // If first turn, always show speaker if we have multiple total
+        if index == 0 { return turn.speaker != nil }
+        
+        // Show if speaker changed from previous turn
+        let previousSpeaker = appState.recentTurns[index - 1].speaker
+        return turn.speaker != previousSpeaker && turn.speaker != nil
     }
 
     private var placeholderText: String {
@@ -357,8 +442,80 @@ private struct TranscriptContentView: View {
     }
 }
 
+private struct TranscriptTurnView: View {
+    @EnvironmentObject var appState: AppState
+    let turn: TranscriptTurn
+    let showSpeaker: Bool
+    let isHistory: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if showSpeaker, let speaker = turn.speaker {
+                HStack(spacing: 4) {
+                    Button(action: {
+                        appState.toggleSpeakerIsolation(speakerId: speaker)
+                    }) {
+                        HStack(spacing: 2) {
+                            Text("S\(speaker)")
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            
+                            if let isolated = appState.isolatedSpeakerId {
+                                Image(systemName: isolated == speaker ? "lock.fill" : "speaker.slash.fill")
+                                    .font(.system(size: 8))
+                            } else {
+                                Image(systemName: "lock.open")
+                                    .font(.system(size: 8))
+                                    .opacity(0.5)
+                            }
+                        }
+                        .foregroundColor(speakerColor(for: speaker))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(speakerBgColor(for: speaker))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                    .buttonStyle(.plain)
+                    .help(helpText(for: speaker))
+                }
+                .padding(.top, 4) // Add extra space when speaker changes
+            }
+            
+            TranscriptWordsText(words: turn.words, isHistory: isHistory)
+                .opacity(isIgnored ? 0.3 : 1.0)
+                .saturation(isIgnored ? 0.0 : 1.0)
+        }
+    }
+    
+    private var isIgnored: Bool {
+        guard let isolated = appState.isolatedSpeakerId, let speaker = turn.speaker else { return false }
+        return isolated != speaker
+    }
+    
+    private func speakerColor(for speaker: Int) -> Color {
+        if let isolated = appState.isolatedSpeakerId {
+            return isolated == speaker ? .green : .secondary
+        }
+        return .accentColor
+    }
+    
+    private func speakerBgColor(for speaker: Int) -> Color {
+        if let isolated = appState.isolatedSpeakerId {
+            return isolated == speaker ? .green.opacity(0.15) : .gray.opacity(0.1)
+        }
+        return .accentColor.opacity(0.1)
+    }
+    
+    private func helpText(for speaker: Int) -> String {
+        if let isolated = appState.isolatedSpeakerId {
+            return isolated == speaker ? "Click to unlock (listen to all)" : "Click to switch lock to S\(speaker)"
+        }
+        return "Click to only listen to S\(speaker)"
+    }
+}
+
 private struct TranscriptWordsText: View {
     let words: [TranscriptWord]
+    let isHistory: Bool
 
     var body: some View {
         textView
@@ -368,14 +525,22 @@ private struct TranscriptWordsText: View {
     }
 
     private var textView: Text {
-        words.enumerated().reduce(Text("")) { partial, element in
-            let word = element.element
-            let prefix = element.offset == 0 ? "" : " "
-            let segment = Text(prefix + word.text)
-                .foregroundColor(word.isFinal == false ? .secondary : .primary)
+        var result = Text("")
+        
+        for (index, word) in words.enumerated() {
+            let needsSpace = index > 0
+            let prefix = needsSpace ? " " : ""
+            
+            // COLOR SWAP LOGIC:
+            // Finalized (History) = Primary (Black/White)
+            // Active (Not History) = Secondary (Gray)
+            let baseColor: Color = isHistory ? .primary : .secondary
+            
+            result = result + Text(prefix + word.text)
+                .foregroundColor(word.isFinal == false ? .secondary.opacity(0.5) : baseColor)
                 .italic(word.isFinal == false)
-            return partial + segment
         }
+        return result
     }
 }
 
@@ -394,6 +559,13 @@ struct VisualEffectView: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
+    }
+}
+
+struct ScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

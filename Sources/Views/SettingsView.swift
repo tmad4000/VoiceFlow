@@ -302,6 +302,68 @@ struct GeneralSettingsView: View {
                     .padding(4)
                 }
 
+                // Push-to-Talk Shortcut Section
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Push-to-Talk Shortcut")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        HStack {
+                            Text("Shortcut:")
+                                .font(.system(size: 13))
+                            Text(AppState.pttShortcutDescription)
+                                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("Hold to talk")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+
+                        // Check for Spotlight conflict
+                        if AppState.isSpotlightSearchMacShortcutEnabled() {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(.orange)
+                                    Text("Spotlight Shortcut Conflict")
+                                        .font(.system(size: 12, weight: .semibold))
+                                }
+
+                                Text("macOS uses ⌥⌘Space for \"Search Mac\" (Spotlight). Disable it to use Push-to-Talk:")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("1. Open Keyboard Settings → Keyboard Shortcuts → Spotlight")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                    Text("2. Uncheck \"Search Mac\" or change its shortcut")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Button("Open Keyboard Shortcuts...") {
+                                    appState.openKeyboardShortcutsSettings()
+                                }
+                                .font(.system(size: 11))
+                            }
+                            .padding(10)
+                            .background(Color.orange.opacity(0.1))
+                            .cornerRadius(8)
+                        } else {
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                Text("No shortcut conflicts detected")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .padding(4)
+                }
+
                 // Startup Settings
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {

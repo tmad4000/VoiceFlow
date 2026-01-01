@@ -3,7 +3,21 @@ import AppKit
 import AVFoundation
 import Combine
 
+/// Main entry point - handles CLI or launches GUI
 @main
+enum VoiceFlowMain {
+    static func main() {
+        // Check if we should handle CLI commands
+        if VoiceFlowCLI.handleArguments() {
+            // CLI handled the command, exit without launching GUI
+            return
+        }
+
+        // No CLI command, launch GUI normally
+        VoiceFlowApp.main()
+    }
+}
+
 struct VoiceFlowApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
@@ -134,7 +148,65 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Listen for CLI commands via distributed notifications
+        setupCLINotifications()
+
         setupPTT()
+    }
+
+    private func setupCLINotifications() {
+        let center = DistributedNotificationCenter.default()
+
+        // Handle mode changes from CLI
+        center.addObserver(
+            forName: NSNotification.Name(VoiceFlowCLI.setModeNotification),
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self,
+                  let modeString = notification.userInfo?["mode"] as? String else { return }
+
+            Task { @MainActor in
+                switch modeString.lowercased() {
+                case "on":
+                    self.appState.setMode(.on)
+                    self.appState.logDebug("CLI: Mode set to On")
+                case "off":
+                    self.appState.setMode(.off)
+                    self.appState.logDebug("CLI: Mode set to Off")
+                case "sleep":
+                    self.appState.setMode(.sleep)
+                    self.appState.logDebug("CLI: Mode set to Sleep")
+                default:
+                    break
+                }
+            }
+        }
+
+        // Handle status requests from CLI
+        center.addObserver(
+            forName: NSNotification.Name(VoiceFlowCLI.getStatusNotification),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                let userInfo: [String: Any] = [
+                    "mode": self.appState.microphoneMode.rawValue,
+                    "connected": self.appState.isConnected,
+                    "provider": self.appState.dictationProvider.rawValue,
+                    "transcript": self.appState.currentTranscript
+                ]
+
+                DistributedNotificationCenter.default().postNotificationName(
+                    NSNotification.Name(VoiceFlowCLI.statusResponseNotification),
+                    object: nil,
+                    userInfo: userInfo,
+                    deliverImmediately: true
+                )
+            }
+        }
     }
 
     func showPanelWindow() {
@@ -176,7 +248,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.identifier = NSUserInterfaceItemIdentifier("voiceflow.panel")
         panel.isReleasedWhenClosed = false
         panel.isMovableByWindowBackground = true
-        panel.becomesKeyOnlyIfNeeded = false
+        panel.becomesKeyOnlyIfNeeded = true
         panel.isFloatingPanel = true
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
@@ -291,11 +363,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupPTT() {
         pttMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self = self else { return }
-            
-            // PTT Shortcut: Ctrl+Option+Cmd+Space (Hold)
-            let pttModifiers: NSEvent.ModifierFlags = [.control, .option, .command]
+
+            // PTT Shortcut: Option+Cmd+Space (Hold)
+            // Note: This conflicts with Spotlight "Search Mac" shortcut - user should disable it in System Settings
+            let pttModifiers: NSEvent.ModifierFlags = [.option, .command]
             let currentModifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            
+
             if currentModifiers == pttModifiers && event.keyCode == 49 { // Space bar
                 Task { @MainActor in
                     if event.type == .keyDown {

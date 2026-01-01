@@ -115,6 +115,7 @@ struct ModeButton: View {
                 RoundedRectangle(cornerRadius: compact ? 6 : 8)
                     .stroke(isSelected && !plain ? iconColor.opacity(0.5) : Color.clear, lineWidth: 1)
             )
+            .contentShape(RoundedRectangle(cornerRadius: compact ? 6 : 8))
         }
         .buttonStyle(.plain)
         .help(mode.description)
