@@ -523,11 +523,11 @@ struct GeneralSettingsView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Toggle("Auto-Sleep", isOn: sleepTimerEnabledBinding)
                                 .font(.system(size: 13))
-                            
+
                             Text("Automatically switch from On to Sleep mode after inactivity.")
                                 .font(.system(size: 11))
                                 .foregroundColor(.secondary)
-                            
+
                             if appState.sleepTimerEnabled {
                                 SliderRow(
                                     "Inactivity Timeout",
@@ -535,6 +535,29 @@ struct GeneralSettingsView: View {
                                     value: sleepTimerMinutesBinding,
                                     range: 1...60,
                                     step: 1,
+                                    unit: " min"
+                                )
+                                .padding(.leading, 16)
+                            }
+                        }
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("Auto-Off", isOn: autoOffEnabledBinding)
+                                .font(.system(size: 13))
+
+                            Text("Turn microphone completely Off after extended inactivity (even in Sleep mode). Saves battery and reduces background processing.")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+
+                            if appState.autoOffEnabled {
+                                SliderRow(
+                                    "Off Timeout",
+                                    subtitle: "Minutes before turning Off.",
+                                    value: autoOffMinutesBinding,
+                                    range: 5...120,
+                                    step: 5,
                                     unit: " min"
                                 )
                                 .padding(.leading, 16)
@@ -924,6 +947,20 @@ struct GeneralSettingsView: View {
         Binding(
             get: { appState.sleepTimerMinutes },
             set: { appState.saveSleepTimerMinutes($0) }
+        )
+    }
+
+    private var autoOffEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { appState.autoOffEnabled },
+            set: { appState.saveAutoOffEnabled($0) }
+        )
+    }
+
+    private var autoOffMinutesBinding: Binding<Double> {
+        Binding(
+            get: { appState.autoOffMinutes },
+            set: { appState.saveAutoOffMinutes($0) }
         )
     }
 

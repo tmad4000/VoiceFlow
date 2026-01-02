@@ -151,6 +151,8 @@ class AppState: ObservableObject {
     @Published var dictationProvider: DictationProvider = .auto
     @Published var sleepTimerEnabled: Bool = true
     @Published var sleepTimerMinutes: Double = 15
+    @Published var autoOffEnabled: Bool = true
+    @Published var autoOffMinutes: Double = 30
     @Published var launchMode: MicrophoneMode = .sleep
     @Published var launchAtLogin: Bool = false
 
@@ -265,6 +267,7 @@ class AppState: ObservableObject {
     private var windowManager = WindowManager()
     private var cancellables = Set<AnyCancellable>()
     private var sleepTimer: Timer?
+    private var autoOffTimer: Timer?
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
     private var currentUtteranceIsLiteral = false
@@ -322,6 +325,7 @@ class AppState: ObservableObject {
         loadVocabularyPrompt()
         loadIdeaFlowSettings()
         loadSleepTimerSettings()
+        loadAutoOffSettings()
         loadAIFormatterSettings()
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
@@ -697,6 +701,13 @@ class AppState: ObservableObject {
             stopSleepTimer()
         }
 
+        // Auto-off timer runs in both On and Sleep modes
+        if mode == .off {
+            stopAutoOffTimer()
+        } else {
+            resetAutoOffTimer()
+        }
+
         // Clear UI state when waking up or switching active modes
         if previousMode == .sleep && mode == .on {
             currentTranscript = ""
@@ -968,9 +979,13 @@ class AppState: ObservableObject {
     }
 
     private func handleTurn(_ turn: TranscriptTurn) {
-        // Reset sleep timer on any speech detection
+        // Reset timers on any speech detection
         if microphoneMode == .on {
             resetSleepTimer()
+        }
+        // Reset auto-off timer on speech (runs in both On and Sleep modes)
+        if microphoneMode != .off {
+            resetAutoOffTimer()
         }
         
         // Calculate force end status early
@@ -2318,6 +2333,58 @@ class AppState: ObservableObject {
         guard microphoneMode == .on else { return }
         logDebug("Inactivity timeout: Switching to Sleep mode")
         setMode(.sleep)
+    }
+
+    // MARK: - Auto-Off Timer Settings
+
+    private func loadAutoOffSettings() {
+        autoOffEnabled = UserDefaults.standard.object(forKey: "auto_off_enabled") as? Bool ?? true
+        let storedMinutes = UserDefaults.standard.double(forKey: "auto_off_minutes")
+        if storedMinutes > 0 {
+            autoOffMinutes = storedMinutes
+        }
+    }
+
+    func saveAutoOffEnabled(_ value: Bool) {
+        autoOffEnabled = value
+        UserDefaults.standard.set(value, forKey: "auto_off_enabled")
+        if value {
+            resetAutoOffTimer()
+        } else {
+            stopAutoOffTimer()
+        }
+    }
+
+    func saveAutoOffMinutes(_ value: Double) {
+        autoOffMinutes = value
+        UserDefaults.standard.set(value, forKey: "auto_off_minutes")
+        if autoOffEnabled {
+            resetAutoOffTimer()
+        }
+    }
+
+    private func resetAutoOffTimer() {
+        stopAutoOffTimer()
+        // Auto-off runs when mic is On or Sleep (not Off)
+        guard autoOffEnabled && microphoneMode != .off else { return }
+
+        let seconds = autoOffMinutes * 60
+        autoOffTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleAutoOffTimeout()
+            }
+        }
+    }
+
+    private func stopAutoOffTimer() {
+        autoOffTimer?.invalidate()
+        autoOffTimer = nil
+    }
+
+    private func handleAutoOffTimeout() {
+        guard microphoneMode != .off else { return }
+        logDebug("Auto-off timeout: Turning microphone completely Off after \(Int(autoOffMinutes)) minutes")
+        setMode(.off)
     }
 
     // MARK: - AI Formatter Settings
