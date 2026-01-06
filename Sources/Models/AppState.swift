@@ -185,6 +185,7 @@ class AppState: ObservableObject {
         ("window next", "Cycle to next window in same app (⌘`)"),
         ("window previous", "Cycle to previous window in same app (⌘⇧`)"),
         ("focus [app]", "Switch to a running application by name"),
+        ("press [modifier] [key]", "Press a keyboard shortcut (e.g., \"press command x\")"),
         ("spell [text]", "Type characters one-by-one without spaces"),
         ("save to idea flow", "Copy last dictation and open Idea Flow")
     ]
@@ -195,7 +196,12 @@ class AppState: ObservableObject {
         ("new line", "Insert a line break"),
         ("newline", "Insert a line break"),
         ("space bar", "Insert a space"),
-        ("spacebar", "Insert a space")
+        ("spacebar", "Insert a space"),
+        ("no caps", "Lowercase the next word"),
+        ("letter [char]", "Type the next word as a single letter"),
+        ("at sign [text]", "Insert @ and condense following words"),
+        ("hashtag [text]", "Insert # and condense following words"),
+        ("hash tag [text]", "Insert # and condense following words")
     ]
 
     var panelVisibilityHandler: ((Bool) -> Void)?
@@ -283,6 +289,7 @@ class AppState: ObservableObject {
     private let commandFlashDurationSeconds: TimeInterval = 2.0
     private let keywordFlashDurationSeconds: TimeInterval = 1.6
     private let keywordMaxGapSeconds: TimeInterval = 1.2
+    private let typingFlushDelaySeconds: TimeInterval = 0.12
     private var didTriggerSayKeyword = false
     private var typedFinalWordCount = 0
     private var didTypeDictationThisUtterance = false
@@ -291,6 +298,7 @@ class AppState: ObservableObject {
     private var forceEndRequestedAt: Date?
     private let forceEndTimeoutSeconds: TimeInterval = 2.0
     private var lastTypedTurnOrder = -1
+    private var suppressNextAutoCap = false
 
     /// Effective confidence threshold based on mode
     var effectiveConfidenceThreshold: Double {
@@ -1139,6 +1147,11 @@ class AppState: ObservableObject {
             let context = focusContextManager.getFormattingContext()
             processedText = aiFormatterService.quickFormat(processedText, context: context)
         }
+        
+        if suppressNextAutoCap {
+            processedText = lowercasedFirstLetter(processedText)
+            suppressNextAutoCap = false
+        }
 
         let trimmedProcessed = processedText.trimmingCharacters(in: .whitespaces)
         guard !trimmedProcessed.isEmpty else {
@@ -1171,6 +1184,35 @@ class AppState: ObservableObject {
 
         var result = text
         var keyword: String? = nil
+        
+        // "no caps" directive (string fallback)
+        if let regex = try? NSRegularExpression(pattern: "(?i)^\\s*no\\s*caps\\b[\\.,!?]?\\s*", options: []) {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            if let match = regex.firstMatch(in: result, options: [], range: range) {
+                keyword = keyword ?? "No caps"
+                suppressNextAutoCap = true
+                result = (result as NSString).substring(from: match.range.length)
+                result = lowercasedFirstWord(result)
+            }
+        }
+        
+        // "letter" directive (string fallback)
+        if let regex = try? NSRegularExpression(pattern: "(?i)^\\s*letter\\b[\\.,!?]?\\s*", options: []) {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            if let match = regex.firstMatch(in: result, options: [], range: range) {
+                keyword = keyword ?? "Letter"
+                suppressNextAutoCap = true
+                let remainder = (result as NSString).substring(from: match.range.length)
+                let trimmed = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let wordRange = trimmed.range(of: "\\S+", options: .regularExpression),
+                   let firstChar = trimmed[wordRange].first {
+                    let afterWord = trimmed[wordRange.upperBound...]
+                    result = String(firstChar).lowercased() + String(afterWord)
+                } else {
+                    result = remainder
+                }
+            }
+        }
 
         // Match "new line" or "newline" with optional trailing punctuation
         if let regex = try? NSRegularExpression(pattern: "(?i)\\bnew\\s*line\\b(?:[\\.,!?])?", options: []) {
@@ -1201,6 +1243,30 @@ class AppState: ObservableObject {
             let range = NSRange(result.startIndex..<result.endIndex, in: result)
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: " ")
         }
+        
+        // "at sign" -> "@"
+        if let regex = try? NSRegularExpression(pattern: "(?i)\\bat\\s*sign\\b", options: []) {
+            if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
+                keyword = keyword ?? "At sign"
+            }
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "@")
+        }
+        
+        // "hashtag" / "hash tag" -> "#"
+        if let regex = try? NSRegularExpression(pattern: "(?i)\\bhash\\s*tag\\b|\\bhashtag\\b", options: []) {
+            if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
+                keyword = keyword ?? "Hashtag"
+            }
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "#")
+        }
+        
+        // Collapse immediate spaces after @ or #
+        if let regex = try? NSRegularExpression(pattern: "([@#])\\s+([A-Za-z0-9]+)", options: []) {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1$2")
+        }
 
         return (result, keyword)
     }
@@ -1226,6 +1292,9 @@ class AppState: ObservableObject {
     private func applyKeywordReplacementsFromWords(_ words: [TranscriptWord]) -> (String, String?) {
         var output = ""
         var keyword: String? = nil
+        var lowercaseNext = false
+        var letterNext = false
+        let maxTagWords = 4
 
         func appendNewline() {
             while output.last == " " {
@@ -1262,10 +1331,159 @@ class AppState: ObservableObject {
             return trimmed.count == 1 && ".,!?".contains(trimmed)
         }
 
+        func appendProcessedToken(_ wordText: String) {
+            let normalized = normalizeToken(wordText)
+
+            if letterNext {
+                if !normalized.isEmpty, let firstChar = normalized.first {
+                    if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        suppressNextAutoCap = true
+                    }
+                    appendToken(String(firstChar))
+                    letterNext = false
+                } else {
+                    appendToken(wordText)
+                }
+                return
+            }
+
+            if lowercaseNext {
+                if !normalized.isEmpty {
+                    if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        suppressNextAutoCap = true
+                    }
+                    appendToken(wordText.lowercased())
+                    lowercaseNext = false
+                } else {
+                    appendToken(wordText)
+                }
+                return
+            }
+
+            appendToken(wordText)
+        }
+
+        func isTagStopToken(_ token: String, nextToken: String?) -> Bool {
+            if token == "at", nextToken == "sign" { return true }
+            if token == "hash", nextToken == "tag" { return true }
+            if token == "hashtag" { return true }
+            if token == "new", nextToken == "line" { return true }
+            if token == "newline" { return true }
+            if token == "spacebar" { return true }
+            if token == "space", nextToken == "bar" { return true }
+
+            let commandStarters: Set<String> = [
+                "window", "focus", "press", "copy", "paste", "cut", "undo", "redo", "select",
+                "save", "tab", "go", "scroll", "cancel", "stop", "microphone", "flow", "speech",
+                "wake", "submit", "send"
+            ]
+            return commandStarters.contains(token)
+        }
+
+        func consumeTag(startIndex: Int, prefix: String, skipCount: Int) -> Int {
+            var tagText = ""
+            var trailing = ""
+            var consumed = skipCount
+            var i = startIndex + skipCount
+            var wordsCollected = 0
+
+            while i < words.count && wordsCollected < maxTagWords {
+                let raw = words[i].text
+                let token = normalizeToken(raw)
+                let nextToken = (i + 1 < words.count) ? normalizeToken(words[i + 1].text) : nil
+
+                if token.isEmpty {
+                    if !tagText.isEmpty {
+                        trailing = raw
+                        consumed += 1
+                    }
+                    break
+                }
+
+                if isTagStopToken(token, nextToken: nextToken) {
+                    break
+                }
+
+                tagText += token
+                trailing = trailingPunctuation(from: raw)
+                consumed += 1
+                wordsCollected += 1
+                i += 1
+            }
+
+            guard !tagText.isEmpty else { return 0 }
+            appendToken(prefix + tagText)
+            if !trailing.isEmpty {
+                appendToken(trailing)
+            }
+            keyword = keyword ?? (prefix == "@" ? "At sign" : "Hashtag")
+            return consumed
+        }
+
         var index = 0
         while index < words.count {
             let word = words[index]
             let token = normalizeToken(word.text)
+
+            if token == "no", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "caps" || nextToken == "cap" {
+                    keyword = keyword ?? "No caps"
+                    lowercaseNext = true
+                    index += 2
+                    continue
+                }
+            }
+
+            if token == "letter" {
+                keyword = keyword ?? "Letter"
+                letterNext = true
+                index += 1
+                continue
+            }
+
+            if token == "at", index + 1 < words.count {
+                let nextToken = normalizeToken(words[index + 1].text)
+                if nextToken == "sign" {
+                    let consumed = consumeTag(startIndex: index, prefix: "@", skipCount: 2)
+                    if consumed > 0 {
+                        index += consumed
+                        continue
+                    }
+                    keyword = keyword ?? "At sign"
+                    appendToken("@")
+                    index += 2
+                    continue
+                }
+            }
+
+            if token == "hashtag" {
+                let consumed = consumeTag(startIndex: index, prefix: "#", skipCount: 1)
+                if consumed > 0 {
+                    index += consumed
+                    continue
+                }
+                keyword = keyword ?? "Hashtag"
+                appendToken("#")
+                index += 1
+                continue
+            }
+
+            if token == "hash", index + 1 < words.count {
+                let nextToken = normalizeToken(words[index + 1].text)
+                if nextToken == "tag" {
+                    let consumed = consumeTag(startIndex: index, prefix: "#", skipCount: 2)
+                    if consumed > 0 {
+                        index += consumed
+                        continue
+                    }
+                    keyword = keyword ?? "Hashtag"
+                    appendToken("#")
+                    index += 2
+                    continue
+                }
+            }
 
             if token == "newline" {
                 keyword = keyword ?? "New line"
@@ -1312,7 +1530,7 @@ class AppState: ObservableObject {
                 }
             }
 
-            appendToken(word.text)
+            appendProcessedToken(word.text)
             index += 1
         }
 
@@ -1678,6 +1896,10 @@ class AppState: ObservableObject {
         let tokenStrings = normalizedTokens.map { $0.token }
 
         var matches: [PendingCommandMatch] = []
+        
+        if microphoneMode == .on {
+            matches.append(contentsOf: pressCommandMatches(from: normalizedTokens, turn: turn))
+        }
 
         // System commands based on current mode
         var systemCommands: [(phrase: String, key: String, name: String, haltsProcessing: Bool, action: () -> Void)] = []
@@ -1855,6 +2077,7 @@ class AppState: ObservableObject {
         didTypeDictationThisUtterance = false
         forceEndPending = false
         forceEndRequestedAt = nil
+        suppressNextAutoCap = false
     }
 
     private func isSayPrefix(_ text: String) -> Bool {
@@ -1867,11 +2090,12 @@ class AppState: ObservableObject {
     }
 
     private func executeMatch(_ match: PendingCommandMatch) {
-        preExecuteMatch(match)
-        executeMatchAction(match)
+        let didFlushText = preExecuteMatch(match)
+        executeMatchAction(match, didFlushText: didFlushText)
     }
 
-    private func preExecuteMatch(_ match: PendingCommandMatch) {
+    private func preExecuteMatch(_ match: PendingCommandMatch) -> Bool {
+        var didFlushText = false
         // 1. Pre-emptive Flush: Type any words BEFORE the command phrase
         if microphoneMode == .on && activeBehavior != .command {
             let wordsBefore = match.turn.words.prefix(match.startWordIndex)
@@ -1901,6 +2125,7 @@ class AppState: ObservableObject {
                     if !textToFlush.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         didTypeDictationThisUtterance = true
                     }
+                    didFlushText = true
                 }
             }
         }
@@ -1934,13 +2159,24 @@ class AppState: ObservableObject {
             }
             self.saveDictationHistory()
         }
+        return didFlushText
     }
 
-    private func executeMatchAction(_ match: PendingCommandMatch) {
-        logDebug("Executing action for command: \(match.key)")
-        match.action()
-        if match.key.hasPrefix("user.") {
-            lastCommandExecutionTime = Date()
+    private func executeMatchAction(_ match: PendingCommandMatch, didFlushText: Bool) {
+        let performAction = { [weak self] in
+            guard let self = self else { return }
+            self.logDebug("Executing action for command: \(match.key)")
+            match.action()
+            if match.key.hasPrefix("user.") {
+                self.lastCommandExecutionTime = Date()
+            }
+        }
+        if didFlushText && typingFlushDelaySeconds > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + typingFlushDelaySeconds) {
+                performAction()
+            }
+        } else {
+            performAction()
         }
     }
 
@@ -1950,7 +2186,7 @@ class AppState: ObservableObject {
         pendingCommandExecutions.insert(pendingKey)
 
         // Mark as consumed IMMEDIATELY before the delay so it doesn't get typed as dictation
-        preExecuteMatch(match)
+        let didFlushText = preExecuteMatch(match)
 
         let delaySeconds = commandDelayMs / 1000
         DispatchQueue.main.asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
@@ -1959,7 +2195,7 @@ class AppState: ObservableObject {
 
             // We don't need to check lastExecutedEndWordIndexByCommand here because preExecuteMatch 
             // already updated it, and processVoiceCommands checked it before scheduling.
-            self.executeMatchAction(match)
+            self.executeMatchAction(match, didFlushText: didFlushText)
         }
     }
 
@@ -2030,6 +2266,159 @@ class AppState: ObservableObject {
             .filter { !$0.isEmpty }
     }
 
+    private func lowercasedFirstLetter(_ text: String) -> String {
+        guard let first = text.first else { return text }
+        return first.lowercased() + String(text.dropFirst())
+    }
+
+    private func lowercasedFirstWord(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = trimmed.range(of: "\\S+", options: .regularExpression) else {
+            return text
+        }
+        let prefix = trimmed[..<range.lowerBound]
+        let word = trimmed[range]
+        let suffix = trimmed[range.upperBound...]
+        return String(prefix) + word.lowercased() + String(suffix)
+    }
+
+    private func trailingPunctuation(from text: String) -> String {
+        guard let lastAlphaIndex = text.lastIndex(where: { $0.isLetter || $0.isNumber }) else {
+            return text
+        }
+        let trailing = text[text.index(after: lastAlphaIndex)...]
+        return String(trailing)
+    }
+
+    private func modifierForToken(_ token: String) -> KeyboardModifiers? {
+        switch token {
+        case "command", "cmd":
+            return .command
+        case "control", "ctrl":
+            return .control
+        case "option", "alt":
+            return .option
+        case "shift":
+            return .shift
+        default:
+            return nil
+        }
+    }
+
+    private func keyCodeForToken(_ token: String, nextToken: String?) -> (keyCode: UInt16, consumedTokens: Int)? {
+        switch token {
+        case "escape", "esc":
+            return (UInt16(kVK_Escape), 1)
+        case "enter", "return":
+            return (UInt16(kVK_Return), 1)
+        case "tab":
+            return (UInt16(kVK_Tab), 1)
+        case "space":
+            if nextToken == "bar" {
+                return (UInt16(kVK_Space), 2)
+            }
+            return (UInt16(kVK_Space), 1)
+        case "spacebar":
+            return (UInt16(kVK_Space), 1)
+        case "delete", "backspace":
+            return (UInt16(kVK_Delete), 1)
+        case "forward", "del":
+            if nextToken == "delete" {
+                return (UInt16(kVK_ForwardDelete), 2)
+            }
+        case "page":
+            if nextToken == "up" {
+                return (UInt16(kVK_PageUp), 2)
+            } else if nextToken == "down" {
+                return (UInt16(kVK_PageDown), 2)
+            }
+        case "left":
+            if nextToken == "arrow" {
+                return (UInt16(kVK_LeftArrow), 2)
+            }
+        case "right":
+            if nextToken == "arrow" {
+                return (UInt16(kVK_RightArrow), 2)
+            }
+        case "up":
+            if nextToken == "arrow" {
+                return (UInt16(kVK_UpArrow), 2)
+            }
+        case "down":
+            if nextToken == "arrow" {
+                return (UInt16(kVK_DownArrow), 2)
+            }
+        case "home":
+            return (UInt16(kVK_Home), 1)
+        case "end":
+            return (UInt16(kVK_End), 1)
+        default:
+            break
+        }
+
+        if token.count == 1, let scalar = token.unicodeScalars.first {
+            if CharacterSet.letters.contains(scalar) {
+                let upper = String(token).uppercased()
+                switch upper {
+                case "A": return (UInt16(kVK_ANSI_A), 1)
+                case "B": return (UInt16(kVK_ANSI_B), 1)
+                case "C": return (UInt16(kVK_ANSI_C), 1)
+                case "D": return (UInt16(kVK_ANSI_D), 1)
+                case "E": return (UInt16(kVK_ANSI_E), 1)
+                case "F": return (UInt16(kVK_ANSI_F), 1)
+                case "G": return (UInt16(kVK_ANSI_G), 1)
+                case "H": return (UInt16(kVK_ANSI_H), 1)
+                case "I": return (UInt16(kVK_ANSI_I), 1)
+                case "J": return (UInt16(kVK_ANSI_J), 1)
+                case "K": return (UInt16(kVK_ANSI_K), 1)
+                case "L": return (UInt16(kVK_ANSI_L), 1)
+                case "M": return (UInt16(kVK_ANSI_M), 1)
+                case "N": return (UInt16(kVK_ANSI_N), 1)
+                case "O": return (UInt16(kVK_ANSI_O), 1)
+                case "P": return (UInt16(kVK_ANSI_P), 1)
+                case "Q": return (UInt16(kVK_ANSI_Q), 1)
+                case "R": return (UInt16(kVK_ANSI_R), 1)
+                case "S": return (UInt16(kVK_ANSI_S), 1)
+                case "T": return (UInt16(kVK_ANSI_T), 1)
+                case "U": return (UInt16(kVK_ANSI_U), 1)
+                case "V": return (UInt16(kVK_ANSI_V), 1)
+                case "W": return (UInt16(kVK_ANSI_W), 1)
+                case "X": return (UInt16(kVK_ANSI_X), 1)
+                case "Y": return (UInt16(kVK_ANSI_Y), 1)
+                case "Z": return (UInt16(kVK_ANSI_Z), 1)
+                default: break
+                }
+            }
+            if CharacterSet.decimalDigits.contains(scalar) {
+                switch token {
+                case "0": return (UInt16(kVK_ANSI_0), 1)
+                case "1": return (UInt16(kVK_ANSI_1), 1)
+                case "2": return (UInt16(kVK_ANSI_2), 1)
+                case "3": return (UInt16(kVK_ANSI_3), 1)
+                case "4": return (UInt16(kVK_ANSI_4), 1)
+                case "5": return (UInt16(kVK_ANSI_5), 1)
+                case "6": return (UInt16(kVK_ANSI_6), 1)
+                case "7": return (UInt16(kVK_ANSI_7), 1)
+                case "8": return (UInt16(kVK_ANSI_8), 1)
+                case "9": return (UInt16(kVK_ANSI_9), 1)
+                default: break
+                }
+            }
+        }
+        return nil
+    }
+
+    private func shortcutDisplayName(_ shortcut: KeyboardShortcut) -> String {
+        var parts: [String] = []
+        if shortcut.modifiers.contains(.command) { parts.append("Command") }
+        if shortcut.modifiers.contains(.control) { parts.append("Control") }
+        if shortcut.modifiers.contains(.option) { parts.append("Option") }
+        if shortcut.modifiers.contains(.shift) { parts.append("Shift") }
+        let keyName = KeyboardShortcut.keyCodeToString(shortcut.keyCode)
+        parts.append(keyName)
+        return parts.joined(separator: "+")
+    }
+
     private func isStableMatch(words: [TranscriptWord], wordIndices: [Int]) -> Bool {
         for index in wordIndices {
             if words.indices.contains(index), words[index].isFinal == false {
@@ -2050,6 +2439,81 @@ class AppState: ObservableObject {
             }
         }
         return ranges
+    }
+
+    private func pressCommandMatches(from normalizedTokens: [NormalizedToken], turn: TranscriptTurn) -> [PendingCommandMatch] {
+        guard !normalizedTokens.isEmpty else { return [] }
+        var matches: [PendingCommandMatch] = []
+        var index = 0
+        while index < normalizedTokens.count {
+            let token = normalizedTokens[index].token
+            guard token == "press" else {
+                index += 1
+                continue
+            }
+
+            var modifiers: KeyboardModifiers = []
+            var cursor = index + 1
+            while cursor < normalizedTokens.count {
+                let candidate = normalizedTokens[cursor].token
+                if let modifier = modifierForToken(candidate) {
+                    modifiers.insert(modifier)
+                    cursor += 1
+                    continue
+                }
+                break
+            }
+
+            guard cursor < normalizedTokens.count else {
+                index += 1
+                continue
+            }
+
+            let keyToken = normalizedTokens[cursor].token
+            let nextToken = (cursor + 1 < normalizedTokens.count) ? normalizedTokens[cursor + 1].token : nil
+            guard let keyInfo = keyCodeForToken(keyToken, nextToken: nextToken) else {
+                index += 1
+                continue
+            }
+
+            if modifiers.isEmpty && (keyToken == "escape" || keyToken == "esc" || keyToken == "enter" || keyToken == "return") {
+                index += 1
+                continue
+            }
+
+            let endTokenIndex = cursor + keyInfo.consumedTokens - 1
+            guard normalizedTokens.indices.contains(endTokenIndex) else {
+                index += 1
+                continue
+            }
+
+            let startWordIndex = normalizedTokens[index].wordIndex
+            let endWordIndex = normalizedTokens[endTokenIndex].wordIndex
+            let isPrefixed = index > 0 && normalizedTokens[index - 1].token == commandPrefixToken
+            let wordIndices = normalizedTokens[index...endTokenIndex].map { $0.wordIndex }
+            let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
+            let shortcut = KeyboardShortcut(keyCode: keyInfo.keyCode, modifiers: modifiers)
+            let label = "Press \(shortcutDisplayName(shortcut))"
+
+            matches.append(PendingCommandMatch(
+                key: "system.press",
+                startWordIndex: startWordIndex,
+                endWordIndex: endWordIndex,
+                isPrefixed: isPrefixed,
+                isStable: isStable,
+                requiresPause: false,
+                haltsProcessing: false,
+                turn: turn,
+                action: { [weak self] in
+                    self?.executeKeyboardShortcut(shortcut)
+                    self?.triggerCommandFlash(name: label)
+                }
+            ))
+
+            index = endTokenIndex + 1
+        }
+
+        return matches
     }
 
     private func typeText(_ text: String, appendSpace: Bool) {
@@ -2464,6 +2928,10 @@ class AppState: ObservableObject {
             // User voice command phrases
             let userCommandPhrases = voiceCommands.filter { $0.isEnabled }.map { $0.phrase }
             terms.append(contentsOf: userCommandPhrases)
+
+            // Special dictation keywords
+            let keywordPhrases = Self.specialKeywordList.map { $0.phrase }
+            terms.append(contentsOf: keywordPhrases)
 
             // Wake/sleep phrases
             terms.append(contentsOf: ["flow on", "flow off", "flow sleep", "wake up", "go to sleep"])

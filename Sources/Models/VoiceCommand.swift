@@ -18,6 +18,7 @@ struct VoiceCommand: Codable, Identifiable, Equatable, Hashable {
         VoiceCommand(phrase: "tab back", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Tab), modifiers: [.control, .shift])),
         VoiceCommand(phrase: "tab forward", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Tab), modifiers: [.control])),
         VoiceCommand(phrase: "new tab", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_T), modifiers: [.command])),
+        VoiceCommand(phrase: "tab new", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_T), modifiers: [.command])),
         VoiceCommand(phrase: "undo that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command]), requiresPause: true),
         VoiceCommand(phrase: "redo that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command, .shift]), requiresPause: true),
         VoiceCommand(phrase: "copy that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_C), modifiers: [.command])),
