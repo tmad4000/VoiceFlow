@@ -40,7 +40,7 @@ struct SettingsView: View {
 // MARK: - Reusable Components
 
 private let globalShortcutHelpItems: [(keys: String, description: String)] = [
-    ("⌃⌥⌘Space", "Push-to-Talk (Hold)"),
+    ("⌃⌥Space", "Push-to-Talk (Hold)"),
     ("⌃⌘V", "Paste last utterance"),
     ("⌃⌥⌘1", "Mode: ON"),
     ("⌃⌥⌘2", "Mode: SLEEP"),
@@ -441,46 +441,13 @@ struct GeneralSettingsView: View {
                                 .foregroundColor(.secondary)
                         }
 
-                        // Check for Spotlight conflict
-                        if AppState.isSpotlightSearchMacShortcutEnabled() {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .foregroundColor(.orange)
-                                    Text("Spotlight Shortcut Conflict")
-                                        .font(.system(size: 12, weight: .semibold))
-                                }
-
-                                Text("macOS uses ⌥⌘Space for \"Search Mac\" (Spotlight). Disable it to use Push-to-Talk:")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("1. Open Keyboard Settings → Keyboard Shortcuts → Spotlight")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
-                                    Text("2. Uncheck \"Search Mac\" or change its shortcut")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
-                                }
-
-                                Button("Open Keyboard Shortcuts...") {
-                                    appState.openKeyboardShortcutsSettings()
-                                }
-                                .pointerCursor()
+                        // No known conflicts with Control+Option+Space
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                            Text("No shortcut conflicts detected")
                                 .font(.system(size: 11))
-                            }
-                            .padding(10)
-                            .background(Color.orange.opacity(0.1))
-                            .cornerRadius(8)
-                        } else {
-                            HStack(spacing: 6) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
-                                Text("No shortcut conflicts detected")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
-                            }
+                                .foregroundColor(.secondary)
                         }
                     }
                     .padding(4)

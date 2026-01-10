@@ -126,6 +126,7 @@ class AppState: ObservableObject {
     @Published var deepgramApiKey: String = ""
     @Published var voiceCommands: [VoiceCommand] = VoiceCommand.defaults
     @Published var isPanelVisible: Bool = true
+    @Published var isPanelMinimal: Bool = false
     @Published var currentWords: [TranscriptWord] = []
     @Published var commandDelayMs: Double = 0
     @Published var liveDictationEnabled: Bool = false
@@ -664,10 +665,10 @@ class AppState: ObservableObject {
     }
 
     /// The default Push-to-Talk shortcut description
-    static let pttShortcutDescription = "⌥⌘Space (Option+Cmd+Space)"
+    static let pttShortcutDescription = "⌃⌥Space (Control+Option+Space)"
 
     /// Checks if macOS Spotlight "Search Mac" shortcut (Opt+Cmd+Space) is enabled
-    /// This conflicts with VoiceFlow's PTT shortcut
+    /// Note: No longer conflicts after changing PTT to Control+Option+Space
     static func isSpotlightSearchMacShortcutEnabled() -> Bool {
         // The Spotlight "Search Mac" shortcut is stored in com.apple.symbolichotkeys.plist
         // Key 65 is the "Search Mac" shortcut (different from key 64 which is "Show Spotlight")

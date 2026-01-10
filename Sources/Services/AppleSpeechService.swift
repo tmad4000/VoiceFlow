@@ -9,9 +9,13 @@ class AppleSpeechService: NSObject, ObservableObject {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     
-    @Published var isConnected = true // Apple speech is "connected" if it's active
+    @Published var isConnected = false // Apple speech is "connected" when recognition is active
     @Published var latestTurn: TranscriptTurn?
     @Published var errorMessage: String?
+
+    var supportsOnDeviceRecognition: Bool {
+        speechRecognizer?.supportsOnDeviceRecognition == true
+    }
     
     private var transcribeMode = true
     private var lastTranscript = ""
@@ -59,10 +63,11 @@ class AppleSpeechService: NSObject, ObservableObject {
         lastAddsPunctuation = addsPunctuation
         guard let speechRecognizer = speechRecognizer, speechRecognizer.isAvailable else {
             errorMessage = "Speech recognizer not available"
+            isConnected = false
             return
         }
         stopRecognition()
-        
+
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else { return }
         
@@ -120,8 +125,13 @@ class AppleSpeechService: NSObject, ObservableObject {
                 logger.error("Recognition error: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     self.errorMessage = error.localizedDescription
+                    self.isConnected = false
                 }
             }
+        }
+
+        DispatchQueue.main.async {
+            self.isConnected = true
         }
     }
     
@@ -130,6 +140,7 @@ class AppleSpeechService: NSObject, ObservableObject {
         recognitionTask = nil
         recognitionRequest?.endAudio()
         recognitionRequest = nil
+        isConnected = false
     }
     
     func forceEndUtterance() {

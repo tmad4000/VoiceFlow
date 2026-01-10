@@ -364,9 +364,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         pttMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self = self else { return }
 
-            // PTT Shortcut: Option+Cmd+Space (Hold)
-            // Note: This conflicts with Spotlight "Search Mac" shortcut - user should disable it in System Settings
-            let pttModifiers: NSEvent.ModifierFlags = [.option, .command]
+            // PTT Shortcut: Control+Option+Space (Hold)
+            // Changed from Option+Cmd+Space to avoid Spotlight conflict
+            let pttModifiers: NSEvent.ModifierFlags = [.control, .option]
             let currentModifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
             if currentModifiers == pttModifiers && event.keyCode == 49 { // Space bar

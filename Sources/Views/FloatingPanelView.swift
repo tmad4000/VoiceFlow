@@ -7,6 +7,55 @@ struct FloatingPanelView: View {
     @State private var autoScrollEnabled = true
 
     var body: some View {
+        Group {
+            if appState.isPanelMinimal {
+                minimalPanel
+            } else {
+                fullPanel
+            }
+        }
+    }
+
+    private var minimalPanel: some View {
+        HStack(spacing: 8) {
+            ModeSelectionView()
+
+            Spacer()
+
+            // Mic level indicator when active
+            if appState.microphoneMode != .off {
+                MicLevelIndicator(level: appState.audioLevel)
+            }
+
+            // Expand button
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    appState.isPanelMinimal = false
+                }
+            }) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .help("Expand panel")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(minWidth: 180)
+        .background(
+            VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.green, lineWidth: appState.isCommandFlashActive ? 2 : 0)
+                        .animation(.easeInOut(duration: 0.2), value: appState.isCommandFlashActive)
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var fullPanel: some View {
         VStack(spacing: 0) {
             // Header with mode buttons, volume indicator, and close button
             HStack(spacing: 8) {
@@ -64,7 +113,21 @@ struct FloatingPanelView: View {
                 .buttonStyle(.plain)
                 .pointerCursor()
                 .help("Open settings")
-                
+
+                // Collapse to minimal button
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        appState.isPanelMinimal = true
+                    }
+                }) {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .help("Collapse to minimal")
+
                 // Close menu button
                 Menu {
                     Button(action: hidePanel) {
@@ -554,8 +617,14 @@ private struct TranscriptContentView: View {
         case .off:
             return "Microphone off"
         case .on:
+            if appState.effectiveIsOffline {
+                return appState.isConnected ? "Listening (Mac Speech)…" : "Starting Mac Speech…"
+            }
             return appState.isConnected ? "Listening…" : "Connecting…"
         case .sleep:
+            if appState.effectiveIsOffline {
+                return appState.isConnected ? "Listening for 'Speech on' (Mac Speech)…" : "Starting Mac Speech…"
+            }
             return appState.isConnected ? "Listening for 'Speech on'…" : "Connecting…"
         }
     }
