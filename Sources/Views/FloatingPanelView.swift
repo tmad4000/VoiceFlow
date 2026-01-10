@@ -17,14 +17,13 @@ struct FloatingPanelView: View {
     }
 
     private var minimalPanel: some View {
-        HStack(spacing: 8) {
-            ModeSelectionView()
+        HStack(spacing: 6) {
+            // Compact mode buttons
+            CompactModeButtons()
 
-            Spacer()
-
-            // Mic level indicator when active
+            // Audio pulse indicator when active
             if appState.microphoneMode != .off {
-                MicLevelIndicator(level: appState.audioLevel)
+                AudioPulseIndicator(level: appState.audioLevel, mode: appState.microphoneMode)
             }
 
             // Expand button
@@ -34,25 +33,24 @@ struct FloatingPanelView: View {
                 }
             }) {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
             .pointerCursor()
             .help("Expand panel")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(minWidth: 180)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
         .background(
             VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10)
+                    RoundedRectangle(cornerRadius: 8)
                         .stroke(Color.green, lineWidth: appState.isCommandFlashActive ? 2 : 0)
                         .animation(.easeInOut(duration: 0.2), value: appState.isCommandFlashActive)
                 )
         )
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var fullPanel: some View {
@@ -534,6 +532,75 @@ private struct MicLevelIndicator: View {
         if level > 0.8 { return .red }
         if level > 0.5 { return .orange }
         return .green
+    }
+}
+
+// Compact mode buttons for minimal panel
+private struct CompactModeButtons: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach([MicrophoneMode.off, .sleep, .on], id: \.self) { mode in
+                Button(action: { appState.setMode(mode) }) {
+                    Circle()
+                        .fill(colorFor(mode).opacity(appState.microphoneMode == mode ? 1.0 : 0.3))
+                        .frame(width: 12, height: 12)
+                        .overlay(
+                            Circle()
+                                .stroke(colorFor(mode), lineWidth: appState.microphoneMode == mode ? 0 : 1)
+                                .opacity(0.5)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .help(mode.rawValue.capitalized)
+            }
+        }
+    }
+
+    private func colorFor(_ mode: MicrophoneMode) -> Color {
+        switch mode {
+        case .off: return .gray
+        case .sleep: return .orange
+        case .on: return .green
+        }
+    }
+}
+
+// Audio pulse indicator that pulses based on audio level
+private struct AudioPulseIndicator: View {
+    let level: Float
+    let mode: MicrophoneMode
+
+    // Amplify level for better visibility (input is typically 0-0.3)
+    private var amplifiedLevel: Float {
+        min(1.0, level * 5.0)
+    }
+
+    var body: some View {
+        ZStack {
+            // Outer glow when speaking
+            Circle()
+                .fill(pulseColor.opacity(0.3))
+                .frame(width: 14, height: 14)
+                .scaleEffect(1.0 + CGFloat(amplifiedLevel) * 0.5)
+                .opacity(Double(amplifiedLevel))
+
+            // Inner solid circle
+            Circle()
+                .fill(pulseColor)
+                .frame(width: 8, height: 8)
+        }
+        .animation(.easeInOut(duration: 0.08), value: amplifiedLevel)
+    }
+
+    private var pulseColor: Color {
+        switch mode {
+        case .on: return amplifiedLevel > 0.5 ? .orange : .green
+        case .sleep: return .orange
+        case .off: return .gray
+        }
     }
 }
 
