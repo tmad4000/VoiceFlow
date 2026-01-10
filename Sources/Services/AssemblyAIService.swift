@@ -19,11 +19,15 @@ class AssemblyAIService: NSObject, ObservableObject {
     @Published var isConnected = false
     @Published var latestTurn: TranscriptTurn?
     @Published var errorMessage: String?
+    @Published var lastPingLatencyMs: Int?
 
     private var transcribeMode = true
     private var formatTurns = true
     private var vocabularyPrompt: String?
     private var utteranceConfig: UtteranceConfig = .default
+    private var pingTimer: Timer?
+    private var lastPingSentAt: Date?
+    private let pingIntervalSeconds: TimeInterval = 10
 
     init(apiKey: String) {
         self.apiKey = apiKey
@@ -93,6 +97,7 @@ class AssemblyAIService: NSObject, ObservableObject {
         socket.disconnect()
         self.socket = nil
         isConnected = false
+        stopPingTimer()
     }
 
     func sendAudio(_ data: Data) {
@@ -229,6 +234,7 @@ extension AssemblyAIService: WebSocketDelegate {
                 self?.errorMessage = nil
             }
             print("WebSocket connected")
+            startPingTimer()
 
         case .disconnected(let reason, let code):
             print("WebSocket disconnected: \(reason) (code: \(code))")
@@ -236,6 +242,7 @@ extension AssemblyAIService: WebSocketDelegate {
                 self?.isConnected = false
                 self?.errorMessage = "Disconnected: \(reason)"
             }
+            stopPingTimer()
 
         case .text(let text):
             if let data = text.data(using: .utf8),
@@ -256,12 +263,14 @@ extension AssemblyAIService: WebSocketDelegate {
                 self?.isConnected = false
             }
             print("WebSocket error: \(String(describing: error))")
+            stopPingTimer()
 
         case .cancelled:
             DispatchQueue.main.async { [weak self] in
                 self?.isConnected = false
             }
             print("WebSocket cancelled")
+            stopPingTimer()
 
         case .viabilityChanged(let viable):
             print("WebSocket viability: \(viable)")
@@ -276,9 +285,40 @@ extension AssemblyAIService: WebSocketDelegate {
                 self?.isConnected = false
             }
             print("WebSocket peer closed")
+            stopPingTimer()
 
-        case .ping, .pong:
+        case .ping:
             break
+
+        case .pong:
+            if let sentAt = lastPingSentAt {
+                let latencyMs = Int(Date().timeIntervalSince(sentAt) * 1000)
+                DispatchQueue.main.async { [weak self] in
+                    self?.lastPingLatencyMs = latencyMs
+                }
+            }
         }
+    }
+}
+
+private extension AssemblyAIService {
+    func startPingTimer() {
+        stopPingTimer()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: pingIntervalSeconds, repeats: true) { [weak self] _ in
+            self?.sendPing()
+        }
+    }
+
+    func stopPingTimer() {
+        pingTimer?.invalidate()
+        pingTimer = nil
+        lastPingSentAt = nil
+        lastPingLatencyMs = nil
+    }
+
+    func sendPing() {
+        guard isConnected, let socket = socket else { return }
+        lastPingSentAt = Date()
+        socket.write(ping: Data())
     }
 }

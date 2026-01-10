@@ -148,6 +148,8 @@ class AppState: ObservableObject {
     @Published var ideaFlowShortcut: KeyboardShortcut? = nil
     @Published var ideaFlowURL: String = ""
     @Published var isOffline: Bool = false
+    @Published var connectionLatencyMs: Int? = nil
+    @Published var isLatencyDegraded: Bool = false
     @Published var dictationProvider: DictationProvider = .auto
     @Published var sleepTimerEnabled: Bool = true
     @Published var sleepTimerMinutes: Double = 15
@@ -245,8 +247,25 @@ class AppState: ObservableObject {
         if !isMicrophoneGranted {
             warnings.append(AppWarning(id: "mic", message: "Microphone access needed", severity: .error))
         }
-        if !isSpeechGranted && dictationProvider == .offline {
-            warnings.append(AppWarning(id: "speech", message: "Speech recognition permission needed", severity: .error))
+        if !isSpeechGranted && (dictationProvider == .offline || effectiveIsOffline) {
+            warnings.append(AppWarning(id: "speech", message: "Speech recognition permission needed for Mac Speech", severity: .error))
+        }
+
+        // Offline detection + suggestions
+        if isOffline && dictationProvider != .offline {
+            if dictationProvider == .auto {
+                warnings.append(AppWarning(id: "network_offline_auto", message: "Offline detected — using Mac Speech (Auto).", severity: .warning))
+            } else {
+                warnings.append(AppWarning(id: "network_offline", message: "Network offline — switch to Mac Speech (Offline) or set provider to Auto.", severity: .warning))
+            }
+        }
+
+        if effectiveIsOffline, supportsOnDeviceSpeech == false {
+            warnings.append(AppWarning(id: "offline_unsupported", message: "On-device speech not supported on this Mac — offline dictation may not work.", severity: .warning))
+        }
+
+        if isLatencyDegraded, let latency = connectionLatencyMs, !effectiveIsOffline {
+            warnings.append(AppWarning(id: "latency_high", message: "High network latency (\(latency)ms) — consider switching to Mac Speech (Offline).", severity: .warning))
         }
 
         return warnings
@@ -254,6 +273,10 @@ class AppState: ObservableObject {
 
     private var dictgramIsRequired: Bool {
         dictationProvider == .deepgram || (dictationProvider == .auto && isOffline && false) // Auto doesn't use Deepgram as fallback yet
+    }
+
+    private var supportsOnDeviceSpeech: Bool? {
+        SFSpeechRecognizer(locale: Locale(identifier: "en-US"))?.supportsOnDeviceRecognition
     }
 
     func pasteLastUtterance() {
@@ -281,7 +304,10 @@ class AppState: ObservableObject {
     private var wakeUpTime: Date?
     private let wakeUpGracePeriod: TimeInterval = 0.8  // Don't type for 0.8s after waking
     private let commandPrefixToken = "voiceflow"
-    private let expectsFormattedTurns = true
+    private var expectsFormattedTurns: Bool {
+        // In live dictation mode (format_turns=false), we don't expect formatted turns
+        return !liveDictationEnabled
+    }
     private var pendingCommandExecutions = Set<PendingExecutionKey>()
     private var lastCommandExecutionTime: Date?
     private let cancelWindowSeconds: TimeInterval = 2
@@ -290,6 +316,8 @@ class AppState: ObservableObject {
     private let keywordFlashDurationSeconds: TimeInterval = 1.6
     private let keywordMaxGapSeconds: TimeInterval = 1.2
     private let typingFlushDelaySeconds: TimeInterval = 0.12
+    private let latencyWarningThresholdMs = 1500
+    private let latencyRecoveryThresholdMs = 900
     private var didTriggerSayKeyword = false
     private var typedFinalWordCount = 0
     private var didTypeDictationThisUtterance = false
@@ -819,6 +847,13 @@ class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        assemblyAIService?.$lastPingLatencyMs
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] latency in
+                self?.updateLatency(latency)
+            }
+            .store(in: &cancellables)
+
         assemblyAIService?.$latestTurn
             .receive(on: DispatchQueue.main)
             .sink { [weak self] turn in
@@ -891,6 +926,13 @@ class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        deepgramService?.$lastPingLatencyMs
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] latency in
+                self?.updateLatency(latency)
+            }
+            .store(in: &cancellables)
+
         deepgramService?.$latestTurn
             .receive(on: DispatchQueue.main)
             .sink { [weak self] turn in
@@ -929,6 +971,13 @@ class AppState: ObservableObject {
 
     private func startAppleSpeech(transcribeMode: Bool) {
         logDebug("Using Apple Speech Recognition (Offline Mode)")
+        guard isSpeechGranted else {
+            errorMessage = "Speech recognition permission needed for Mac Speech"
+            logDebug("Error: Speech recognition permission missing")
+            isConnected = false
+            updateLatency(nil)
+            return
+        }
         errorMessage = nil
         forceEndPending = false
         forceEndRequestedAt = nil
@@ -941,6 +990,13 @@ class AppState: ObservableObject {
             .sink { [weak self] turn in
                 guard let turn else { return }
                 self?.handleTurn(turn)
+            }
+            .store(in: &cancellables)
+
+        appleSpeechService?.$isConnected
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] connected in
+                self?.isConnected = connected
             }
             .store(in: &cancellables)
 
@@ -967,8 +1023,7 @@ class AppState: ObservableObject {
         appleSpeechService?.setTranscribeMode(transcribeMode)
         appleSpeechService?.startRecognition(addsPunctuation: !liveDictationEnabled)
         audioCaptureManager?.startCapture()
-        // For Apple speech, we consider it "connected" if the manager is capturing
-        isConnected = true 
+        updateLatency(nil)
     }
 
     private func stopListening() {
@@ -984,6 +1039,7 @@ class AppState: ObservableObject {
         cancellables.removeAll()
         isConnected = false
         audioLevel = 0.0
+        updateLatency(nil)
     }
 
     private func handleTurn(_ turn: TranscriptTurn) {
@@ -2671,6 +2727,25 @@ class AppState: ObservableObject {
         let currentMode = microphoneMode
         stopListening()
         startListening(transcribeMode: currentMode == .on)
+    }
+
+    private func updateLatency(_ latencyMs: Int?) {
+        connectionLatencyMs = latencyMs
+        guard let latencyMs else {
+            if isLatencyDegraded {
+                logDebug("Latency cleared")
+            }
+            isLatencyDegraded = false
+            return
+        }
+
+        if !isLatencyDegraded && latencyMs >= latencyWarningThresholdMs {
+            isLatencyDegraded = true
+            logDebug("High latency detected: \(latencyMs)ms")
+        } else if isLatencyDegraded && latencyMs <= latencyRecoveryThresholdMs {
+            isLatencyDegraded = false
+            logDebug("Latency recovered: \(latencyMs)ms")
+        }
     }
 
     private func loadUtteranceSettings() {
