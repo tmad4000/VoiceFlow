@@ -455,10 +455,25 @@ class AppState: ObservableObject {
                 return
             }
 
+            // TRIGGER THE SYSTEM PROMPT
+            // This is critical for cases where the user removed the app from the list.
+            // calling this with prompt: true forces macOS to re-evaluate or prompt.
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            let trusted = AXIsProcessTrustedWithOptions(options)
+            
+            if trusted {
+                 isAccessibilityGranted = true
+                 return
+            }
+
             // Open System Settings directly to Accessibility pane
             logger.info("Opening System Settings for Accessibility permission...")
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                NSWorkspace.shared.open(url)
+            // Give the prompt a moment to appear before opening settings, 
+            // but opening settings is usually helpful regardless.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                    NSWorkspace.shared.open(url)
+                }
             }
 
             // Start polling to detect when permission is granted
