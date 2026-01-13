@@ -243,6 +243,7 @@ enum VoiceFlowCLI {
             receivedResponse = true
 
             if let userInfo = notification.userInfo {
+                print("DEBUG: Received userInfo keys: \(userInfo.keys)")
                 print("VoiceFlow Status:")
                 print(String(repeating: "-", count: 40))
 
@@ -257,6 +258,9 @@ enum VoiceFlowCLI {
                 }
                 if let newerBuild = userInfo["newerBuild"] as? Bool {
                     print("Newer build available: \(newerBuild ? "YES (Restart required)" : "no")")
+                }
+                if let audioLevel = userInfo["audioLevel"] as? Double {
+                    print("Audio Level: \(String(format: "%.4f", audioLevel))")
                 }
                 if let transcript = userInfo["transcript"] as? String, !transcript.isEmpty {
                     print("Current transcript: \(transcript)")

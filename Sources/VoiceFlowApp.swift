@@ -193,12 +193,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             Task { @MainActor in
                 let userInfo: [String: Any] = [
+                    "audioLevel": Double(self.appState.audioLevel),
                     "mode": self.appState.microphoneMode.rawValue,
                     "connected": self.appState.isConnected,
                     "provider": self.appState.dictationProvider.rawValue,
                     "transcript": self.appState.currentTranscript,
                     "newerBuild": self.appState.isNewerBuildAvailable
                 ]
+                
+                self.appState.logDebug("CLI Status Check: Level=\(self.appState.audioLevel)")
 
                 DistributedNotificationCenter.default().postNotificationName(
                     NSNotification.Name(VoiceFlowCLI.statusResponseNotification),
@@ -217,7 +220,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func configurePanelWindow() {
         let panel = FloatingPanelWindow(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 160),
-            styleMask: [.titled, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .resizable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -259,13 +262,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
-        panel.level = .statusBar
+        panel.level = .floating // Changed from statusBar to play nice with non-activating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         
         // Set size constraints
-        panel.minSize = NSSize(width: 360, height: 140)
-        panel.maxSize = NSSize(width: 520, height: 800)
+        panel.minSize = NSSize(width: 280, height: 100)
+        panel.maxSize = NSSize(width: 1000, height: 800)
 
         panelWindow = panel
     }
@@ -339,10 +342,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         print("[VoiceFlow] Showing settings window")
         NSApp.setActivationPolicy(.regular) // Show in Dock and show menu bar
-        setupMainMenu()
-        NSApp.activate(ignoringOtherApps: true)
-        settingsWindow?.level = .normal // Reset level in case it was changed
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self = self else { return }
+            self.setupMainMenu()
+            NSApp.activate(ignoringOtherApps: true)
+            self.settingsWindow?.level = .normal // Reset level in case it was changed
+            self.settingsWindow?.makeKeyAndOrderFront(nil)
+        }
     }
 
     private func setupMainMenu() {
@@ -488,8 +495,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // But wait, if PTT is same as Toggle? Conflict. PTT wins.
             }
             
-            // Mode Switching (Trigger on KeyDown)
-            if event.type == .keyDown {
+            // Mode Switching (Trigger on KeyDown or relevant FlagsChanged)
+            let isModifierKey = (54...63).contains(keyCode)
+            let isDown = event.type == .keyDown || (event.type == .flagsChanged && currentModifiers.contains(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 0)).union(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 1))).union(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 2))).union(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 3)))))
+            
+            // Re-evaluating isDown for modifiers is hard without knowing which bit changed.
+            // But matches() already checks if the flags match the requirement.
+            // If matches() is true AND it's a keyDown -> Always a press.
+            // If matches() is true AND it's a flagsChanged -> It's a press (since flags now match).
+            
+            if event.type == .keyDown || event.type == .flagsChanged {
                 if matches(self.appState.modeToggleShortcut) {
                     Task { @MainActor in
                         if self.appState.microphoneMode == .on {
