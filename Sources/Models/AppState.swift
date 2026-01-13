@@ -349,6 +349,7 @@ class AppState: ObservableObject {
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
     private var currentUtteranceIsLiteral = false
+    private var literalStartWordIndex: Int = 0  // Word index AFTER "say" keyword
     private var lastHaltingCommandEndIndex = -1
     private var wakeUpTime: Date?
     private let wakeUpGracePeriod: TimeInterval = 0.8  // Don't type for 0.8s after waking
@@ -797,8 +798,9 @@ class AppState: ObservableObject {
         }
     }
 
-    func setMode(_ mode: MicrophoneMode) {
-        NSLog("[VoiceFlow] setMode called: %@", mode.rawValue)
+    func setMode(_ mode: MicrophoneMode, caller: String = #function, file: String = #file, line: Int = #line) {
+        let fileName = (file as NSString).lastPathComponent
+        NSLog("[VoiceFlow] setMode called: %@ from %@:%d (%@)", mode.rawValue, fileName, line, caller)
         NSLog("[VoiceFlow] Permissions - a11y: %d, mic: %d, speech: %d", isAccessibilityGranted, isMicrophoneGranted, isSpeechGranted)
 
         // Check and request permissions before enabling active modes
@@ -1249,7 +1251,7 @@ class AppState: ObservableObject {
             }
         }
 
-        let isLiteralTurn = isSayPrefix(turn.transcript)
+        let isLiteralTurn = currentUtteranceIsLiteral  // Use flag set by processVoiceCommands
         let rawTranscript: String
         
         // Re-assemble transcript if words were filtered
@@ -1275,14 +1277,19 @@ class AppState: ObservableObject {
             if lastHaltingCommandEndIndex == lastCommandEndIndex {
                 return
             }
-            if lastCommandEndIndex < effectiveWords.count - 1 {
-                let wordsAfter = effectiveWords[(lastCommandEndIndex + 1)...]
+            // Use literalStartWordIndex if in literal mode (e.g., "speech on say press enter")
+            let skipToIndex = isLiteralTurn && literalStartWordIndex > lastCommandEndIndex + 1
+                ? literalStartWordIndex
+                : lastCommandEndIndex + 1
+            if skipToIndex < effectiveWords.count {
+                let wordsAfter = effectiveWords[skipToIndex...]
                 let filteredWords = wordsAfter.filter { word in
                     let stripped = word.text.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
                     return !stripped.isEmpty
                 }
                 textToType = assembleDisplayText(from: Array(filteredWords))
                 wordsForKeywords = Array(filteredWords)
+                NSLog("[VoiceFlow] handleDictationTurn: skipToIndex=%d, textToType='%@'", skipToIndex, textToType)
             } else {
                 return
             }
@@ -1886,19 +1893,24 @@ class AppState: ObservableObject {
         if lastCommandEndIndex >= 0 && lastHaltingCommandEndIndex == lastCommandEndIndex {
             return
         }
-        let startIndex = max(typedFinalWordCount, lastCommandEndIndex + 1)
-        let isLiteral = isSayPrefix(turn.transcript)
+        var startIndex = max(typedFinalWordCount, lastCommandEndIndex + 1)
+        let isLiteral = currentUtteranceIsLiteral  // Use the flag set by processVoiceCommands
+
+        // If literal mode was triggered by "say" after wake commands (e.g., "speech on say press enter"),
+        // skip all words up to and including "say"
+        if isLiteral && literalStartWordIndex > startIndex {
+            startIndex = literalStartWordIndex
+            NSLog("[VoiceFlow] Live dictation: adjusted startIndex to %d (literalStartWordIndex)", startIndex)
+        }
 
         // Helper to filter out punctuation-only words
         let filterPunctuation: (String) -> Bool = { word in
             !word.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).isEmpty
         }
 
+        // No longer need stripLeadingSay since we adjust startIndex above
         let stripLeadingSay: ([String]) -> [String] = { words in
-            guard isLiteral, startIndex == 0, let first = words.first, self.normalizeToken(first) == "say" else {
-                return words
-            }
-            return Array(words.dropFirst())
+            return words  // Now handled by startIndex adjustment
         }
 
         // Helper to process inline replacements
@@ -1908,23 +1920,26 @@ class AppState: ObservableObject {
             if let keyword {
                 self.triggerKeywordFlash(name: keyword)
             }
-            // Strip system command phrases that might leak through
-            let systemCommandPhrases = [
-                "window recent two", "window recent 2", "window recent",
-                "window previous", "window next",
-                "cancel that", "no wait",
-                "submit dictation", "send dictation",
-                "save to idea flow",
-                "copy that", "paste that", "cut that", "undo that", "redo that",
-                "select all", "save that",
-                "tab back", "tab forward", "new tab", "close tab",
-                "go back", "go forward", "page up", "page down",
-                "scroll up", "scroll down", "press escape", "press enter"
-            ]
-            for phrase in systemCommandPhrases {
-                if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b", options: []) {
-                    let range = NSRange(result.startIndex..<result.endIndex, in: result)
-                    result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+            // Strip system command phrases that might leak through - BUT NOT in literal mode!
+            // In literal mode (after "say"), we want to type these phrases, not strip them
+            if !isLiteral {
+                let systemCommandPhrases = [
+                    "window recent two", "window recent 2", "window recent",
+                    "window previous", "window next",
+                    "cancel that", "no wait",
+                    "submit dictation", "send dictation",
+                    "save to idea flow",
+                    "copy that", "paste that", "cut that", "undo that", "redo that",
+                    "select all", "save that",
+                    "tab back", "tab forward", "new tab", "close tab",
+                    "go back", "go forward", "page up", "page down",
+                    "scroll up", "scroll down", "press escape", "press enter"
+                ]
+                for phrase in systemCommandPhrases {
+                    if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b", options: []) {
+                        let range = NSRange(result.startIndex..<result.endIndex, in: result)
+                        result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+                    }
                 }
             }
             return result.trimmingCharacters(in: .whitespaces)
@@ -2007,8 +2022,16 @@ class AppState: ObservableObject {
     }
 
     private func processVoiceCommands(_ turn: TranscriptTurn) {
-        if isSayPrefix(turn.transcript) {
+        let normalizedTokens = normalizedWordTokens(from: turn.words)
+        let transcriptForPrefix = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
+        let hasSayPrefix = isSayPrefix(transcriptForPrefix)
+            || (transcriptForPrefix.isEmpty && normalizedTokens.first?.token == "say")
+        NSLog("[VoiceFlow] processVoiceCommands: transcript=\"%@\", hasSayPrefix=%d", String(transcriptForPrefix.prefix(60)), hasSayPrefix ? 1 : 0)
+
+        if hasSayPrefix {
             currentUtteranceIsLiteral = true
+            let firstWordIndex = normalizedTokens.first?.wordIndex ?? 0
+            literalStartWordIndex = firstWordIndex + 1  // Start after the first word ("say")
             if !didTriggerSayKeyword {
                 triggerKeywordFlash(name: "Say")
                 didTriggerSayKeyword = true
@@ -2016,19 +2039,86 @@ class AppState: ObservableObject {
             logger.debug("Utterance starts with 'say', skipping command processing")
             return
         }
-
-        let normalizedTokens = normalizedWordTokens(from: turn.words)
+        if currentUtteranceIsLiteral {
+            logger.debug("Utterance already in literal mode, skipping command processing")
+            return
+        }
         guard !normalizedTokens.isEmpty else { return }
-        
-        // If the first word is "say", skip command processing for this utterance
-        let firstToken = normalizedTokens.first?.token
-        if firstToken == "say" {
+
+        // Debug: log the tokens
+        let tokenList = normalizedTokens.map { $0.token }.joined(separator: ", ")
+        NSLog("[VoiceFlow] normalizedTokens: [%@]", tokenList)
+
+        // Check if "say" appears at the start OR after wake/mode commands
+        // This handles "speech on say press enter" → escape "press enter"
+        let wakeCommands = Set(["speech", "wake", "flow", "microphone"])
+        let modifiers = Set(["on", "up"])
+        var sayIndex: Int? = nil
+
+        for (index, token) in normalizedTokens.enumerated() {
+            if token.token == "say" {
+                // Check if everything before this is wake/mode command words
+                let precedingTokens = normalizedTokens.prefix(index).map { $0.token }
+                let allPrecedingAreWakeWords = precedingTokens.allSatisfy { wakeCommands.contains($0) || modifiers.contains($0) }
+                NSLog("[VoiceFlow] Found 'say' at index %d, preceding=[%@], allWake=%d", index, precedingTokens.joined(separator: ", "), allPrecedingAreWakeWords ? 1 : 0)
+                if allPrecedingAreWakeWords {
+                    sayIndex = index
+                    break
+                }
+            }
+        }
+
+        if let idx = sayIndex {
+            // Found "say" after wake commands - we need to:
+            // 1. Execute the wake commands that come BEFORE "say"
+            // 2. Then enter literal mode for everything after
+            NSLog("[VoiceFlow] sayIndex found at %d, will process wake commands first", idx)
+
+            // Get only the tokens BEFORE "say" for wake command processing
+            let preTokens = Array(normalizedTokens.prefix(idx))
+            let preTokenStrings = preTokens.map { $0.token }
+
+            // Match and execute wake commands from the pre-say tokens
+            var wakeCommands: [(phrase: String, key: String, name: String, action: () -> Void)] = []
+            if microphoneMode == .sleep {
+                wakeCommands = [
+                    (phrase: "wake up", key: "system.wake_up", name: "On", action: { [weak self] in self?.setMode(.on) }),
+                    (phrase: "microphone on", key: "system.wake_up", name: "On", action: { [weak self] in self?.setMode(.on) }),
+                    (phrase: "flow on", key: "system.wake_up", name: "On", action: { [weak self] in self?.setMode(.on) }),
+                    (phrase: "speech on", key: "system.wake_up", name: "On", action: { [weak self] in self?.setMode(.on) })
+                ]
+            }
+
+            for cmd in wakeCommands {
+                let phraseTokens = tokenizePhrase(cmd.phrase)
+                if let range = findMatches(phraseTokens: phraseTokens, in: preTokenStrings).first {
+                    let endWordIndex = preTokens[range.upperBound - 1].wordIndex
+                    let lastEndIndex = lastExecutedEndWordIndexByCommand[cmd.key] ?? -1
+                    if endWordIndex > lastEndIndex {
+                        let wordIndices = preTokens[range].map { $0.wordIndex }
+                        if isStableMatch(words: turn.words, wordIndices: wordIndices) {
+                            NSLog("[VoiceFlow] Executing pre-say wake command: %@", cmd.name)
+                            lastExecutedEndWordIndexByCommand[cmd.key] = endWordIndex
+                            currentUtteranceHadCommand = true
+                            cmd.action()
+                            triggerCommandFlash(name: cmd.name)
+                        }
+                    }
+                }
+            }
+
+            // Now enter literal mode
             currentUtteranceIsLiteral = true
+            // Set literalStartWordIndex to the word AFTER "say"
+            let sayWordIndex = normalizedTokens[idx].wordIndex
+            literalStartWordIndex = sayWordIndex + 1
+            NSLog("[VoiceFlow] literalStartWordIndex set to %d (word after 'say' at wordIndex %d)", literalStartWordIndex, sayWordIndex)
             if !didTriggerSayKeyword {
                 triggerKeywordFlash(name: "Say")
                 didTriggerSayKeyword = true
             }
-            logger.debug("Utterance starts with 'say', skipping command processing")
+            NSLog("[VoiceFlow] sayIndex at %d, now in literal mode", idx)
+            logger.debug("Found 'say' at index \(idx), skipping further command processing for literal text")
             return
         }
 
@@ -2258,6 +2348,7 @@ class AppState: ObservableObject {
         lastExecutedEndWordIndexByCommand.removeAll()
         currentUtteranceHadCommand = false
         currentUtteranceIsLiteral = false
+        literalStartWordIndex = 0
         lastHaltingCommandEndIndex = -1
         didTriggerSayKeyword = false
         pendingCommandExecutions.removeAll()
@@ -2873,6 +2964,13 @@ class AppState: ObservableObject {
 
         let source = CGEventSource(stateID: .hidSystemState)
         var eventsPosted = 0
+
+        // Get inter-character delay for current app (browsers like Google Docs need slower typing)
+        let interCharDelay = focusContextManager.getInterCharacterDelay()
+        if interCharDelay > 0 {
+            logDebug("Using \(Int(interCharDelay * 1000))ms inter-character delay for browser app")
+        }
+
         for char in output {
             if char == "\n" {
                 // BRAINSTORM FIX: Tiny delay to let preceding characters "settle" in the destination buffer
@@ -2880,14 +2978,14 @@ class AppState: ObservableObject {
                 if eventsPosted > 0 {
                     Thread.sleep(forTimeInterval: 0.01) // 10ms
                 }
-                
+
                 let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
                 let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
                 keyDown?.post(tap: .cghidEventTap)
                 keyUp?.post(tap: .cghidEventTap)
                 continue
             }
-            
+
             if let unicodeScalar = char.unicodeScalars.first {
                 let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
                 let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
@@ -2899,6 +2997,11 @@ class AppState: ObservableObject {
                 keyDown?.post(tap: .cghidEventTap)
                 keyUp?.post(tap: .cghidEventTap)
                 eventsPosted += 1
+
+                // Apply inter-character delay for apps that need slower typing (Google Docs, etc.)
+                if interCharDelay > 0 {
+                    Thread.sleep(forTimeInterval: interCharDelay)
+                }
             }
         }
         logger.debug("Successfully posted \(eventsPosted) character events")

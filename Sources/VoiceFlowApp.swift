@@ -45,6 +45,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelWindow: FloatingPanelWindow?
     private var cancellables = Set<AnyCancellable>()
     private var pttMonitor: Any?
+    private var pttActivatedOnMode: Bool = false  // Track if On mode was activated via PTT
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -476,14 +477,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     if isPTTPressed {
                         if self.appState.microphoneMode != .on {
                             self.appState.setMode(.on)
+                            self.pttActivatedOnMode = true  // Mark that PTT activated On mode
                             self.appState.logDebug("PTT: ON")
                         }
                     } else if isPTTReleased {
-                        if self.appState.microphoneMode == .on {
+                        // Only trigger sleep if PTT was actually used to enter On mode
+                        if self.appState.microphoneMode == .on && self.pttActivatedOnMode {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                                 Task { @MainActor in
-                                    if self.appState.microphoneMode == .on {
+                                    if self.appState.microphoneMode == .on && self.pttActivatedOnMode {
                                         self.appState.setMode(.sleep)
+                                        self.pttActivatedOnMode = false  // Reset flag
                                         self.appState.logDebug("PTT: SLEEP")
                                     }
                                 }
@@ -507,6 +511,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if event.type == .keyDown || event.type == .flagsChanged {
                 if matches(self.appState.modeToggleShortcut) {
                     Task { @MainActor in
+                        self.appState.logDebug("Shortcut: modeToggle triggered")
                         if self.appState.microphoneMode == .on {
                             self.appState.setMode(.sleep)
                         } else {
@@ -514,11 +519,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     }
                 } else if matches(self.appState.modeOnShortcut) {
-                    Task { @MainActor in self.appState.setMode(.on) }
+                    Task { @MainActor in
+                        self.appState.logDebug("Shortcut: modeOn triggered")
+                        self.appState.setMode(.on)
+                    }
                 } else if matches(self.appState.modeSleepShortcut) {
-                    Task { @MainActor in self.appState.setMode(.sleep) }
+                    Task { @MainActor in
+                        self.appState.logDebug("Shortcut: modeSleep triggered")
+                        self.appState.setMode(.sleep)
+                    }
                 } else if matches(self.appState.modeOffShortcut) {
-                    Task { @MainActor in self.appState.setMode(.off) }
+                    Task { @MainActor in
+                        self.appState.logDebug("Shortcut: modeOff triggered")
+                        self.appState.setMode(.off)
+                    }
                 }
             }
         }
