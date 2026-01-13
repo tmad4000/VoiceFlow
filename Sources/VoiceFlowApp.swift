@@ -196,7 +196,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     "mode": self.appState.microphoneMode.rawValue,
                     "connected": self.appState.isConnected,
                     "provider": self.appState.dictationProvider.rawValue,
-                    "transcript": self.appState.currentTranscript
+                    "transcript": self.appState.currentTranscript,
+                    "newerBuild": self.appState.isNewerBuildAvailable
                 ]
 
                 DistributedNotificationCenter.default().postNotificationName(
@@ -325,10 +326,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             let window = NSWindow(contentViewController: hostingController)
             window.title = "VoiceFlow Settings"
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            window.setContentSize(NSSize(width: 500, height: 400))
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+            window.setContentSize(NSSize(width: 500, height: 600))
             window.center()
             window.isReleasedWhenClosed = false
+            window.delegate = self // Set delegate to detect close
             
             settingsWindow = window
         } else {
@@ -336,9 +338,52 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         print("[VoiceFlow] Showing settings window")
+        NSApp.setActivationPolicy(.regular) // Show in Dock and show menu bar
+        setupMainMenu()
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.level = .normal // Reset level in case it was changed
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+        
+        // App Menu
+        let appMenu = NSMenuItem()
+        appMenu.submenu = NSMenu(title: "App")
+        appMenu.submenu?.addItem(withTitle: "About VoiceFlow", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.submenu?.addItem(NSMenuItem.separator())
+        appMenu.submenu?.addItem(withTitle: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
+        appMenu.submenu?.addItem(NSMenuItem.separator())
+        appMenu.submenu?.addItem(withTitle: "Quit VoiceFlow", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        mainMenu.addItem(appMenu)
+        
+        // Edit Menu (Required for Search Bar to work with Cmd+V etc)
+        let editMenu = NSMenuItem()
+        editMenu.submenu = NSMenu(title: "Edit")
+        editMenu.submenu?.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.submenu?.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.submenu?.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.submenu?.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        mainMenu.addItem(editMenu)
+        
+        // Help Menu
+        let helpMenu = NSMenuItem()
+        helpMenu.submenu = NSMenu(title: "Help")
+        let searchItem = NSMenuItem(title: "Search Settings", action: #selector(focusSearch), keyEquivalent: "f")
+        searchItem.keyEquivalentModifierMask = [.command, .shift]
+        helpMenu.submenu?.addItem(searchItem)
+        mainMenu.addItem(helpMenu)
+        
+        NSApp.mainMenu = mainMenu
+    }
+
+    @objc func focusSearch() {
+        appState.settingsSearchText = ""
+        // This is a bit of a hack to focus the search bar, 
+        // usually we'd use a focused binding or @FocusState, 
+        // but for now setting the text empty and opening the window is a good start.
+        openSettings()
     }
 
     @objc func pasteLastUtterance() {
@@ -366,27 +411,67 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSEvent.removeMonitor(monitor)
         }
 
-        pttMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+        pttMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
             guard let self = self else { return }
 
             let currentModifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let keyCode = event.keyCode
+            let keyCode = UInt16(event.keyCode)
             
-            // Helper to match shortcut
+            // DEBUG LOGGING
+            if self.appState.isDebugMode {
+                // Log non-standard keys or modifiers for debugging
+                if keyCode > 64 || event.type == .flagsChanged {
+                    Task { @MainActor in
+                        self.appState.logDebug("Key Event: Code=\(keyCode), Type=\(event.type == .keyDown ? "Down" : (event.type == .keyUp ? "Up" : "Flag"))")
+                    }
+                }
+            }
+            
+            // Helper to check precise match (for toggles/commands)
             func matches(_ shortcut: KeyboardShortcut) -> Bool {
                 let requiredFlags = self.mapModifiers(shortcut.modifiers)
-                return currentModifiers == requiredFlags && UInt16(keyCode) == shortcut.keyCode
+                return currentModifiers == requiredFlags && keyCode == shortcut.keyCode
             }
 
-            // PTT (Hold)
-            if matches(self.appState.pttShortcut) {
+            // PTT Logic (Special handling for Hold)
+            if keyCode == self.appState.pttShortcut.keyCode {
+                let shortcut = self.appState.pttShortcut
+                let requiredFlags = self.mapModifiers(shortcut.modifiers)
+                
+                var isPTTPressed = false
+                let isModifierKey = (54...63).contains(keyCode)
+                
+                if isModifierKey {
+                    // For modifier PTT (e.g. Ctrl), check if the specific flag is present
+                    // Note: If shortcut is just "Ctrl", requiredFlags is [.control].
+                    // If user presses "Ctrl+Opt", flags are [.control, .option]. 
+                    // Strict equality (current == required) fails if other keys held.
+                    // For PTT, strict is safer to avoid accidental triggers, but lenient is often expected.
+                    // Let's use strict equality for PTT to avoid conflicts.
+                    isPTTPressed = (event.type == .flagsChanged) && (currentModifiers == requiredFlags)
+                } else {
+                    // Standard key: Must be KeyDown and modifiers match
+                    isPTTPressed = (event.type == .keyDown) && (currentModifiers == requiredFlags)
+                }
+                
+                // Determine Release
+                var isPTTReleased = false
+                if isModifierKey {
+                    // Released if flagsChanged AND flags NO LONGER match required
+                    // (Usually flags are empty or missing the bit)
+                    isPTTReleased = (event.type == .flagsChanged) && (currentModifiers != requiredFlags)
+                } else {
+                    isPTTReleased = (event.type == .keyUp)
+                    // Note: We don't check modifiers on KeyUp because users might release modifiers before key
+                }
+
                 Task { @MainActor in
-                    if event.type == .keyDown {
+                    if isPTTPressed {
                         if self.appState.microphoneMode != .on {
                             self.appState.setMode(.on)
                             self.appState.logDebug("PTT: ON")
                         }
-                    } else if event.type == .keyUp {
+                    } else if isPTTReleased {
                         if self.appState.microphoneMode == .on {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                                 Task { @MainActor in
@@ -399,12 +484,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     }
                 }
-                return
+                // Don't return here, allow other checks? No, PTT consumes the logic for this key.
+                // But wait, if PTT is same as Toggle? Conflict. PTT wins.
             }
             
             // Mode Switching (Trigger on KeyDown)
             if event.type == .keyDown {
-                if matches(self.appState.modeOnShortcut) {
+                if matches(self.appState.modeToggleShortcut) {
+                    Task { @MainActor in
+                        if self.appState.microphoneMode == .on {
+                            self.appState.setMode(.sleep)
+                        } else {
+                            self.appState.setMode(.on)
+                        }
+                    }
+                } else if matches(self.appState.modeOnShortcut) {
                     Task { @MainActor in self.appState.setMode(.on) }
                 } else if matches(self.appState.modeSleepShortcut) {
                     Task { @MainActor in self.appState.setMode(.sleep) }
@@ -429,8 +523,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-extension AppDelegate: NSMenuDelegate {
+extension AppDelegate: NSMenuDelegate, NSWindowDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         updateMenuCheckmarks()
+    }
+    
+    func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window == settingsWindow {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 }

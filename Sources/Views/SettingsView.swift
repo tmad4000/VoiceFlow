@@ -6,35 +6,125 @@ struct SettingsView: View {
     @AppStorage("settings_selected_tab") private var selectedTab: Int = 0
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            GeneralSettingsView()
-                .tabItem {
-                    Label("General", systemImage: "gear")
-                }
-                .tag(0)
+        ZStack {
+            if appState.settingsSearchText.isEmpty {
+                TabView(selection: $selectedTab) {
+                    GeneralSettingsView()
+                        .tabItem {
+                            Label("General", systemImage: "gear")
+                        }
+                        .tag(0)
 
-            VoiceCommandsSettingsView()
-                .tabItem {
-                    Label("Commands", systemImage: "command")
-                }
-                .tag(1)
+                    VoiceCommandsSettingsView()
+                        .tabItem {
+                            Label("Commands", systemImage: "command")
+                        }
+                        .tag(1)
 
-            DictationHistoryView()
-                .tabItem {
-                    Label("History", systemImage: "clock.arrow.circlepath")
-                }
-                .tag(2)
+                    DictationHistoryView()
+                        .tabItem {
+                            Label("History", systemImage: "clock.arrow.circlepath")
+                        }
+                        .tag(2)
 
-            DebugConsoleView()
-                .tabItem {
-                    Label("Debug", systemImage: "terminal")
+                    DebugConsoleView()
+                        .tabItem {
+                            Label("Debug", systemImage: "terminal")
+                        }
+                        .tag(3)
                 }
-                .tag(3)
+            } else {
+                SettingsSearchResultsView(searchText: appState.settingsSearchText) { tabIndex in
+                    appState.settingsSearchText = ""
+                    selectedTab = tabIndex
+                }
+            }
         }
         .frame(width: 480, height: 580)
+        .searchable(text: $appState.settingsSearchText, placement: .toolbar, prompt: "Search settings...")
         .onReceive(NotificationCenter.default.publisher(for: .openHistory)) { _ in
             selectedTab = 2
         }
+    }
+}
+
+struct SettingsSearchResultsView: View {
+    let searchText: String
+    let onNavigate: (Int) -> Void
+    
+    struct SearchItem: Identifiable {
+        let id = UUID()
+        let title: String
+        let description: String
+        let tabIndex: Int
+        let icon: String
+    }
+    
+    var allItems: [SearchItem] = [
+        SearchItem(title: "AssemblyAI API Key", description: "Set your cloud transcription key", tabIndex: 0, icon: "key"),
+        SearchItem(title: "Deepgram API Key", description: "Secondary transcription provider", tabIndex: 0, icon: "key.fill"),
+        SearchItem(title: "Anthropic API Key", description: "Enable AI-powered formatting", tabIndex: 0, icon: "sparkles"),
+        SearchItem(title: "Microphone", description: "Select audio input device", tabIndex: 0, icon: "mic"),
+        SearchItem(title: "Permissions", description: "Microphone, Accessibility, Speech Recognition", tabIndex: 0, icon: "lock.shield"),
+        SearchItem(title: "Reset Accessibility", description: "Fix PTT and typing issues", tabIndex: 0, icon: "arrow.counterclockwise"),
+        SearchItem(title: "Push-to-Talk", description: "Custom PTT global shortcut", tabIndex: 0, icon: "keyboard"),
+        SearchItem(title: "Toggle ON/SLEEP", description: "Switch recording state with one key", tabIndex: 0, icon: "switch.2"),
+        SearchItem(title: "Auto-Sleep", description: "Inactivity timeout for Sleep mode", tabIndex: 0, icon: "moon"),
+        SearchItem(title: "Auto-Off", description: "Battery saving inactivity timeout", tabIndex: 0, icon: "power"),
+        SearchItem(title: "Dictation Provider", description: "Online vs Offline models", tabIndex: 0, icon: "waveform"),
+        SearchItem(title: "Live Dictation", description: "Lower latency transcription", tabIndex: 0, icon: "bolt.fill"),
+        SearchItem(title: "Vocabulary", description: "Custom words and technical terms", tabIndex: 0, icon: "text.book.closed"),
+        SearchItem(title: "Idea Flow", description: "Save notes to Idea Flow", tabIndex: 0, icon: "lightbulb"),
+        SearchItem(title: "Voice Commands", description: "Manage and add custom shortcuts", tabIndex: 1, icon: "command"),
+        SearchItem(title: "History", description: "View past transcriptions", tabIndex: 2, icon: "clock"),
+        SearchItem(title: "Debug Logs", description: "Technical logs and event trace", tabIndex: 3, icon: "terminal")
+    ]
+    
+    var filteredItems: [SearchItem] {
+        allItems.filter { 
+            $0.title.localizedCaseInsensitiveContains(searchText) || 
+            $0.description.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Search Results for \"\(searchText)\"")
+                .font(.headline)
+                .padding()
+            
+            if filteredItems.isEmpty {
+                ContentUnavailableView("No results found", systemImage: "magnifyingglass")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(filteredItems) { item in
+                    Button(action: { onNavigate(item.tabIndex) }) {
+                        HStack(spacing: 12) {
+                            Image(systemName: item.icon)
+                                .foregroundColor(.accentColor)
+                                .frame(width: 24)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                    .font(.system(size: 13, weight: .medium))
+                                Text(item.description)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .background(Color(NSColor.windowBackgroundColor))
     }
 }
 
@@ -145,6 +235,9 @@ struct GeneralSettingsView: View {
     @State private var assemblyTestStatus: TestStatus = .idle
     @State private var deepgramTestStatus: TestStatus = .idle
     @State private var anthropicTestStatus: TestStatus = .idle
+    
+    @State private var isAssemblyExpanded = true
+    @State private var isDeepgramExpanded = false
 
     enum TestStatus {
         case idle, testing, success, failed(String)
@@ -163,65 +256,92 @@ struct GeneralSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
 
-                // AssemblyAI API Key Section
+                // Speech Providers Section
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("AssemblyAI API Key")
+                        Text("Speech Providers")
                             .font(.system(size: 13, weight: .semibold))
+                        
+                        // AssemblyAI
+                        DisclosureGroup(isExpanded: $isAssemblyExpanded) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                SecureField("API Key", text: $apiKeyInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onAppear { apiKeyInput = appState.apiKey }
 
-                        SecureField("Enter your API key", text: $apiKeyInput)
-                            .textFieldStyle(.roundedBorder)
-                            .onAppear { apiKeyInput = appState.apiKey }
+                                HStack {
+                                    Button("Save") {
+                                        appState.saveAPIKey(apiKeyInput)
+                                    }
+                                    .disabled(apiKeyInput.isEmpty)
 
-                        HStack {
-                            Button("Save") {
-                                appState.saveAPIKey(apiKeyInput)
+                                    Button("Test") {
+                                        testAssemblyAIKey()
+                                    }
+                                    .disabled(apiKeyInput.isEmpty)
+
+                                    testStatusView(assemblyTestStatus)
+
+                                    Spacer()
+
+                                    Link("Get Key", destination: URL(string: "https://www.assemblyai.com/app/account")!)
+                                        .font(.system(size: 11))
+                                }
                             }
-                            .disabled(apiKeyInput.isEmpty)
-
-                            Button("Test") {
-                                testAssemblyAIKey()
+                            .padding(.top, 4)
+                        } label: {
+                            HStack {
+                                Text("AssemblyAI")
+                                    .font(.system(size: 12, weight: .medium))
+                                if !appState.apiKey.isEmpty {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                        .font(.system(size: 10))
+                                }
+                                Spacer()
                             }
-                            .disabled(apiKeyInput.isEmpty)
-
-                            testStatusView(assemblyTestStatus)
-
-                            Spacer()
-
-                            Link("Get API Key", destination: URL(string: "https://www.assemblyai.com/app/account")!)
-                                .font(.system(size: 11))
                         }
-                    }
-                    .padding(4)
-                }
 
-                // Deepgram API Key Section
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Deepgram API Key")
-                            .font(.system(size: 13, weight: .semibold))
+                        Divider()
 
-                        SecureField("Enter your API key", text: $deepgramApiKeyInput)
-                            .textFieldStyle(.roundedBorder)
-                            .onAppear { deepgramApiKeyInput = appState.deepgramApiKey }
+                        // Deepgram
+                        DisclosureGroup(isExpanded: $isDeepgramExpanded) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                SecureField("API Key", text: $deepgramApiKeyInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onAppear { deepgramApiKeyInput = appState.deepgramApiKey }
 
-                        HStack {
-                            Button("Save") {
-                                appState.saveDeepgramApiKey(deepgramApiKeyInput)
+                                HStack {
+                                    Button("Save") {
+                                        appState.saveDeepgramApiKey(deepgramApiKeyInput)
+                                    }
+                                    .disabled(deepgramApiKeyInput.isEmpty)
+
+                                    Button("Test") {
+                                        testDeepgramKey()
+                                    }
+                                    .disabled(deepgramApiKeyInput.isEmpty)
+
+                                    testStatusView(deepgramTestStatus)
+
+                                    Spacer()
+
+                                    Link("Get Key", destination: URL(string: "https://console.deepgram.com/signup")!)
+                                        .font(.system(size: 11))
+                                }
                             }
-                            .disabled(deepgramApiKeyInput.isEmpty)
-
-                            Button("Test") {
-                                testDeepgramKey()
+                            .padding(.top, 4)
+                        } label: {
+                            HStack {
+                                Text("Deepgram")
+                                    .font(.system(size: 12, weight: .medium))
+                                if !appState.deepgramApiKey.isEmpty {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                        .font(.system(size: 10))
+                                }
+                                Spacer()
                             }
-                            .disabled(deepgramApiKeyInput.isEmpty)
-
-                            testStatusView(deepgramTestStatus)
-
-                            Spacer()
-
-                            Link("Get API Key", destination: URL(string: "https://console.deepgram.com/signup")!)
-                                .font(.system(size: 11))
                         }
                     }
                     .padding(4)
@@ -410,6 +530,13 @@ struct GeneralSettingsView: View {
                             .pointerCursor()
                             .help("Revokes all permissions for this app. Requires restart.")
 
+                            Button("Reset Accessibility (Fix)") {
+                                appState.resetAccessibilityPermissions()
+                            }
+                            .foregroundColor(.orange)
+                            .pointerCursor()
+                            .help("Force reset accessibility database for this app. Use if PTT is not working.")
+
                             CopyCommandButton()
                             .pointerCursor()
 
@@ -436,7 +563,13 @@ struct GeneralSettingsView: View {
                             onChange: { appState.savePTTShortcut($0) }
                         )
                         
-                        Text("Hold to talk.")
+                        ShortcutRecorder(
+                            shortcut: $appState.modeToggleShortcut,
+                            label: "Toggle ON/SLEEP",
+                            onChange: { appState.saveModeToggleShortcut($0) }
+                        )
+                        
+                        Text("Toggle switch or hold to talk.")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                             .padding(.bottom, 4)
@@ -2126,7 +2259,9 @@ struct ShortcutRecorder: View {
     let label: String
     var onChange: ((KeyboardShortcut) -> Void)?
     @State private var isRecording = false
+    @State private var isPressed = false
     @State private var monitor: Any?
+    @State private var activityMonitor: Any?
     
     var body: some View {
         HStack {
@@ -2144,23 +2279,70 @@ struct ShortcutRecorder: View {
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(isRecording ? Color.accentColor : Color.secondary.opacity(0.1))
-                    .foregroundColor(isRecording ? .white : .primary)
+                    .background(isRecording ? Color.accentColor : (isPressed ? Color.green : Color.secondary.opacity(0.1)))
+                    .foregroundColor(isRecording || isPressed ? .white : .primary)
                     .cornerRadius(4)
+                    .animation(.easeInOut(duration: 0.1), value: isPressed)
             }
             .buttonStyle(.plain)
+        }
+        .onAppear {
+            startActivityMonitoring()
+        }
+        .onDisappear {
+            stopActivityMonitoring()
+        }
+    }
+    
+    private func startActivityMonitoring() {
+        // Monitor for activation visualization
+        activityMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { event in
+            guard !isRecording else { return event }
+            
+            let currentModifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let keyCode = UInt16(event.keyCode)
+            
+            // Map NSEvent flags to our KeyboardModifiers
+            var flags: KeyboardModifiers = []
+            if currentModifiers.contains(.control) { flags.insert(.control) }
+            if currentModifiers.contains(.option) { flags.insert(.option) }
+            if currentModifiers.contains(.shift) { flags.insert(.shift) }
+            if currentModifiers.contains(.command) { flags.insert(.command) }
+            
+            let isMatch = (flags == shortcut.modifiers && keyCode == shortcut.keyCode)
+            
+            // Special handling for modifier-only shortcuts logic (matches PTT logic)
+            // If shortcut is modifier-only, we check if flags CONTAIN it
+            // But strict equality is usually better for Settings visualization
+            
+            if isMatch != isPressed {
+                isPressed = isMatch
+            }
+            
+            return event
+        }
+    }
+    
+    private func stopActivityMonitoring() {
+        if let monitor = activityMonitor {
+            NSEvent.removeMonitor(monitor)
+            activityMonitor = nil
         }
     }
     
     private func startRecording() {
+        // Stop monitoring while recording to avoid confusion
+        stopActivityMonitoring()
+        
         isRecording = true
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // Ignore just modifier keys
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+            let keyCode = event.keyCode
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            if event.keyCode == 54 || event.keyCode == 55 || event.keyCode == 56 || event.keyCode == 57 ||
-               event.keyCode == 58 || event.keyCode == 59 || event.keyCode == 60 || event.keyCode == 61 ||
-               event.keyCode == 62 || event.keyCode == 63 {
-                return event
+            
+            // Handle pure modifier release (Stop recording)
+            if event.type == .flagsChanged && flags.isEmpty {
+                stopRecording()
+                return nil
             }
             
             // Map modifiers
@@ -2170,11 +2352,18 @@ struct ShortcutRecorder: View {
             if flags.contains(.shift) { modifiers.insert(.shift) }
             if flags.contains(.command) { modifiers.insert(.command) }
             
-            let newShortcut = KeyboardShortcut(keyCode: event.keyCode, modifiers: modifiers)
-            shortcut = newShortcut
-            onChange?(newShortcut)
+            let newShortcut = KeyboardShortcut(keyCode: keyCode, modifiers: modifiers)
             
-            stopRecording()
+            // Only update shortcut if it's a KeyDown OR if it's a modifier press (flags not empty)
+            if event.type == .keyDown || !flags.isEmpty {
+                shortcut = newShortcut
+                onChange?(newShortcut)
+            }
+            
+            if event.type == .keyDown {
+                stopRecording()
+            }
+            
             return nil // Consume event
         }
     }
@@ -2185,6 +2374,8 @@ struct ShortcutRecorder: View {
             NSEvent.removeMonitor(monitor)
             self.monitor = nil
         }
+        // Resume monitoring
+        startActivityMonitoring()
     }
 }
 

@@ -255,6 +255,9 @@ enum VoiceFlowCLI {
                 if let provider = userInfo["provider"] as? String {
                     print("Provider: \(provider)")
                 }
+                if let newerBuild = userInfo["newerBuild"] as? Bool {
+                    print("Newer build available: \(newerBuild ? "YES (Restart required)" : "no")")
+                }
                 if let transcript = userInfo["transcript"] as? String, !transcript.isEmpty {
                     print("Current transcript: \(transcript)")
                 }

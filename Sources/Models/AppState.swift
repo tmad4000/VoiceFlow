@@ -180,12 +180,14 @@ class AppState: ObservableObject {
     @Published var launchAtLogin: Bool = false
     @Published var selectedInputDeviceId: String? = nil
     @Published var isNewerBuildAvailable: Bool = false
+    @Published var settingsSearchText: String = ""
     
     private let launchTime = Date()
     private var buildCheckTimer: Timer?
     
     // Customizable Shortcuts
     @Published var pttShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_Space), modifiers: [.control, .option])
+    @Published var modeToggleShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_F19), modifiers: []) // Default F19 or similar?
     @Published var modeOnShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_1), modifiers: [.control, .option, .command])
     @Published var modeSleepShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_2), modifiers: [.control, .option, .command])
     @Published var modeOffShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_0), modifiers: [.control, .option, .command])
@@ -3241,6 +3243,10 @@ class AppState: ObservableObject {
            let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
             pttShortcut = shortcut
         }
+        if let data = UserDefaults.standard.data(forKey: "shortcut_mode_toggle"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            modeToggleShortcut = shortcut
+        }
         if let data = UserDefaults.standard.data(forKey: "shortcut_mode_on"),
            let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
             modeOnShortcut = shortcut
@@ -3259,6 +3265,13 @@ class AppState: ObservableObject {
         pttShortcut = shortcut
         if let data = try? JSONEncoder().encode(shortcut) {
             UserDefaults.standard.set(data, forKey: "shortcut_ptt")
+        }
+    }
+
+    func saveModeToggleShortcut(_ shortcut: KeyboardShortcut) {
+        modeToggleShortcut = shortcut
+        if let data = try? JSONEncoder().encode(shortcut) {
+            UserDefaults.standard.set(data, forKey: "shortcut_mode_toggle")
         }
     }
 
