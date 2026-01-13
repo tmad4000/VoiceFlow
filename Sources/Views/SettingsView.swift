@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
@@ -553,6 +554,23 @@ struct GeneralSettingsView: View {
                         }
 
                         Text("Choose between cloud-based (AssemblyAI, Deepgram) or local Mac speech recognition.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Divider()
+
+                        HStack {
+                            Text("Microphone")
+                                .font(.system(size: 13))
+                            Spacer()
+                            InputDevicePicker(selectedDeviceID: $appState.selectedInputDeviceId) {
+                                // On change, save (the binding updates the state, but we need to persist)
+                                appState.saveInputDevice($0)
+                            }
+                            .frame(width: 180)
+                        }
+                        
+                        Text("Select which microphone to use for dictation.")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
 
@@ -2034,7 +2052,7 @@ struct DebugConsoleView: View {
                             ForEach(appState.debugLog, id: \.self) { entry in
                                 Text(entry)
                                     .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(.primary)
+                                    .foregroundColor(colorForLog(entry))
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 2)
                                     .textSelection(.enabled)
@@ -2048,9 +2066,60 @@ struct DebugConsoleView: View {
         }
         .background(Color(NSColor.textBackgroundColor))
     }
+
+    private func colorForLog(_ entry: String) -> Color {
+        let lower = entry.lowercased()
+        if lower.contains("error") || lower.contains("failed") {
+            return .red
+        }
+        if lower.contains("warning") {
+            return .orange
+        }
+        return .primary
+    }
 }
 
 #Preview {
     SettingsView()
         .environmentObject(AppState())
+}
+
+struct InputDevicePicker: View {
+    @Binding var selectedDeviceID: String?
+    var onChange: (String?) -> Void
+    
+    @State private var devices: [AVCaptureDevice] = []
+    
+    var body: some View {
+        Picker("", selection: Binding(
+            get: { selectedDeviceID ?? "default" },
+            set: { newValue in
+                if newValue == "default" {
+                    selectedDeviceID = nil
+                    onChange(nil)
+                } else {
+                    selectedDeviceID = newValue
+                    onChange(newValue)
+                }
+            }
+        )) {
+            Text("System Default").tag("default")
+            Divider()
+            ForEach(devices, id: \.uniqueID) { device in
+                Text(device.localizedName).tag(device.uniqueID)
+            }
+        }
+        .onAppear {
+            refreshDevices()
+        }
+    }
+    
+    private func refreshDevices() {
+        let discoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInMicrophone, .externalUnknown],
+            mediaType: .audio,
+            position: .unspecified
+        )
+        self.devices = discoverySession.devices
+    }
 }

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 
 struct FloatingPanelView: View {
     @EnvironmentObject var appState: AppState
@@ -78,6 +79,11 @@ struct FloatingPanelView: View {
                 if appState.microphoneMode != .off {
                     MicLevelIndicator(level: appState.audioLevel)
                         .padding(.trailing, 4)
+                        .overlay {
+                            InputDeviceMenu()
+                                .opacity(0.01) // Transparent clickable area
+                        }
+                        .help("Click to change microphone")
 
                     // Force end utterance button - appears when connected
                     if appState.isConnected {
@@ -285,6 +291,26 @@ struct FloatingPanelView: View {
                 ToastView(message: "Panel hidden. Click menu bar icon to show.")
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            // Error Popup Overlay (Debug Mode)
+            if appState.showCompactError, let error = appState.errorMessage {
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.white)
+                    Text(error)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white)
+                        .lineLimit(2)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.red.opacity(0.9))
+                .cornerRadius(8)
+                .padding(.bottom, 50) // Above status/toast
+                .transition(.scale.combined(with: .opacity))
+                .onTapGesture {
+                    appState.showCompactError = false
+                }
+            }
         }
     }
 
@@ -311,30 +337,103 @@ struct FloatingPanelView: View {
     }
 }
 
+private struct InputDeviceMenu: View {
+    @EnvironmentObject var appState: AppState
+    @State private var devices: [AVCaptureDevice] = []
+    
+    var body: some View {
+        Menu {
+            Text("Select Input Device")
+                .font(.caption)
+            Divider()
+            
+            Button {
+                appState.saveInputDevice(nil)
+            } label: {
+                if appState.selectedInputDeviceId == nil {
+                    Label("System Default", systemImage: "checkmark")
+                } else {
+                    Text("System Default")
+                }
+            }
+            
+            ForEach(devices, id: \.uniqueID) { device in
+                Button {
+                    appState.saveInputDevice(device.uniqueID)
+                } label: {
+                    if appState.selectedInputDeviceId == device.uniqueID {
+                        Label(device.localizedName, systemImage: "checkmark")
+                    } else {
+                        Text(device.localizedName)
+                    }
+                }
+            }
+            
+            Divider()
+            Button("Audio Settings...") {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.sound")!)
+            }
+        } label: {
+            EmptyView()
+        }
+        .menuStyle(.borderlessButton)
+        .onAppear {
+            refreshDevices()
+        }
+    }
+    
+    private func refreshDevices() {
+        let discoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInMicrophone, .externalUnknown],
+            mediaType: .audio,
+            position: .unspecified
+        )
+        self.devices = discoverySession.devices
+    }
+}
+
+
 struct WarningBanner: View {
     let warning: AppWarning
     
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             Image(systemName: warning.severity == .error ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
                 .foregroundColor(warning.severity == .error ? .red : .orange)
                 .font(.system(size: 12))
+                .padding(.top, 2)
             
-            Text(warning.message)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.primary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(warning.message)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                
+                if let actionLabel = warning.actionLabel {
+                    Text(actionLabel)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.blue)
+                        .padding(.top, 2)
+                }
+            }
             
             Spacer()
             
             Image(systemName: "chevron.right")
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
+                .padding(.top, 3)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8) // Increased vertical padding slightly
         .background(warning.severity == .error ? Color.red.opacity(0.1) : Color.orange.opacity(0.1))
+        .contentShape(Rectangle()) // Ensure entire area is tappable
         .onTapGesture {
-            NotificationCenter.default.post(name: .openSettings, object: nil)
+            if let action = warning.action {
+                action()
+            } else {
+                NotificationCenter.default.post(name: .openSettings, object: nil)
+            }
         }
     }
 }

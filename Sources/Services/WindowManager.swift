@@ -23,7 +23,9 @@ class WindowManager: ObservableObject {
         "imessage": "messages",
         "i message": "messages",
         "message": "messages",
-        "messages app": "messages"
+        "messages app": "messages",
+        "one password": "1password",
+        "onepassword": "1password"
     ]
     
     init() {

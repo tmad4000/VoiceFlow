@@ -41,6 +41,25 @@ struct MenuBarView: View {
                     }
                     .buttonStyle(.borderless)
                 }
+
+                Divider()
+                Text("Dictation Model")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.leading, 5)
+
+                ForEach(DictationProvider.allCases) { provider in
+                    Button {
+                        appState.saveDictationProvider(provider)
+                    } label: {
+                        HStack {
+                            Image(systemName: appState.dictationProvider == provider ? "checkmark" : "")
+                                .frame(width: 16)
+                            Text(provider.displayName)
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                }
             }
 
             Divider()

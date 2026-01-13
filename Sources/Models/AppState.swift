@@ -131,7 +131,17 @@ class AppState: ObservableObject {
             isolatedSpeakerId = speakerId // Lock to new speaker
         }
     }
-    @Published var errorMessage: String?
+    @Published var errorMessage: String? {
+        didSet {
+            if errorMessage != nil && isDebugMode {
+                showCompactError = true
+                // Auto-hide after 5 seconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                    self?.showCompactError = false
+                }
+            }
+        }
+    }
     @Published var apiKey: String = ""
     @Published var deepgramApiKey: String = ""
     @Published var voiceCommands: [VoiceCommand] = VoiceCommand.defaults
@@ -168,6 +178,14 @@ class AppState: ObservableObject {
     @Published var autoOffMinutes: Double = 30
     @Published var launchMode: MicrophoneMode = .sleep
     @Published var launchAtLogin: Bool = false
+    @Published var selectedInputDeviceId: String? = nil
+    
+    #if DEBUG
+    @Published var isDebugMode: Bool = true
+    #else
+    @Published var isDebugMode: Bool = false
+    #endif
+    @Published var showCompactError: Bool = false
 
     // AI Formatter
     @Published var aiFormatterEnabled: Bool = true
@@ -375,6 +393,7 @@ class AppState: ObservableObject {
         loadActiveBehavior()
         loadLaunchMode()
         loadLaunchAtLogin()
+        loadInputDevice()
         loadDictationProvider()
         loadDictationHistory()
         loadVocabularyPrompt()
@@ -820,7 +839,7 @@ class AppState: ObservableObject {
         logDebug("Starting services (transcribeMode: \(transcribeMode))")
 
         // Always need AudioCaptureManager
-        audioCaptureManager = AudioCaptureManager()
+        audioCaptureManager = AudioCaptureManager(deviceID: selectedInputDeviceId)
 
         if effectiveIsOffline {
             NSLog("[VoiceFlow] -> Starting Apple Speech (offline)")
@@ -2045,7 +2064,14 @@ class AppState: ObservableObject {
                 (phrase: "window previous", key: "system.window_previous", name: "Previous Window", haltsProcessing: true, action: { [weak self] in
                     self?.executeKeyboardShortcut(KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Grave), modifiers: [.command, .shift]))
                 } as () -> Void),
-                (phrase: "save to idea flow", key: "system.save_ideaflow", name: "Idea Flow", haltsProcessing: true, action: { [weak self] in self?.saveToIdeaFlow() } as () -> Void)
+                (phrase: "save to idea flow", key: "system.save_ideaflow", name: "Idea Flow", haltsProcessing: true, action: { [weak self] in self?.saveToIdeaFlow() } as () -> Void),
+                
+                // Dictation Provider Switching
+                (phrase: "use online model", key: "system.provider_online", name: "Online Model", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.online) } as () -> Void),
+                (phrase: "use offline model", key: "system.provider_offline", name: "Offline Model", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.offline) } as () -> Void),
+                (phrase: "use auto model", key: "system.provider_auto", name: "Auto Model", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.auto) } as () -> Void),
+                (phrase: "use deepgram", key: "system.provider_deepgram", name: "Deepgram", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.deepgram) } as () -> Void),
+                (phrase: "switch to deepgram", key: "system.provider_deepgram", name: "Deepgram", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.deepgram) } as () -> Void)
             ])
         }
 
@@ -3127,6 +3153,25 @@ class AppState: ObservableObject {
                 // Revert the state if registration failed
                 launchAtLogin = SMAppService.mainApp.status == .enabled
             }
+        }
+    }
+
+    private func loadInputDevice() {
+        selectedInputDeviceId = UserDefaults.standard.string(forKey: "selected_input_device_id")
+    }
+
+    func saveInputDevice(_ deviceId: String?) {
+        selectedInputDeviceId = deviceId
+        if let deviceId = deviceId {
+            UserDefaults.standard.set(deviceId, forKey: "selected_input_device_id")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "selected_input_device_id")
+        }
+        
+        // Restart services if active to pick up the new device
+        if microphoneMode != .off {
+            logDebug("Input device changed: Restarting services")
+            restartServicesIfActive()
         }
     }
 

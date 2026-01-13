@@ -21,9 +21,15 @@ class AppleSpeechService: NSObject, ObservableObject {
     private var lastTranscript = ""
     private var turnOrder = 0
     private var lastAddsPunctuation = true
+    private var utteranceConfig: UtteranceConfig = .default
+    private var silenceTimer: Timer?
     
     func setTranscribeMode(_ enabled: Bool) {
         transcribeMode = enabled
+    }
+
+    func setUtteranceConfig(_ config: UtteranceConfig) {
+        utteranceConfig = config
     }
     
     func connect() {
@@ -85,6 +91,8 @@ class AppleSpeechService: NSObject, ObservableObject {
             guard let self = self else { return }
             
             if let result = result {
+                self.resetSilenceTimer()
+                
                 let transcript = result.bestTranscription.formattedString
                 let isFinal = result.isFinal
                 
@@ -113,19 +121,22 @@ class AppleSpeechService: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     self.latestTurn = turn
                     if isFinal {
+                        self.stopSilenceTimer()
                         self.turnOrder += 1
                         // Restart recognition after a final result to keep it "streaming"
-                        // Or maybe we don't need to if we want one long session.
-                        // AssemblyAI uses Turns, so we might want to simulate that.
+                        self.restartRecognition()
                     }
                 }
             }
             
             if let error = error {
+                // If we forced end, we might get a generic error or just finish.
+                // Ignore "Success" error or cancelled if we triggered it.
                 logger.error("Recognition error: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     self.errorMessage = error.localizedDescription
                     self.isConnected = false
+                    self.stopSilenceTimer()
                 }
             }
         }
@@ -135,7 +146,39 @@ class AppleSpeechService: NSObject, ObservableObject {
         }
     }
     
+    private func resetSilenceTimer() {
+        stopSilenceTimer()
+        let interval = Double(utteranceConfig.silenceThresholdMs) / 1000.0
+        // Use a slightly longer timer than strictly VAD to avoid cutting off mid-sentence breath
+        // Apple's VAD is internal, but we want to cut it when *text* stops changing?
+        // Actually, this result block fires on text changes.
+        // If the user stops talking, we stop getting results.
+        // So this timer logic is correct: if no new result for X seconds, finalize.
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            self?.handleSilenceTimeout()
+        }
+    }
+    
+    private func stopSilenceTimer() {
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+    }
+    
+    private func handleSilenceTimeout() {
+        logger.info("Silence timeout - forcing end of audio")
+        recognitionRequest?.endAudio()
+    }
+    
+    private func restartRecognition() {
+        // Delay slightly to ensure clean state
+        let addsPunctuation = lastAddsPunctuation
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.startRecognition(addsPunctuation: addsPunctuation)
+        }
+    }
+    
     func stopRecognition() {
+        stopSilenceTimer()
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest?.endAudio()
@@ -144,11 +187,8 @@ class AppleSpeechService: NSObject, ObservableObject {
     }
     
     func forceEndUtterance() {
+        stopSilenceTimer()
         recognitionRequest?.endAudio()
-        // We'll need to restart it after it finishes
-        let addsPunctuation = lastAddsPunctuation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.startRecognition(addsPunctuation: addsPunctuation)
-        }
+        // We'll restart in the completion handler
     }
 }
