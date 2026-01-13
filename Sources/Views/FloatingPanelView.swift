@@ -158,20 +158,17 @@ struct FloatingPanelView: View {
                         Label("Quit VoiceFlow", systemImage: "power")
                     }
                 } label: {
-                    HStack(spacing: 2) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 11, weight: .bold))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 6, weight: .bold))
-                            .opacity(0.5)
-                    }
-                    .foregroundColor(.secondary)
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .pointerCursor()
-                .instantTooltip("Close options")
+                .instantTooltip("More options")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
