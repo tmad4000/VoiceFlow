@@ -550,10 +550,12 @@ class AppState: ObservableObject {
             3. If already enabled, try toggling it off and on
 
             If the permission doesn't take effect, you may need to restart the app.
+            If the app is missing from the list or stuck, try 'Reset Permissions'.
             """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Open Settings")
         alert.addButton(withTitle: "Restart App")
+        alert.addButton(withTitle: "Reset Permissions (Fix)")
         alert.addButton(withTitle: "Later")
 
         let response = alert.runModal()
@@ -566,6 +568,26 @@ class AppState: ObservableObject {
             startAccessibilityPolling()
         } else if response == .alertSecondButtonReturn {
             restartApp()
+        } else if response == .alertThirdButtonReturn {
+            resetAccessibilityPermissions()
+        }
+    }
+    
+    func resetAccessibilityPermissions() {
+        guard let bundleId = Bundle.main.bundleIdentifier else { return }
+        logDebug("Resetting accessibility permissions for \(bundleId)...")
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            process.arguments = ["reset", "Accessibility", bundleId]
+            try? process.run()
+            process.waitUntilExit()
+            
+            Task { @MainActor in
+                self.logDebug("Permissions reset. Restarting...")
+                self.restartApp()
+            }
         }
     }
 
