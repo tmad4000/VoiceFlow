@@ -148,7 +148,7 @@ class AppState: ObservableObject {
     @Published var isPanelVisible: Bool = true
     @Published var isPanelMinimal: Bool = false
     @Published var currentWords: [TranscriptWord] = []
-    @Published var commandDelayMs: Double = 0
+    @Published var commandDelayMs: Double = 50
     @Published var liveDictationEnabled: Bool = false
     @Published var audioLevel: Float = 0.0
     @Published var isAccessibilityGranted: Bool = false

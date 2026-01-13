@@ -146,9 +146,10 @@ class AudioCaptureManager: NSObject {
         }
         let rms = sqrt(sum / Float(frameLength))
         // Convert to 0-1 range with some scaling for better visualization
-        // Use a more sensitive curve: level = rms^0.5 * 3.0
-        // This boosts low signals while keeping high signals bounded
-        let level = min(1.0, sqrt(rms) * 3.0)
+        // Use Logarithmic scale (dB) normalized from -60dB to 0dB
+        let db = 20 * log10(max(rms, 1e-9)) // Prevent log(0)
+        let normalized = (db + 60) / 60
+        let level = max(0.0, min(1.0, normalized))
 
         // Send to callbacks
         DispatchQueue.main.async { [weak self] in

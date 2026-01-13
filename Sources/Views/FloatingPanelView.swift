@@ -39,7 +39,7 @@ struct FloatingPanelView: View {
             }
             .buttonStyle(.plain)
             .pointerCursor()
-            .help("Expand panel")
+            .instantTooltip("Expand panel")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -116,24 +116,17 @@ struct FloatingPanelView: View {
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
-                .help("Open settings")
-
-                // Collapse to minimal button
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        appState.isPanelMinimal = true
-                    }
-                }) {
-                    Image(systemName: "arrow.down.right.and.arrow.up.left")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .help("Collapse to minimal")
+                .instantTooltip("Open settings")
 
                 // Close menu button
                 Menu {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            appState.isPanelMinimal = true
+                        }
+                    }) {
+                        Label("Minimize Panel", systemImage: "arrow.down.right.and.arrow.up.left")
+                    }
                     Button(action: hidePanel) {
                         Label("Hide Panel", systemImage: "minus")
                     }
@@ -148,7 +141,7 @@ struct FloatingPanelView: View {
                 .menuStyle(.borderlessButton)
                 .frame(width: 20)
                 .pointerCursor()
-                .help("Hide or Quit")
+                .instantTooltip("Close options")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
