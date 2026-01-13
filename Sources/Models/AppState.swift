@@ -2023,9 +2023,9 @@ class AppState: ObservableObject {
         if lowerTranscript.hasPrefix("spell ") {
             let textToSpell = String(turn.transcript.dropFirst(6)).trimmingCharacters(in: .whitespaces)
             if !textToSpell.isEmpty && turn.endOfTurn {
-                logDebug("Voice Spelling: \"\(textToSpell)\"")
-                // Type character by character without adding spaces
-                typeText(textToSpell.replacingOccurrences(of: " ", with: ""), appendSpace: false)
+                let converted = convertSpokenToCharacters(textToSpell)
+                logDebug("Voice Spelling: \"\(textToSpell)\" → \"\(converted)\"")
+                typeText(converted, appendSpace: false)
                 triggerCommandFlash(name: "Spell")
                 return
             }
@@ -2689,6 +2689,113 @@ class AppState: ObservableObject {
         }
 
         return matches
+    }
+
+    // MARK: - Spell Command Character Conversion
+
+    /// Maps spoken words to their character equivalents for the spell command
+    private static let spokenCharacterMap: [String: String] = [
+        // Numbers
+        "zero": "0", "oh": "0",
+        "one": "1",
+        "two": "2", "to": "2", "too": "2",
+        "three": "3",
+        "four": "4", "for": "4",
+        "five": "5",
+        "six": "6",
+        "seven": "7",
+        "eight": "8",
+        "nine": "9",
+
+        // Common symbols
+        "at": "@", "at sign": "@",
+        "hash": "#", "hashtag": "#", "pound": "#", "number sign": "#",
+        "dollar": "$", "dollar sign": "$",
+        "percent": "%", "percent sign": "%",
+        "ampersand": "&", "and sign": "&",
+        "asterisk": "*", "star": "*",
+        "plus": "+", "plus sign": "+",
+        "equals": "=", "equal": "=", "equal sign": "=",
+        "dash": "-", "hyphen": "-", "minus": "-",
+        "underscore": "_",
+        "period": ".", "dot": ".", "full stop": ".",
+        "comma": ",",
+        "slash": "/", "forward slash": "/",
+        "backslash": "\\", "back slash": "\\",
+        "colon": ":",
+        "semicolon": ";", "semi colon": ";",
+        "question": "?", "question mark": "?",
+        "exclamation": "!", "exclamation point": "!", "exclamation mark": "!",
+        "open paren": "(", "left paren": "(", "open parenthesis": "(",
+        "close paren": ")", "right paren": ")", "close parenthesis": ")",
+        "open bracket": "[", "left bracket": "[",
+        "close bracket": "]", "right bracket": "]",
+        "open brace": "{", "left brace": "{",
+        "close brace": "}", "right brace": "}",
+        "quote": "\"", "double quote": "\"",
+        "single quote": "'", "apostrophe": "'",
+        "backtick": "`", "back tick": "`",
+        "tilde": "~",
+        "caret": "^",
+        "pipe": "|", "vertical bar": "|",
+        "less than": "<", "left angle": "<",
+        "greater than": ">", "right angle": ">",
+
+        // Space
+        "space": " "
+    ]
+
+    /// Converts spoken text to characters (for spell command)
+    /// "eight three nine" → "839", "capital a b c" → "Abc"
+    private func convertSpokenToCharacters(_ text: String) -> String {
+        let words = text.lowercased().split(separator: " ").map(String.init)
+        var result = ""
+        var i = 0
+
+        while i < words.count {
+            let word = words[i]
+
+            // Check for "capital" modifier
+            if word == "capital" || word == "uppercase" || word == "cap" {
+                if i + 1 < words.count {
+                    let nextWord = words[i + 1]
+                    if nextWord.count == 1 {
+                        result += nextWord.uppercased()
+                        i += 2
+                        continue
+                    } else if let mapped = Self.spokenCharacterMap[nextWord], mapped.count == 1 {
+                        result += mapped.uppercased()
+                        i += 2
+                        continue
+                    }
+                }
+            }
+
+            // Check for two-word phrases first (e.g., "at sign", "open paren")
+            if i + 1 < words.count {
+                let twoWords = "\(word) \(words[i + 1])"
+                if let mapped = Self.spokenCharacterMap[twoWords] {
+                    result += mapped
+                    i += 2
+                    continue
+                }
+            }
+
+            // Check single word mapping
+            if let mapped = Self.spokenCharacterMap[word] {
+                result += mapped
+            } else if word.count == 1 {
+                // Single letter - use as-is
+                result += word
+            } else {
+                // Unknown word - pass through as-is (collapsed)
+                result += word
+            }
+
+            i += 1
+        }
+
+        return result
     }
 
     private func typeText(_ text: String, appendSpace: Bool) {
