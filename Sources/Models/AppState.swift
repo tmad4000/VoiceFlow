@@ -180,6 +180,12 @@ class AppState: ObservableObject {
     @Published var launchAtLogin: Bool = false
     @Published var selectedInputDeviceId: String? = nil
     
+    // Customizable Shortcuts
+    @Published var pttShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_Space), modifiers: [.control, .option])
+    @Published var modeOnShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_1), modifiers: [.control, .option, .command])
+    @Published var modeSleepShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_2), modifiers: [.control, .option, .command])
+    @Published var modeOffShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_0), modifiers: [.control, .option, .command])
+    
     #if DEBUG
     @Published var isDebugMode: Bool = true
     #else
@@ -394,6 +400,7 @@ class AppState: ObservableObject {
         loadLaunchMode()
         loadLaunchAtLogin()
         loadInputDevice()
+        loadShortcuts()
         loadDictationProvider()
         loadDictationHistory()
         loadVocabularyPrompt()
@@ -3187,6 +3194,53 @@ class AppState: ObservableObject {
         if microphoneMode != .off {
             logDebug("Input device changed: Restarting services")
             restartServicesIfActive()
+        }
+    }
+
+    private func loadShortcuts() {
+        if let data = UserDefaults.standard.data(forKey: "shortcut_ptt"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            pttShortcut = shortcut
+        }
+        if let data = UserDefaults.standard.data(forKey: "shortcut_mode_on"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            modeOnShortcut = shortcut
+        }
+        if let data = UserDefaults.standard.data(forKey: "shortcut_mode_sleep"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            modeSleepShortcut = shortcut
+        }
+        if let data = UserDefaults.standard.data(forKey: "shortcut_mode_off"),
+           let shortcut = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
+            modeOffShortcut = shortcut
+        }
+    }
+
+    func savePTTShortcut(_ shortcut: KeyboardShortcut) {
+        pttShortcut = shortcut
+        if let data = try? JSONEncoder().encode(shortcut) {
+            UserDefaults.standard.set(data, forKey: "shortcut_ptt")
+        }
+    }
+
+    func saveModeOnShortcut(_ shortcut: KeyboardShortcut) {
+        modeOnShortcut = shortcut
+        if let data = try? JSONEncoder().encode(shortcut) {
+            UserDefaults.standard.set(data, forKey: "shortcut_mode_on")
+        }
+    }
+
+    func saveModeSleepShortcut(_ shortcut: KeyboardShortcut) {
+        modeSleepShortcut = shortcut
+        if let data = try? JSONEncoder().encode(shortcut) {
+            UserDefaults.standard.set(data, forKey: "shortcut_mode_sleep")
+        }
+    }
+
+    func saveModeOffShortcut(_ shortcut: KeyboardShortcut) {
+        modeOffShortcut = shortcut
+        if let data = try? JSONEncoder().encode(shortcut) {
+            UserDefaults.standard.set(data, forKey: "shortcut_mode_off")
         }
     }
 

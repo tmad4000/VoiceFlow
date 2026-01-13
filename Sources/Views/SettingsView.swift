@@ -427,29 +427,39 @@ struct GeneralSettingsView: View {
                 // Push-to-Talk Shortcut Section
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Push-to-Talk Shortcut")
+                        Text("Shortcuts")
                             .font(.system(size: 13, weight: .semibold))
 
-                        HStack {
-                            Text("Shortcut:")
-                                .font(.system(size: 13))
-                            Text(AppState.pttShortcutDescription)
-                                .font(.system(size: 13, weight: .medium, design: .monospaced))
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text("Hold to talk")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                        }
-
-                        // No known conflicts with Control+Option+Space
-                        HStack(spacing: 6) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                            Text("No shortcut conflicts detected")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                        }
+                        ShortcutRecorder(
+                            shortcut: $appState.pttShortcut,
+                            label: "Push-to-Talk",
+                            onChange: { appState.savePTTShortcut($0) }
+                        )
+                        
+                        Text("Hold to talk.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                            .padding(.bottom, 4)
+                        
+                        Divider()
+                        
+                        ShortcutRecorder(
+                            shortcut: $appState.modeOnShortcut,
+                            label: "Switch to ON",
+                            onChange: { appState.saveModeOnShortcut($0) }
+                        )
+                        
+                        ShortcutRecorder(
+                            shortcut: $appState.modeSleepShortcut,
+                            label: "Switch to SLEEP",
+                            onChange: { appState.saveModeSleepShortcut($0) }
+                        )
+                        
+                        ShortcutRecorder(
+                            shortcut: $appState.modeOffShortcut,
+                            label: "Switch to OFF",
+                            onChange: { appState.saveModeOffShortcut($0) }
+                        )
                     }
                     .padding(4)
                 }
@@ -625,19 +635,6 @@ struct GeneralSettingsView: View {
                         Text("Configure how to trigger Idea Flow when saying \"save to idea flow\".")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
-                    }
-                    .padding(4)
-                }
-
-                // Shortcuts Help Section
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Global Shortcuts")
-                            .font(.system(size: 13, weight: .semibold))
-
-                        ForEach(globalShortcutHelpItems, id: \.keys) { item in
-                            ShortcutHelpRow(keys: item.keys, description: item.description)
-                        }
                     }
                     .padding(4)
                 }
@@ -2123,3 +2120,71 @@ struct InputDevicePicker: View {
         self.devices = discoverySession.devices
     }
 }
+
+struct ShortcutRecorder: View {
+    @Binding var shortcut: KeyboardShortcut
+    let label: String
+    var onChange: ((KeyboardShortcut) -> Void)?
+    @State private var isRecording = false
+    @State private var monitor: Any?
+    
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 13))
+            Spacer()
+            Button(action: {
+                if isRecording {
+                    stopRecording()
+                } else {
+                    startRecording()
+                }
+            }) {
+                Text(isRecording ? "Type shortcut..." : shortcut.description)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(isRecording ? Color.accentColor : Color.secondary.opacity(0.1))
+                    .foregroundColor(isRecording ? .white : .primary)
+                    .cornerRadius(4)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+    
+    private func startRecording() {
+        isRecording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Ignore just modifier keys
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if event.keyCode == 54 || event.keyCode == 55 || event.keyCode == 56 || event.keyCode == 57 ||
+               event.keyCode == 58 || event.keyCode == 59 || event.keyCode == 60 || event.keyCode == 61 ||
+               event.keyCode == 62 || event.keyCode == 63 {
+                return event
+            }
+            
+            // Map modifiers
+            var modifiers: KeyboardModifiers = []
+            if flags.contains(.control) { modifiers.insert(.control) }
+            if flags.contains(.option) { modifiers.insert(.option) }
+            if flags.contains(.shift) { modifiers.insert(.shift) }
+            if flags.contains(.command) { modifiers.insert(.command) }
+            
+            let newShortcut = KeyboardShortcut(keyCode: event.keyCode, modifiers: modifiers)
+            shortcut = newShortcut
+            onChange?(newShortcut)
+            
+            stopRecording()
+            return nil // Consume event
+        }
+    }
+    
+    private func stopRecording() {
+        isRecording = false
+        if let monitor = monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
+    }
+}
+

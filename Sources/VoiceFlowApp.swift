@@ -151,7 +151,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Listen for CLI commands via distributed notifications
         setupCLINotifications()
 
-        setupPTT()
+        setupGlobalShortcuts()
     }
 
     private func setupCLINotifications() {
@@ -360,16 +360,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func setupPTT() {
+    private func setupGlobalShortcuts() {
+        // Remove existing monitor if any (though we only call this once usually)
+        if let monitor = pttMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+
         pttMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self = self else { return }
 
-            // PTT Shortcut: Control+Option+Space (Hold)
-            // Changed from Option+Cmd+Space to avoid Spotlight conflict
-            let pttModifiers: NSEvent.ModifierFlags = [.control, .option]
             let currentModifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let keyCode = event.keyCode
+            
+            // Helper to match shortcut
+            func matches(_ shortcut: KeyboardShortcut) -> Bool {
+                let requiredFlags = self.mapModifiers(shortcut.modifiers)
+                return currentModifiers == requiredFlags && UInt16(keyCode) == shortcut.keyCode
+            }
 
-            if currentModifiers == pttModifiers && event.keyCode == 49 { // Space bar
+            // PTT (Hold)
+            if matches(self.appState.pttShortcut) {
                 Task { @MainActor in
                     if event.type == .keyDown {
                         if self.appState.microphoneMode != .on {
@@ -378,10 +388,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     } else if event.type == .keyUp {
                         if self.appState.microphoneMode == .on {
-                            // Delay slightly to ensure last words are caught
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                                 Task { @MainActor in
-                                    // Only switch back if we are still in ON mode (user hasn't clicked something else)
                                     if self.appState.microphoneMode == .on {
                                         self.appState.setMode(.sleep)
                                         self.appState.logDebug("PTT: SLEEP")
@@ -391,8 +399,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     }
                 }
+                return
+            }
+            
+            // Mode Switching (Trigger on KeyDown)
+            if event.type == .keyDown {
+                if matches(self.appState.modeOnShortcut) {
+                    Task { @MainActor in self.appState.setMode(.on) }
+                } else if matches(self.appState.modeSleepShortcut) {
+                    Task { @MainActor in self.appState.setMode(.sleep) }
+                } else if matches(self.appState.modeOffShortcut) {
+                    Task { @MainActor in self.appState.setMode(.off) }
+                }
             }
         }
+    }
+    
+    nonisolated private func mapModifiers(_ modifiers: KeyboardModifiers) -> NSEvent.ModifierFlags {
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers.contains(.command) { flags.insert(.command) }
+        if modifiers.contains(.control) { flags.insert(.control) }
+        if modifiers.contains(.option) { flags.insert(.option) }
+        if modifiers.contains(.shift) { flags.insert(.shift) }
+        return flags
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
