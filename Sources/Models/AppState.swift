@@ -99,6 +99,16 @@ struct AppWarning: Identifiable {
     let id: String
     let message: String
     let severity: Severity
+    let action: (() -> Void)?
+    let actionLabel: String?
+    
+    init(id: String, message: String, severity: Severity, action: (() -> Void)? = nil, actionLabel: String? = nil) {
+        self.id = id
+        self.message = message
+        self.severity = severity
+        self.action = action
+        self.actionLabel = actionLabel
+    }
     
     enum Severity {
         case warning, error
@@ -266,7 +276,15 @@ class AppState: ObservableObject {
         }
 
         if isLatencyDegraded, let latency = connectionLatencyMs, !effectiveIsOffline {
-            warnings.append(AppWarning(id: "latency_high", message: "High network latency (\(latency)ms) — consider switching to Mac Speech (Offline).", severity: .warning))
+            warnings.append(AppWarning(
+                id: "latency_high",
+                message: "High network latency (\(latency)ms)",
+                severity: .warning,
+                action: { [weak self] in
+                    self?.saveDictationProvider(.offline)
+                },
+                actionLabel: "Switch to Offline"
+            ))
         }
 
         return warnings
@@ -986,6 +1004,14 @@ class AppState: ObservableObject {
 
         appleSpeechService = AppleSpeechService()
         
+        // Configure utterance detection for Apple Speech (simulated via silence timer)
+        let utteranceConfig = UtteranceConfig(
+            confidenceThreshold: effectiveConfidenceThreshold,
+            silenceThresholdMs: effectiveSilenceThresholdMs,
+            maxTurnSilenceMs: utteranceMode.maxTurnSilenceMs
+        )
+        appleSpeechService?.setUtteranceConfig(utteranceConfig)
+        
         appleSpeechService?.$latestTurn
             .receive(on: DispatchQueue.main)
             .sink { [weak self] turn in
@@ -1600,7 +1626,7 @@ class AppState: ObservableObject {
         // 1. Handle "say" prefix (escape mode)
         // Use regex to find "say" at the beginning, ignoring optional trailing punctuation and whitespace
         var isLiteral = forceLiteral
-        let sayPattern = "^say[\\.,?!]?\\s*"
+        let sayPattern = "^say[\\.,?!]?(\\s+|$)"
         if let regex = try? NSRegularExpression(pattern: sayPattern, options: [.caseInsensitive]),
            let match = regex.firstMatch(in: processed, options: [], range: NSRange(location: 0, length: processed.utf16.count)) {
             isLiteral = true
@@ -2155,24 +2181,27 @@ class AppState: ObservableObject {
         var didFlushText = false
         // 1. Pre-emptive Flush: Type any words BEFORE the command phrase
         if microphoneMode == .on && activeBehavior != .command {
-            let wordsBefore = match.turn.words.prefix(match.startWordIndex)
-            if !wordsBefore.isEmpty {
+            let lastConsumedIndex = lastExecutedEndWordIndexByCommand.values.max() ?? -1
+            let startFlushIndex = max(0, lastConsumedIndex + 1)
+            
+            if startFlushIndex < match.startWordIndex {
+                let range = startFlushIndex..<match.startWordIndex
+                
                 // Determine what has already been typed
                 let untypedWords: [String]
                 if liveDictationEnabled {
                     // In live mode, we track by count
-                    if wordsBefore.count > typedFinalWordCount {
-                        untypedWords = wordsBefore[typedFinalWordCount...].map { $0.text }
-                        typedFinalWordCount = wordsBefore.count
+                    // We only care about words that are AFTER typedFinalWordCount
+                    let effectiveStart = max(startFlushIndex, typedFinalWordCount)
+                    if effectiveStart < match.startWordIndex {
+                        untypedWords = match.turn.words[effectiveStart..<match.startWordIndex].map { $0.text }
+                        typedFinalWordCount = match.startWordIndex
                     } else {
                         untypedWords = []
                     }
                 } else {
-                    // In turn-based mode, if we are in the middle of a turn that hasn't typed yet
-                    // we type the preceding words now.
-                    // However, turn-based usually waits for end-of-turn. 
-                    // If a command is detected MID-turn, we should flush the prefix.
-                    untypedWords = wordsBefore.map { $0.text }
+                    // In turn-based mode, we flush everything in the range
+                    untypedWords = match.turn.words[range].map { $0.text }
                 }
                 
                 if !untypedWords.isEmpty {
