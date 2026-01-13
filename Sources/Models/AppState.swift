@@ -1648,6 +1648,17 @@ class AppState: ObservableObject {
                 let next = words[index + 1]
                 let nextToken = normalizeToken(next.text)
                 if nextToken == "line" {
+                    // Lookahead: If followed immediately by another word, likely literal "new line of..."
+                    if index + 2 < words.count {
+                        let wordAfter = words[index + 2]
+                        if isKeywordGapAcceptable(previous: next, next: wordAfter) {
+                            // Small gap to next word -> Treat as literal
+                            appendProcessedToken(word.text)
+                            index += 1
+                            continue
+                        }
+                    }
+
                     if isKeywordGapAcceptable(previous: word, next: next) {
                         keyword = keyword ?? "New line"
                         appendNewline()
