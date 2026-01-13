@@ -368,6 +368,7 @@ class AppState: ObservableObject {
     private let latencyWarningThresholdMs = 1500
     private let latencyRecoveryThresholdMs = 900
     private var didTriggerSayKeyword = false
+    private var turnHandledBySpecialCommand = false  // Set by spell, focus to prevent dictation
     private var typedFinalWordCount = 0
     private var didTypeDictationThisUtterance = false
     private var hasTypedInSession = false  // Tracks if we've typed anything since going On
@@ -1198,6 +1199,7 @@ class AppState: ObservableObject {
             }
             currentUtteranceIsLiteral = false
             didTriggerSayKeyword = false
+            turnHandledBySpecialCommand = false
         }
     }
 
@@ -1208,6 +1210,12 @@ class AppState: ObservableObject {
 
     private func handleDictationTurn(_ turn: TranscriptTurn, isForceEnd: Bool) {
         logger.info("handleDictationTurn: isFormatted=\(turn.isFormatted), endOfTurn=\(turn.endOfTurn), transcript=\"\(turn.transcript.prefix(50))...\"")
+
+        // Skip if spell/focus already handled this turn
+        if turnHandledBySpecialCommand {
+            logger.debug("Skipping dictation - turn handled by special command (spell/focus)")
+            return
+        }
 
         if forceEndPending, let requestedAt = forceEndRequestedAt,
            Date().timeIntervalSince(requestedAt) > forceEndTimeoutSeconds {
@@ -1848,6 +1856,12 @@ class AppState: ObservableObject {
 
 
     private func handleLiveDictationTurn(_ turn: TranscriptTurn, isForceEnd: Bool) {
+        // Skip if spell/focus already handled this turn
+        if turnHandledBySpecialCommand {
+            logger.debug("Skipping live dictation - turn handled by special command (spell/focus)")
+            return
+        }
+
         // SPEAKER ISOLATION FILTER
         // Filter the words in the turn to only include the isolated speaker
         var effectiveWords = turn.words
@@ -2027,6 +2041,7 @@ class AppState: ObservableObject {
                 logDebug("Voice Spelling: \"\(textToSpell)\" → \"\(converted)\"")
                 typeText(converted, appendSpace: false)
                 triggerCommandFlash(name: "Spell")
+                turnHandledBySpecialCommand = true  // Prevent dictation from also typing
                 return
             }
         }
@@ -2054,6 +2069,7 @@ class AppState: ObservableObject {
                     currentUtteranceHadCommand = true
                     lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
                 }
+                turnHandledBySpecialCommand = true  // Prevent dictation from also typing
                 return
             }
         }
