@@ -27,6 +27,16 @@ struct FloatingPanelView: View {
                 AudioPulseIndicator(level: appState.audioLevel, mode: appState.microphoneMode)
             }
 
+            if appState.isNewerBuildAvailable {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(.green)
+                    .instantTooltip("New build available - Click to Restart")
+                    .onTapGesture {
+                        appState.restartApp()
+                    }
+            }
+
             // Expand button
             Button(action: {
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -69,6 +79,17 @@ struct FloatingPanelView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 3))
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
+                }
+
+                if appState.isNewerBuildAvailable {
+                    Button(action: { appState.restartApp() }) {
+                        Image(systemName: "arrow.clockwise.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.green)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .instantTooltip("New build available - Click to Restart")
                 }
 
                 ModeSelectionView()
@@ -130,16 +151,25 @@ struct FloatingPanelView: View {
                     Button(action: hidePanel) {
                         Label("Hide Panel", systemImage: "minus")
                     }
+                    Button(action: { appState.restartApp() }) {
+                        Label("Restart App", systemImage: "arrow.clockwise")
+                    }
                     Button(role: .destructive, action: quitApp) {
                         Label("Quit VoiceFlow", systemImage: "power")
                     }
                 } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.secondary)
+                    HStack(spacing: 2) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .bold))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 6, weight: .bold))
+                            .opacity(0.5)
+                    }
+                    .foregroundColor(.secondary)
                 }
                 .menuStyle(.borderlessButton)
-                .frame(width: 20)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .pointerCursor()
                 .instantTooltip("Close options")
             }

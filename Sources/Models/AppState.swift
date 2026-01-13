@@ -179,6 +179,10 @@ class AppState: ObservableObject {
     @Published var launchMode: MicrophoneMode = .sleep
     @Published var launchAtLogin: Bool = false
     @Published var selectedInputDeviceId: String? = nil
+    @Published var isNewerBuildAvailable: Bool = false
+    
+    private let launchTime = Date()
+    private var buildCheckTimer: Timer?
     
     // Customizable Shortcuts
     @Published var pttShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_Space), modifiers: [.control, .option])
@@ -411,6 +415,8 @@ class AppState: ObservableObject {
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
         checkSpeechPermission()
+        
+        startBuildCheckTimer()
         
         // Monitor network status
         networkMonitor.$isConnected
@@ -3320,6 +3326,33 @@ class AppState: ObservableObject {
             } else {
                 logDebug("Idea Flow: App not found and no URL/Shortcut configured")
             }
+        }
+    }
+    
+    private func startBuildCheckTimer() {
+        // Check every 5 seconds (for dev/local)
+        buildCheckTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.checkForNewerBuild()
+            }
+        }
+    }
+
+    private func checkForNewerBuild() {
+        guard let executableURL = Bundle.main.executableURL else { return }
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: executableURL.path)
+            if let modificationDate = attributes[.modificationDate] as? Date {
+                // If file is newer than launch time + small buffer
+                if modificationDate > launchTime.addingTimeInterval(5) {
+                    if !isNewerBuildAvailable {
+                        isNewerBuildAvailable = true
+                        logDebug("Newer build detected! (File: \(modificationDate), Launch: \(launchTime))")
+                    }
+                }
+            }
+        } catch {
+            // Ignore errors
         }
     }
 }
