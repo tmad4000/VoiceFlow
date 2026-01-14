@@ -2969,6 +2969,15 @@ class AppState: ObservableObject {
             return
         }
 
+        // Log which app will receive the keystrokes (helps debug when text goes wrong place)
+        if let frontApp = NSWorkspace.shared.frontmostApplication {
+            let appName = frontApp.localizedName ?? "Unknown"
+            let bundleId = frontApp.bundleIdentifier ?? "?"
+            logDebug("Target app: \(appName) (\(bundleId))")
+        } else {
+            logDebug("Target app: Unknown (no frontmost app)")
+        }
+
         // Don't append space after newlines - it looks wrong
         let shouldAppendSpace = appendSpace && !text.hasSuffix("\n")
         let output = shouldAppendSpace ? text + " " : text
@@ -3044,6 +3053,12 @@ class AppState: ObservableObject {
     }
 
     private func executeKeyboardShortcut(_ shortcut: KeyboardShortcut) {
+        // Log which app will receive the shortcut
+        if let frontApp = NSWorkspace.shared.frontmostApplication {
+            let appName = frontApp.localizedName ?? "Unknown"
+            logDebug("Shortcut target: \(appName)")
+        }
+
         let source = CGEventSource(stateID: .hidSystemState)
 
         var flags: CGEventFlags = []
