@@ -3248,7 +3248,7 @@ class AppState: ObservableObject {
             logDebug("Using \(Int(interCharDelay * 1000))ms inter-character delay for browser app")
         }
 
-        let minDelayBeforeReturn: TimeInterval = 0.02  // 20ms minimum delay before Return key
+        let minDelayBeforeReturn: TimeInterval = 0.10  // 100ms minimum delay before Return key
 
         for char in output {
             if char == "\n" {
