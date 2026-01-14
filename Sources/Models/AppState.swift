@@ -3255,7 +3255,7 @@ class AppState: ObservableObject {
         // Terminal UIs (Claude Code, Gemini CLI) need longer delay before Enter for reliable submission
         // Regular apps work fine with shorter delay
         let isTerminal = focusContextManager.isCurrentAppTerminal()
-        let minDelayBeforeReturn: TimeInterval = isTerminal ? 0.50 : 0.02  // 500ms for terminals (testing), 20ms otherwise
+        let minDelayBeforeReturn: TimeInterval = isTerminal ? 0.05 : 0.02  // 50ms for terminals (using AppleScript), 20ms otherwise
 
         for char in output {
             if char == "\n" {
@@ -3274,16 +3274,17 @@ class AppState: ObservableObject {
                     Thread.sleep(forTimeInterval: minDelayBeforeReturn)
                 }
 
-                let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-                let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-                keyDown?.post(tap: .cghidEventTap)
-                keyUp?.post(tap: .cghidEventTap)
-                lastKeyEventTime = Date()
-
-                // Additional delay after Enter for terminal UIs to process the submission
+                // For terminals, try AppleScript which uses a different keystroke mechanism
+                // This may be more reliable for apps like Claude Code that might filter CGEvents
                 if isTerminal {
-                    Thread.sleep(forTimeInterval: 0.10)  // 100ms after Enter
+                    sendReturnViaAppleScript()
+                } else {
+                    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+                    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+                    keyDown?.post(tap: .cghidEventTap)
+                    keyUp?.post(tap: .cghidEventTap)
                 }
+                lastKeyEventTime = Date()
                 continue
             }
 
@@ -3307,6 +3308,23 @@ class AppState: ObservableObject {
             }
         }
         logger.debug("Successfully posted \(eventsPosted) character events")
+    }
+
+    /// Send Return key via AppleScript (System Events)
+    /// This uses a different mechanism than CGEvent and may be more reliable for some apps
+    private func sendReturnViaAppleScript() {
+        let script = """
+        tell application "System Events"
+            keystroke return
+        end tell
+        """
+        if let appleScript = NSAppleScript(source: script) {
+            var error: NSDictionary?
+            appleScript.executeAndReturnError(&error)
+            if let error = error {
+                logDebug("AppleScript error: \(error)")
+            }
+        }
     }
 
     private func executeKeyboardShortcut(_ shortcut: KeyboardShortcut) {
