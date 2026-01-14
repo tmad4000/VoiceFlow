@@ -3254,14 +3254,16 @@ class AppState: ObservableObject {
             if char == "\n" {
                 // Ensure sufficient delay before Return key, even across typeText calls
                 // This fixes inconsistent newline submission at end of utterances
+                // Terminal UIs (like Claude Code) need time to process the keypress as "submit"
                 if let lastTime = lastKeyEventTime {
                     let elapsed = Date().timeIntervalSince(lastTime)
                     let neededDelay = max(0, minDelayBeforeReturn - elapsed)
                     if neededDelay > 0 {
                         Thread.sleep(forTimeInterval: neededDelay)
                     }
-                } else if eventsPosted > 0 {
-                    // Fallback: delay within same call
+                } else {
+                    // Always delay before Enter, even if this is the first/only keypress
+                    // This ensures terminal UIs have time to be ready for the submission
                     Thread.sleep(forTimeInterval: minDelayBeforeReturn)
                 }
 

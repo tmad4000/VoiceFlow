@@ -148,8 +148,9 @@ class AppleSpeechService: NSObject, ObservableObject {
     
     private func resetSilenceTimer() {
         stopSilenceTimer()
-        let interval = Double(utteranceConfig.silenceThresholdMs) / 1000.0
-        // Use a slightly longer timer than strictly VAD to avoid cutting off mid-sentence breath
+        // Use maxTurnSilenceMs for the offline silence timer because we don't have 
+        // the same confidence metrics as the online models to use the shorter threshold safely.
+        let interval = Double(utteranceConfig.maxTurnSilenceMs) / 1000.0
         // Apple's VAD is internal, but we want to cut it when *text* stops changing?
         // Actually, this result block fires on text changes.
         // If the user stops talking, we stop getting results.
