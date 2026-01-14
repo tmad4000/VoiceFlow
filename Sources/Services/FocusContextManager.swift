@@ -55,7 +55,7 @@ class FocusContextManager: ObservableObject {
 
         /// Apps that need slower keystroke injection (web-based apps with complex input handling)
         var needsSlowTyping: Bool {
-            isBrowser  // All browsers need slower typing for web apps like Google Docs
+            isBrowser || isCodeEditor  // Browsers and code editors need slower typing
         }
 
         var appCategory: AppCategory {
@@ -231,12 +231,12 @@ class FocusContextManager: ObservableObject {
     }
 
     /// Get recommended inter-character delay for current app
-    /// Returns 0 for most apps, small delay for browsers/complex apps
+    /// Returns small delay for most apps, longer delay for browsers/complex apps
     func getInterCharacterDelay() -> TimeInterval {
         if currentSegment?.needsSlowTyping == true {
-            return 0.003  // 3ms delay between characters for browsers
+            return 0.005  // 5ms delay between characters for browsers/IDEs
         }
-        return 0  // No delay for native apps
+        return 0.002  // 2ms delay for native apps to prevent dropped characters
     }
 
     /// Check if current focused app is a terminal/CLI
