@@ -20,8 +20,7 @@ class FocusContextManager: ObservableObject {
             bundleId == "com.googlecode.iterm2" ||
             bundleId == "io.alacritty" ||
             bundleId == "com.github.wez.wezterm" ||
-            appName?.lowercased().contains("terminal") == true ||
-            appName?.lowercased().contains("gemini") == true
+            appName?.lowercased().contains("terminal") == true
         }
 
         var isCodeEditor: Bool {
@@ -240,7 +239,7 @@ class FocusContextManager: ObservableObject {
     }
 
     /// Check if current focused app is a terminal/CLI
-    /// Used to apply longer Enter key delay for terminal UIs
+    /// Used to adjust newline behavior (buffer instead of immediate submission)
     func isCurrentAppTerminal() -> Bool {
         return currentSegment?.isTerminal ?? false
     }
