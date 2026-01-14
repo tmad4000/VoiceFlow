@@ -1540,6 +1540,7 @@ class AppState: ObservableObject {
         var keyword: String? = nil
         var lowercaseNext = false
         var letterNext = false
+        var suppressNextSpace = false  // For "no space" command
         let maxTagWords = 4
 
         func appendNewline() {
@@ -1555,7 +1556,7 @@ class AppState: ObservableObject {
             output.append(" ")
         }
 
-        func appendToken(_ token: String) {
+        func appendToken(_ token: String, joinDirectly: Bool = false) {
             let isPunctuationOnly = token.rangeOfCharacter(from: CharacterSet.alphanumerics) == nil
             if isPunctuationOnly {
                 if output.last == " " {
@@ -1564,7 +1565,7 @@ class AppState: ObservableObject {
                 output.append(token)
                 return
             }
-            if output.isEmpty || output.last == " " || output.last == "\n" {
+            if output.isEmpty || output.last == " " || output.last == "\n" || joinDirectly {
                 output.append(token)
             } else {
                 output.append(" ")
@@ -1579,16 +1580,18 @@ class AppState: ObservableObject {
 
         func appendProcessedToken(_ wordText: String) {
             let normalized = normalizeToken(wordText)
+            let shouldJoin = suppressNextSpace
+            suppressNextSpace = false  // Reset after use
 
             if letterNext {
                 if !normalized.isEmpty, let firstChar = normalized.first {
                     if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         suppressNextAutoCap = true
                     }
-                    appendToken(String(firstChar))
+                    appendToken(String(firstChar), joinDirectly: shouldJoin)
                     letterNext = false
                 } else {
-                    appendToken(wordText)
+                    appendToken(wordText, joinDirectly: shouldJoin)
                 }
                 return
             }
@@ -1598,15 +1601,15 @@ class AppState: ObservableObject {
                     if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         suppressNextAutoCap = true
                     }
-                    appendToken(wordText.lowercased())
+                    appendToken(wordText.lowercased(), joinDirectly: shouldJoin)
                     lowercaseNext = false
                 } else {
-                    appendToken(wordText)
+                    appendToken(wordText, joinDirectly: shouldJoin)
                 }
                 return
             }
 
-            appendToken(wordText)
+            appendToken(wordText, joinDirectly: shouldJoin)
         }
 
         func isTagStopToken(_ token: String, nextToken: String?) -> Bool {
@@ -1783,10 +1786,7 @@ class AppState: ObservableObject {
             // e.g., "idea no space flow" → "ideaflow"
             if token == "nospace" {
                 keyword = keyword ?? "No space"
-                // Remove trailing space from output so next word joins directly
-                while output.last == " " {
-                    output.removeLast()
-                }
+                suppressNextSpace = true  // Next word will join directly
                 index += 1
                 continue
             }
@@ -1796,10 +1796,7 @@ class AppState: ObservableObject {
                 let nextToken = normalizeToken(next.text)
                 if nextToken == "space", isKeywordGapAcceptable(previous: word, next: next) {
                     keyword = keyword ?? "No space"
-                    // Remove trailing space from output so next word joins directly
-                    while output.last == " " {
-                        output.removeLast()
-                    }
+                    suppressNextSpace = true  // Next word will join directly
                     index += 2
                     continue
                 }
