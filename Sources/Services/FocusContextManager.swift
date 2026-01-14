@@ -237,4 +237,10 @@ class FocusContextManager: ObservableObject {
         }
         return 0  // No delay for native apps
     }
+
+    /// Check if current focused app is a terminal/CLI
+    /// Used to adjust newline behavior (buffer instead of immediate submission)
+    func isCurrentAppTerminal() -> Bool {
+        return currentSegment?.isTerminal ?? false
+    }
 }
