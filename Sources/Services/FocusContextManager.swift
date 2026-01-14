@@ -20,7 +20,8 @@ class FocusContextManager: ObservableObject {
             bundleId == "com.googlecode.iterm2" ||
             bundleId == "io.alacritty" ||
             bundleId == "com.github.wez.wezterm" ||
-            appName?.lowercased().contains("terminal") == true
+            appName?.lowercased().contains("terminal") == true ||
+            appName?.lowercased().contains("gemini") == true
         }
 
         var isCodeEditor: Bool {

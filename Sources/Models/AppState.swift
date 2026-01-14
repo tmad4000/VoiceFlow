@@ -392,6 +392,7 @@ class AppState: ObservableObject {
     private var lastTypedTurnOrder = -1
     private var suppressNextAutoCap = false
     private var lastKeyEventTime: Date?  // For consistent Return key timing across typeText calls
+    private var bufferedTerminalNewlines: Int = 0  // Newlines to send after utterance ends (terminal mode)
 
     // Cross-utterance keyword state: tracks partial keywords that span utterance boundaries
     // e.g., "new" at end of one utterance + "line" at start of next = "new line"
@@ -1222,6 +1223,9 @@ class AppState: ObservableObject {
             }
 
             if shouldAddToHistory {
+                // Flush any buffered terminal newlines before resetting state
+                // This ensures newlines are sent after the full utterance is typed
+                flushBufferedTerminalNewlines()
                 resetUtteranceState()
             }
             currentUtteranceIsLiteral = false
@@ -3274,10 +3278,26 @@ class AppState: ObservableObject {
                     Thread.sleep(forTimeInterval: minDelayBeforeReturn)
                 }
 
-                // For terminals, try AppleScript which uses a different keystroke mechanism
-                // This may be more reliable for apps like Claude Code that might filter CGEvents
+                // For terminals (especially ink/React apps like Claude Code), we need to ensure
+                // the Return key sends \r (carriage return), not \n (line feed).
+                // Ink's useInput hook checks key.return which expects \r for submit.
+                // If \n is received, it's treated as regular input (just a newline character).
                 if isTerminal {
-                    sendReturnViaAppleScript()
+                    // Send Return key with explicit \r character and clear modifier flags
+                    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+                    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+
+                    // Explicitly set the character to \r (carriage return) for terminal apps
+                    var cr: UniChar = 0x0D  // \r = carriage return
+                    keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+                    keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+
+                    // Clear any modifier flags to avoid Shift+Enter being interpreted as newline
+                    keyDown?.flags = []
+                    keyUp?.flags = []
+
+                    keyDown?.post(tap: .cghidEventTap)
+                    keyUp?.post(tap: .cghidEventTap)
                 } else {
                     let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
                     let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
@@ -3325,6 +3345,61 @@ class AppState: ObservableObject {
                 logDebug("AppleScript error: \(error)")
             }
         }
+    }
+
+    /// Flush any buffered terminal newlines (called at end of utterance)
+    /// This sends the Return key presses that were deferred during live typing in terminal mode
+    private func flushBufferedTerminalNewlines() {
+        guard bufferedTerminalNewlines > 0 else { return }
+
+        logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s)")
+
+        let minDelayBeforeReturn: TimeInterval = 0.05
+
+        for i in 0..<bufferedTerminalNewlines {
+            // Ensure sufficient delay before Return key
+            if let lastTime = lastKeyEventTime {
+                let elapsed = Date().timeIntervalSince(lastTime)
+                let neededDelay = max(0, minDelayBeforeReturn - elapsed)
+                if neededDelay > 0 {
+                    Thread.sleep(forTimeInterval: neededDelay)
+                }
+            } else if i > 0 {
+                Thread.sleep(forTimeInterval: minDelayBeforeReturn)
+            }
+
+            // For terminals, try AppleScript which uses a different keystroke mechanism
+            // This is consistent with how we send newlines in typeText
+            let isTerminal = focusContextManager.isCurrentAppTerminal()
+            if isTerminal {
+                sendReturnViaAppleScript()
+            } else {
+                let source = CGEventSource(stateID: .hidSystemState)
+                let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+                let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+                keyDown?.post(tap: .cghidEventTap)
+                keyUp?.post(tap: .cghidEventTap)
+            }
+            lastKeyEventTime = Date()
+        }
+
+        bufferedTerminalNewlines = 0
+    }
+
+    /// Send a single Enter key press (for explicit "press enter" / "submit" command)
+    private func sendEnterKey() {
+        logDebug("Sending explicit Enter key")
+        let isTerminal = focusContextManager.isCurrentAppTerminal()
+        if isTerminal {
+            sendReturnViaAppleScript()
+        } else {
+            let source = CGEventSource(stateID: .hidSystemState)
+            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+            keyDown?.post(tap: .cghidEventTap)
+            keyUp?.post(tap: .cghidEventTap)
+        }
+        lastKeyEventTime = Date()
     }
 
     private func executeKeyboardShortcut(_ shortcut: KeyboardShortcut) {
