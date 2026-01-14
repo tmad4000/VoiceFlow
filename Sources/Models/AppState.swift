@@ -2183,8 +2183,9 @@ class AppState: ObservableObject {
     private func processVoiceCommands(_ turn: TranscriptTurn) {
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         let transcriptForPrefix = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
+        // Check both transcript AND first token (transcript may not match words accurately)
         let hasSayPrefix = isSayPrefix(transcriptForPrefix)
-            || (transcriptForPrefix.isEmpty && normalizedTokens.first?.token == "say")
+            || normalizedTokens.first?.token == "say"
         NSLog("[VoiceFlow] processVoiceCommands: transcript=\"%@\", hasSayPrefix=%d", String(transcriptForPrefix.prefix(60)), hasSayPrefix ? 1 : 0)
 
         if hasSayPrefix {
