@@ -241,11 +241,19 @@ class AppState: ObservableObject {
         ("newline", "Insert a line break"),
         ("space bar", "Insert a space"),
         ("spacebar", "Insert a space"),
+        ("no space", "Join adjacent words without space (e.g., 'idea no space flow' → 'ideaflow')"),
+        ("nospace", "Join adjacent words without space"),
         ("no caps", "Lowercase the next word"),
         ("letter [char]", "Type the next word as a single letter"),
         ("at sign [text]", "Insert @ and condense following words"),
         ("hashtag [text]", "Insert # and condense following words"),
-        ("hash tag [text]", "Insert # and condense following words")
+        ("hash tag [text]", "Insert # and condense following words"),
+        ("open paren", "Insert ("),
+        ("close paren", "Insert )"),
+        ("open bracket", "Insert ["),
+        ("close bracket", "Insert ]"),
+        ("open brace", "Insert {"),
+        ("close brace", "Insert }")
     ]
 
     var panelVisibilityHandler: ((Bool) -> Void)?
@@ -2320,6 +2328,34 @@ class AppState: ObservableObject {
                     lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
                 }
                 turnHandledBySpecialCommand = true  // Prevent dictation from also typing
+                return
+            }
+        }
+
+        // Terminal Window Focusing - "terminal [name]" focuses a terminal window by title
+        // This is a shorthand for focusing specific terminal windows (e.g., "terminal voice flow" → VoiceFlow)
+        if lowerTranscript.hasPrefix("terminal ") {
+            let windowName = String(turn.transcript.dropFirst(9)).trimmingCharacters(in: .whitespaces)
+            if !windowName.isEmpty && turn.endOfTurn {
+                logDebug("Focusing Terminal Window: \"\(windowName)\"")
+                let result = windowManager.focusTerminalWindow(named: windowName)
+                switch result {
+                case .focused(let name, _):
+                    logDebug("Terminal focus success: \"\(name)\"")
+                    triggerCommandFlash(name: name)
+                case .notFound(let query):
+                    logDebug("Terminal focus failed: no window matching \"\(query)\"")
+                    triggerCommandFlash(name: "Terminal: not found")
+                case .emptyQuery:
+                    logDebug("Terminal focus failed: empty query")
+                }
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.terminal"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
                 return
             }
         }

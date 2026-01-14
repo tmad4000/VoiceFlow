@@ -30,7 +30,16 @@ class WindowManager: ObservableObject {
         "idf flow": "ideaflow",
         "idea flow": "ideaflow",
         "ideaflow": "ideaflow",
-        "thoughtstream": "ideaflow"
+        "thoughtstream": "ideaflow",
+        "markdown": "open markdown",  // Window title for markdown editor
+        "open markdown": "open markdown"
+    ]
+
+    // Terminal window title aliases - "terminal voice flow" focuses Terminal with "VoiceFlow" in title
+    // This is a special shorthand for focusing specific terminal windows by their title
+    private let terminalWindowAliases: [String: String] = [
+        "voice flow": "voiceflow",
+        "voiceflow": "voiceflow"
     ]
     
     init() {
@@ -219,5 +228,60 @@ class WindowManager: ObservableObject {
         }
 
         return nil
+    }
+
+    /// Focus a terminal window by title - "terminal [name]" command
+    /// This is a shorthand for focusing specific terminal windows (e.g., "terminal voice flow" → VoiceFlow window)
+    func focusTerminalWindow(named query: String) -> FocusResult {
+        guard !query.isEmpty else { return .emptyQuery }
+
+        // Apply aliases (e.g., "voice flow" → "voiceflow")
+        let normalizedQuery = normalizeQuery(query)
+        let effectiveQuery = terminalWindowAliases[normalizedQuery] ?? normalizedQuery
+        let compactQuery = effectiveQuery.replacingOccurrences(of: " ", with: "")
+
+        let apps = NSWorkspace.shared.runningApplications
+        let terminalApps = [
+            "com.apple.Terminal",
+            "com.googlecode.iterm2",
+            "io.alacritty",
+            "com.github.wez.wezterm",
+            "net.kovidgoyal.kitty"
+        ]
+
+        for app in apps {
+            guard let bundleId = app.bundleIdentifier,
+                  terminalApps.contains(bundleId) else { continue }
+
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            var windowsRef: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+            guard result == .success, let windows = windowsRef as? [AXUIElement] else { continue }
+
+            for window in windows {
+                var titleRef: CFTypeRef?
+                let titleResult = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
+
+                guard titleResult == .success, let title = titleRef as? String else { continue }
+
+                let normalizedTitle = normalizeQuery(title)
+                let compactTitle = normalizedTitle.replacingOccurrences(of: " ", with: "")
+
+                let matches = normalizedTitle.contains(effectiveQuery) ||
+                              (!compactQuery.isEmpty && compactTitle.contains(compactQuery))
+
+                if matches {
+                    AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                    app.activate()
+
+                    logger.info("Focused terminal window: \"\(title)\"")
+                    return .focused(appName: "Terminal: \(title)", matchType: .windowTitle)
+                }
+            }
+        }
+
+        logger.warning("No terminal window found matching: \(query)")
+        return .notFound(query: query)
     }
 }
