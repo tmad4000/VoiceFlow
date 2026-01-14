@@ -7,6 +7,7 @@ enum FocusMatchType {
     case exact
     case prefix
     case contains
+    case windowTitle  // Matched by window title (e.g., terminal window)
 }
 
 enum FocusResult {
@@ -155,8 +156,64 @@ class WindowManager: ObservableObject {
             containsCompactMatch.app.activate()
             return .focused(appName: containsCompactMatch.app.localizedName ?? query, matchType: .contains)
         }
-        
+
+        // 4. Try matching window titles (especially useful for terminal windows)
+        if let windowMatch = focusWindowByTitle(query: normalizedQuery, compactQuery: compactQuery, apps: apps) {
+            return windowMatch
+        }
+
         logger.warning("No running app found matching: \(query)")
         return .notFound(query: query)
+    }
+
+    /// Focus a window by its title (useful for terminal windows like "VoiceFlow")
+    private func focusWindowByTitle(query: String, compactQuery: String, apps: [NSRunningApplication]) -> FocusResult? {
+        // Apps that commonly have meaningful window titles we want to search
+        let windowTitleApps = [
+            "com.apple.Terminal",
+            "com.googlecode.iterm2",
+            "io.alacritty",
+            "com.github.wez.wezterm",
+            "net.kovidgoyal.kitty",
+            "com.microsoft.VSCode",
+            "com.sublimetext.4"
+        ]
+
+        for app in apps {
+            guard let bundleId = app.bundleIdentifier,
+                  windowTitleApps.contains(bundleId) else { continue }
+
+            // Get windows for this app using Accessibility API
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            var windowsRef: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+            guard result == .success, let windows = windowsRef as? [AXUIElement] else { continue }
+
+            for window in windows {
+                var titleRef: CFTypeRef?
+                let titleResult = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
+
+                guard titleResult == .success, let title = titleRef as? String else { continue }
+
+                let normalizedTitle = normalizeQuery(title)
+                let compactTitle = normalizedTitle.replacingOccurrences(of: " ", with: "")
+
+                // Check if query matches window title
+                let matches = normalizedTitle.contains(query) ||
+                              (!compactQuery.isEmpty && compactTitle.contains(compactQuery))
+
+                if matches {
+                    // Raise this specific window and activate the app
+                    AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                    app.activate()
+
+                    logger.info("Focused window by title: \"\(title)\" in \(app.localizedName ?? "unknown")")
+                    return .focused(appName: "\(app.localizedName ?? "App"): \(title)", matchType: .windowTitle)
+                }
+            }
+        }
+
+        return nil
     }
 }

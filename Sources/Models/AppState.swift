@@ -224,6 +224,7 @@ class AppState: ObservableObject {
         ("submit dictation", "Force finalize and type current speech"),
         ("send dictation", "Force finalize and type current speech"),
         ("window recent", "Switch to previous application"),
+        ("flip", "Switch to previous application (short alias)"),
         ("window recent 2", "Switch to 2nd most recent application"),
         ("window next", "Cycle to next window in same app (⌘`)"),
         ("window previous", "Cycle to previous window in same app (⌘⇧`)"),
@@ -378,6 +379,7 @@ class AppState: ObservableObject {
     private let forceEndTimeoutSeconds: TimeInterval = 2.0
     private var lastTypedTurnOrder = -1
     private var suppressNextAutoCap = false
+    private var lastKeyEventTime: Date?  // For consistent Return key timing across typeText calls
 
     /// Effective confidence threshold based on mode
     var effectiveConfidenceThreshold: Double {
@@ -1174,6 +1176,11 @@ class AppState: ObservableObject {
             processVoiceCommands(turn)
         }
 
+        // In dictation mode, still check for "say" escape keyword (but skip other commands)
+        if initialMode == .on && activeBehavior == .dictation && !currentUtteranceIsLiteral {
+            detectSayPrefix(turn)
+        }
+
         if microphoneMode == .on && activeBehavior != .command {
             if liveDictationEnabled {
                 handleLiveDictationTurn(turn, isForceEnd: isForceEndTurn)
@@ -1665,18 +1672,10 @@ class AppState: ObservableObject {
                 let next = words[index + 1]
                 let nextToken = normalizeToken(next.text)
                 if nextToken == "line" {
-                    // Lookahead: If followed immediately by another word, likely literal "new line of..."
-                    if index + 2 < words.count {
-                        let wordAfter = words[index + 2]
-                        if isKeywordGapAcceptable(previous: next, next: wordAfter) {
-                            // Small gap to next word -> Treat as literal
-                            appendProcessedToken(word.text)
-                            index += 1
-                            continue
-                        }
-                    }
-
+                    // Check if "new" and "line" are spoken together (acceptable gap)
                     if isKeywordGapAcceptable(previous: word, next: next) {
+                        // Always treat "new line" as a newline command when spoken together
+                        // Users can say "say new line" if they want the literal text
                         keyword = keyword ?? "New line"
                         appendNewline()
                         if index + 2 < words.count, isSkippablePunctuation(words[index + 2].text) {
@@ -1786,7 +1785,7 @@ class AppState: ObservableObject {
 
             // Strip system command phrases that might leak through
             let systemCommandPhrases = [
-                "window recent two", "window recent 2", "window recent",
+                "window recent two", "window recent 2", "window recent", "flip",
                 "window previous", "window next",
                 "cancel that", "no wait",
                 "submit dictation", "send dictation",
@@ -1924,7 +1923,7 @@ class AppState: ObservableObject {
             // In literal mode (after "say"), we want to type these phrases, not strip them
             if !isLiteral {
                 let systemCommandPhrases = [
-                    "window recent two", "window recent 2", "window recent",
+                    "window recent two", "window recent 2", "window recent", "flip",
                     "window previous", "window next",
                     "cancel that", "no wait",
                     "submit dictation", "send dictation",
@@ -2019,6 +2018,25 @@ class AppState: ObservableObject {
     private struct PendingExecutionKey: Hashable {
         let key: String
         let endWordIndex: Int
+    }
+
+    /// Detect "say" prefix for literal/escape mode (used in dictation mode where full command processing is skipped)
+    private func detectSayPrefix(_ turn: TranscriptTurn) {
+        let normalizedTokens = normalizedWordTokens(from: turn.words)
+        let transcriptForPrefix = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
+        let hasSayPrefix = isSayPrefix(transcriptForPrefix)
+            || (transcriptForPrefix.isEmpty && normalizedTokens.first?.token == "say")
+
+        if hasSayPrefix {
+            currentUtteranceIsLiteral = true
+            let firstWordIndex = normalizedTokens.first?.wordIndex ?? 0
+            literalStartWordIndex = firstWordIndex + 1  // Start after the first word ("say")
+            if !didTriggerSayKeyword {
+                triggerKeywordFlash(name: "Say")
+                didTriggerSayKeyword = true
+            }
+            NSLog("[VoiceFlow] detectSayPrefix: detected 'say' in dictation mode, entering literal mode")
+        }
     }
 
     private func processVoiceCommands(_ turn: TranscriptTurn) {
@@ -2224,6 +2242,7 @@ class AppState: ObservableObject {
                 (phrase: "submit dictation", key: "system.force_end_utterance", name: "Submit", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void),
                 (phrase: "send dictation", key: "system.force_end_utterance", name: "Send", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void),
                 (phrase: "window recent", key: "system.window_recent", name: "Previous Window", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 1) } as () -> Void),
+                (phrase: "flip", key: "system.window_recent", name: "Flip", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 1) } as () -> Void),
                 (phrase: "window recent 2", key: "system.window_recent_2", name: "Previous Window 2", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 2) } as () -> Void),
                 (phrase: "window recent two", key: "system.window_recent_2", name: "Previous Window 2", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 2) } as () -> Void),
                 // Window cycling within same app (Cmd+` and Cmd+Shift+`)
@@ -2634,6 +2653,12 @@ class AppState: ObservableObject {
             return (UInt16(kVK_Home), 1)
         case "end":
             return (UInt16(kVK_End), 1)
+        case "backtick", "grave", "tilde":
+            return (UInt16(kVK_ANSI_Grave), 1)
+        case "back":
+            if nextToken == "tick" {
+                return (UInt16(kVK_ANSI_Grave), 2)  // "back tick" → `
+            }
         default:
             break
         }
@@ -2971,18 +2996,28 @@ class AppState: ObservableObject {
             logDebug("Using \(Int(interCharDelay * 1000))ms inter-character delay for browser app")
         }
 
+        let minDelayBeforeReturn: TimeInterval = 0.02  // 20ms minimum delay before Return key
+
         for char in output {
             if char == "\n" {
-                // BRAINSTORM FIX: Tiny delay to let preceding characters "settle" in the destination buffer
-                // before the Return key triggers a submission.
-                if eventsPosted > 0 {
-                    Thread.sleep(forTimeInterval: 0.01) // 10ms
+                // Ensure sufficient delay before Return key, even across typeText calls
+                // This fixes inconsistent newline submission at end of utterances
+                if let lastTime = lastKeyEventTime {
+                    let elapsed = Date().timeIntervalSince(lastTime)
+                    let neededDelay = max(0, minDelayBeforeReturn - elapsed)
+                    if neededDelay > 0 {
+                        Thread.sleep(forTimeInterval: neededDelay)
+                    }
+                } else if eventsPosted > 0 {
+                    // Fallback: delay within same call
+                    Thread.sleep(forTimeInterval: minDelayBeforeReturn)
                 }
 
                 let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
                 let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
                 keyDown?.post(tap: .cghidEventTap)
                 keyUp?.post(tap: .cghidEventTap)
+                lastKeyEventTime = Date()
                 continue
             }
 
@@ -2996,6 +3031,7 @@ class AppState: ObservableObject {
 
                 keyDown?.post(tap: .cghidEventTap)
                 keyUp?.post(tap: .cghidEventTap)
+                lastKeyEventTime = Date()
                 eventsPosted += 1
 
                 // Apply inter-character delay for apps that need slower typing (Google Docs, etc.)
