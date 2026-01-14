@@ -3255,7 +3255,7 @@ class AppState: ObservableObject {
         // Terminal UIs (Claude Code, Gemini CLI) need longer delay before Enter for reliable submission
         // Regular apps work fine with shorter delay
         let isTerminal = focusContextManager.isCurrentAppTerminal()
-        let minDelayBeforeReturn: TimeInterval = isTerminal ? 0.10 : 0.02  // 100ms for terminals, 20ms otherwise
+        let minDelayBeforeReturn: TimeInterval = isTerminal ? 0.20 : 0.02  // 200ms for terminals, 20ms otherwise
 
         for char in output {
             if char == "\n" {
