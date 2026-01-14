@@ -1444,6 +1444,66 @@ class AppState: ObservableObject {
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1$2")
         }
 
+        // Parentheses: "open paren" / "close paren" / "left paren" / "right paren"
+        if let regex = try? NSRegularExpression(pattern: "(?i)\\b(open|left)\\s*paren(thesis)?\\b", options: []) {
+            if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
+                keyword = keyword ?? "Open paren"
+            }
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "(")
+        }
+        if let regex = try? NSRegularExpression(pattern: "(?i)\\b(close|right)\\s*paren(thesis)?\\b", options: []) {
+            if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
+                keyword = keyword ?? "Close paren"
+            }
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: ")")
+        }
+
+        // Brackets: "open bracket" / "close bracket"
+        if let regex = try? NSRegularExpression(pattern: "(?i)\\b(open|left)\\s*bracket\\b", options: []) {
+            if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
+                keyword = keyword ?? "Open bracket"
+            }
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "[")
+        }
+        if let regex = try? NSRegularExpression(pattern: "(?i)\\b(close|right)\\s*bracket\\b", options: []) {
+            if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
+                keyword = keyword ?? "Close bracket"
+            }
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "]")
+        }
+
+        // Braces: "open brace" / "close brace"
+        if let regex = try? NSRegularExpression(pattern: "(?i)\\b(open|left)\\s*brace\\b", options: []) {
+            if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
+                keyword = keyword ?? "Open brace"
+            }
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "{")
+        }
+        if let regex = try? NSRegularExpression(pattern: "(?i)\\b(close|right)\\s*brace\\b", options: []) {
+            if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
+                keyword = keyword ?? "Close brace"
+            }
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "}")
+        }
+
+        // Remove space before closing punctuation
+        if let regex = try? NSRegularExpression(pattern: "\\s+([\\)\\]\\}])", options: []) {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1")
+        }
+
+        // Remove space after opening punctuation
+        if let regex = try? NSRegularExpression(pattern: "([\\(\\[\\{])\\s+", options: []) {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1")
+        }
+
         return (result, keyword)
     }
 
@@ -1704,6 +1764,53 @@ class AppState: ObservableObject {
                 if nextToken == "bar", isKeywordGapAcceptable(previous: word, next: next) {
                     keyword = keyword ?? "Spacebar"
                     appendSpace()
+                    index += 2
+                    continue
+                }
+            }
+
+            // Parentheses: "open paren" / "close paren"
+            if (token == "open" || token == "left"), index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if (nextToken == "paren" || nextToken == "parenthesis"), isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Open paren"
+                    appendToken("(")
+                    index += 2
+                    continue
+                }
+                if nextToken == "bracket", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Open bracket"
+                    appendToken("[")
+                    index += 2
+                    continue
+                }
+                if nextToken == "brace", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Open brace"
+                    appendToken("{")
+                    index += 2
+                    continue
+                }
+            }
+
+            if (token == "close" || token == "right"), index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if (nextToken == "paren" || nextToken == "parenthesis"), isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Close paren"
+                    appendToken(")")
+                    index += 2
+                    continue
+                }
+                if nextToken == "bracket", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Close bracket"
+                    appendToken("]")
+                    index += 2
+                    continue
+                }
+                if nextToken == "brace", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Close brace"
+                    appendToken("}")
                     index += 2
                     continue
                 }
