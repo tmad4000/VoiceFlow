@@ -392,7 +392,6 @@ class AppState: ObservableObject {
     private var lastTypedTurnOrder = -1
     private var suppressNextAutoCap = false
     private var lastKeyEventTime: Date?  // For consistent Return key timing across typeText calls
-    private var bufferedTerminalNewlines: Int = 0  // Newlines to send after utterance ends (terminal mode)
 
     // Cross-utterance keyword state: tracks partial keywords that span utterance boundaries
     // e.g., "new" at end of one utterance + "line" at start of next = "new line"
@@ -1223,9 +1222,6 @@ class AppState: ObservableObject {
             }
 
             if shouldAddToHistory {
-                // Flush any buffered terminal newlines before resetting state
-                // This ensures newlines are sent after the full utterance is typed
-                flushBufferedTerminalNewlines()
                 resetUtteranceState()
             }
             currentUtteranceIsLiteral = false
@@ -2490,24 +2486,6 @@ class AppState: ObservableObject {
                 (phrase: "no wait", key: "system.cancel_command", name: "Cancel", haltsProcessing: true, action: { [weak self] in self?.cancelLastCommandIfRecent() } as () -> Void),
                 (phrase: "submit dictation", key: "system.force_end_utterance", name: "Submit", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void),
                 (phrase: "send dictation", key: "system.force_end_utterance", name: "Send", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void),
-                // Explicit Enter key commands - for terminal/CLI submission when newlines are buffered
-                // These flush any buffered newlines and send an additional Enter
-                (phrase: "press enter", key: "system.press_enter", name: "Enter", haltsProcessing: true, action: { [weak self] in
-                    self?.flushBufferedTerminalNewlines()
-                    self?.sendEnterKey()
-                } as () -> Void),
-                (phrase: "press return", key: "system.press_enter", name: "Return", haltsProcessing: true, action: { [weak self] in
-                    self?.flushBufferedTerminalNewlines()
-                    self?.sendEnterKey()
-                } as () -> Void),
-                (phrase: "submit", key: "system.press_enter", name: "Submit", haltsProcessing: true, action: { [weak self] in
-                    self?.flushBufferedTerminalNewlines()
-                    self?.sendEnterKey()
-                } as () -> Void),
-                (phrase: "send", key: "system.press_enter", name: "Send", haltsProcessing: true, action: { [weak self] in
-                    self?.flushBufferedTerminalNewlines()
-                    self?.sendEnterKey()
-                } as () -> Void),
                 (phrase: "window recent", key: "system.window_recent", name: "Previous Window", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 1) } as () -> Void),
                 (phrase: "flip", key: "system.window_recent", name: "Flip", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 1) } as () -> Void),
                 (phrase: "window recent 2", key: "system.window_recent_2", name: "Previous Window 2", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 2) } as () -> Void),
@@ -2643,7 +2621,6 @@ class AppState: ObservableObject {
         forceEndPending = false
         forceEndRequestedAt = nil
         suppressNextAutoCap = false
-        bufferedTerminalNewlines = 0  // Reset buffer (should already be flushed, but safety)
         // Note: We intentionally DON'T reset pendingCrossUtteranceKeyword here
         // because it needs to persist across utterances for cross-utterance keyword detection
     }
@@ -3230,7 +3207,7 @@ class AppState: ObservableObject {
         return result
     }
 
-    private func typeText(_ text: String, appendSpace: Bool, bufferNewlinesForTerminal: Bool = true) {
+    private func typeText(_ text: String, appendSpace: Bool) {
         // Check accessibility first
         guard AXIsProcessTrusted() else {
             let msg = "Cannot type - Accessibility permission NOT granted"
@@ -3248,15 +3225,10 @@ class AppState: ObservableObject {
             logDebug("Target app: Unknown (no frontmost app)")
         }
 
-        // In terminal mode, buffer newlines until end of utterance to prevent premature command submission
-        // This fixes the issue where saying "hello newline world" would submit "hello" immediately
-        let isTerminal = focusContextManager.isCurrentAppTerminal()
-        let shouldBufferNewlines = isTerminal && bufferNewlinesForTerminal
-
         // Don't append space after newlines - it looks wrong
         let shouldAppendSpace = appendSpace && !text.hasSuffix("\n")
         let output = shouldAppendSpace ? text + " " : text
-        logDebug("Posting CGKEvents for: \"\(output.replacingOccurrences(of: "\n", with: "\\n"))\" (\(output.count) chars)\(shouldBufferNewlines ? " [terminal: buffering newlines]" : "")")
+        logDebug("Posting CGKEvents for: \"\(output.replacingOccurrences(of: "\n", with: "\\n"))\" (\(output.count) chars)")
 
         // Add to history (only non-empty text)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3287,14 +3259,6 @@ class AppState: ObservableObject {
 
         for char in output {
             if char == "\n" {
-                // In terminal mode, buffer newlines instead of sending immediately
-                // This prevents premature command submission when saying "hello newline world"
-                if shouldBufferNewlines {
-                    bufferedTerminalNewlines += 1
-                    logDebug("Buffered terminal newline (total: \(bufferedTerminalNewlines))")
-                    continue
-                }
-
                 // Ensure sufficient delay before Return key, even across typeText calls
                 // This fixes inconsistent newline submission at end of utterances
                 // Terminal UIs (like Claude Code) need time to process the keypress as "submit"
@@ -3338,49 +3302,6 @@ class AppState: ObservableObject {
             }
         }
         logger.debug("Successfully posted \(eventsPosted) character events")
-    }
-
-    /// Flush any buffered terminal newlines (called at end of utterance)
-    /// This sends the Return key presses that were deferred during live typing in terminal mode
-    private func flushBufferedTerminalNewlines() {
-        guard bufferedTerminalNewlines > 0 else { return }
-
-        logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s)")
-
-        let source = CGEventSource(stateID: .hidSystemState)
-        let minDelayBeforeReturn: TimeInterval = 0.02
-
-        for i in 0..<bufferedTerminalNewlines {
-            // Ensure sufficient delay before Return key
-            if let lastTime = lastKeyEventTime {
-                let elapsed = Date().timeIntervalSince(lastTime)
-                let neededDelay = max(0, minDelayBeforeReturn - elapsed)
-                if neededDelay > 0 {
-                    Thread.sleep(forTimeInterval: neededDelay)
-                }
-            } else if i > 0 {
-                Thread.sleep(forTimeInterval: minDelayBeforeReturn)
-            }
-
-            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-            keyDown?.post(tap: .cghidEventTap)
-            keyUp?.post(tap: .cghidEventTap)
-            lastKeyEventTime = Date()
-        }
-
-        bufferedTerminalNewlines = 0
-    }
-
-    /// Send a single Enter key press (for explicit "press enter" / "submit" command)
-    private func sendEnterKey() {
-        logDebug("Sending explicit Enter key")
-        let source = CGEventSource(stateID: .hidSystemState)
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-        keyDown?.post(tap: .cghidEventTap)
-        keyUp?.post(tap: .cghidEventTap)
-        lastKeyEventTime = Date()
     }
 
     private func executeKeyboardShortcut(_ shortcut: KeyboardShortcut) {
