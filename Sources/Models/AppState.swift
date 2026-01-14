@@ -1419,7 +1419,17 @@ class AppState: ObservableObject {
             let range = NSRange(result.startIndex..<result.endIndex, in: result)
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: " ")
         }
-        
+
+        // "no space" / "nospace" - removes space between adjacent words
+        // e.g., "idea no space flow" → "ideaflow"
+        if let regex = try? NSRegularExpression(pattern: "(?i)\\s+no\\s*space\\s+", options: []) {
+            if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
+                keyword = keyword ?? "No space"
+            }
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+        }
+
         // "at sign" -> "@"
         if let regex = try? NSRegularExpression(pattern: "(?i)\\bat\\s*sign\\b", options: []) {
             if regex.firstMatch(in: result, options: [], range: NSRange(location: 0, length: result.utf16.count)) != nil {
@@ -1764,6 +1774,32 @@ class AppState: ObservableObject {
                 if nextToken == "bar", isKeywordGapAcceptable(previous: word, next: next) {
                     keyword = keyword ?? "Spacebar"
                     appendSpace()
+                    index += 2
+                    continue
+                }
+            }
+
+            // "nospace" or "no space" - joins adjacent words without space
+            // e.g., "idea no space flow" → "ideaflow"
+            if token == "nospace" {
+                keyword = keyword ?? "No space"
+                // Remove trailing space from output so next word joins directly
+                while output.last == " " {
+                    output.removeLast()
+                }
+                index += 1
+                continue
+            }
+
+            if token == "no", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "space", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "No space"
+                    // Remove trailing space from output so next word joins directly
+                    while output.last == " " {
+                        output.removeLast()
+                    }
                     index += 2
                     continue
                 }
