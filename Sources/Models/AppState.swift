@@ -2024,8 +2024,9 @@ class AppState: ObservableObject {
     private func detectSayPrefix(_ turn: TranscriptTurn) {
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         let transcriptForPrefix = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
+        // Check both transcript prefix AND first word token (transcript may not reflect words accurately)
         let hasSayPrefix = isSayPrefix(transcriptForPrefix)
-            || (transcriptForPrefix.isEmpty && normalizedTokens.first?.token == "say")
+            || normalizedTokens.first?.token == "say"
 
         if hasSayPrefix {
             currentUtteranceIsLiteral = true

@@ -26,7 +26,11 @@ class WindowManager: ObservableObject {
         "message": "messages",
         "messages app": "messages",
         "one password": "1password",
-        "onepassword": "1password"
+        "onepassword": "1password",
+        "idf flow": "ideaflow",
+        "idea flow": "ideaflow",
+        "ideaflow": "ideaflow",
+        "thoughtstream": "ideaflow"
     ]
     
     init() {
