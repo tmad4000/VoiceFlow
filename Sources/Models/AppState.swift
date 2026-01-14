@@ -3255,7 +3255,7 @@ class AppState: ObservableObject {
         // Terminal UIs (Claude Code, Gemini CLI) need longer delay before Enter for reliable submission
         // Regular apps work fine with shorter delay
         let isTerminal = focusContextManager.isCurrentAppTerminal()
-        let minDelayBeforeReturn: TimeInterval = isTerminal ? 0.20 : 0.02  // 200ms for terminals, 20ms otherwise
+        let minDelayBeforeReturn: TimeInterval = isTerminal ? 0.50 : 0.02  // 500ms for terminals (testing), 20ms otherwise
 
         for char in output {
             if char == "\n" {
@@ -3279,6 +3279,11 @@ class AppState: ObservableObject {
                 keyDown?.post(tap: .cghidEventTap)
                 keyUp?.post(tap: .cghidEventTap)
                 lastKeyEventTime = Date()
+
+                // Additional delay after Enter for terminal UIs to process the submission
+                if isTerminal {
+                    Thread.sleep(forTimeInterval: 0.10)  // 100ms after Enter
+                }
                 continue
             }
 
