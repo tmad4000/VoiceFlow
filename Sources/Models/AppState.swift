@@ -394,6 +394,12 @@ class AppState: ObservableObject {
     private var lastKeyEventTime: Date?  // For consistent Return key timing across typeText calls
     private var bufferedTerminalNewlines: Int = 0  // Newlines to send after utterance ends (terminal mode)
 
+    // Cross-utterance keyword state: tracks partial keywords that span utterance boundaries
+    // e.g., "new" at end of one utterance + "line" at start of next = "new line"
+    private var pendingCrossUtteranceKeyword: String? = nil
+    private var pendingCrossUtteranceTime: Date? = nil
+    private let crossUtteranceKeywordWindowSeconds: TimeInterval = 2.0  // Max time to wait for continuation
+
     /// Effective confidence threshold based on mode
     var effectiveConfidenceThreshold: Double {
         utteranceMode == .custom ? customConfidenceThreshold : utteranceMode.confidenceThreshold
@@ -1558,6 +1564,38 @@ class AppState: ObservableObject {
         var letterNext = false
         var suppressNextSpace = false  // For "no space" command
         let maxTagWords = 4
+        var consumedFirstWordForCrossUtterance = false
+
+        // === CROSS-UTTERANCE KEYWORD HANDLING ===
+        // Check if we have a pending "new" from the previous utterance and current starts with "line"
+        if let pending = pendingCrossUtteranceKeyword,
+           let pendingTime = pendingCrossUtteranceTime,
+           Date().timeIntervalSince(pendingTime) < crossUtteranceKeywordWindowSeconds,
+           !words.isEmpty {
+            let firstToken = normalizeToken(words[0].text)
+            if pending == "new" && firstToken == "line" {
+                logDebug("Cross-utterance 'new line' detected! Previous utterance ended with 'new', this one starts with 'line'")
+                // We'll prepend a newline and skip the first word
+                output = "\n"
+                keyword = "New line"
+                consumedFirstWordForCrossUtterance = true
+                triggerKeywordFlash(name: "New line")
+            } else {
+                // The pending keyword wasn't completed, output it
+                logDebug("Cross-utterance keyword '\(pending)' not continued (got '\(firstToken)'), outputting it")
+                output = pending + " "
+            }
+            pendingCrossUtteranceKeyword = nil
+            pendingCrossUtteranceTime = nil
+        } else if pendingCrossUtteranceKeyword != nil {
+            // Pending keyword timed out
+            logDebug("Cross-utterance keyword timed out")
+            if let pending = pendingCrossUtteranceKeyword {
+                output = pending + " "
+            }
+            pendingCrossUtteranceKeyword = nil
+            pendingCrossUtteranceTime = nil
+        }
 
         func appendNewline() {
             while output.last == " " {
@@ -1685,7 +1723,8 @@ class AppState: ObservableObject {
             return consumed
         }
 
-        var index = 0
+        // Skip first word if it was consumed by cross-utterance keyword handling
+        var index = consumedFirstWordForCrossUtterance ? 1 : 0
         while index < words.count {
             let word = words[index]
             let token = normalizeToken(word.text)
@@ -1867,6 +1906,30 @@ class AppState: ObservableObject {
 
             appendProcessedToken(word.text)
             index += 1
+        }
+
+        // === CROSS-UTTERANCE PENDING DETECTION ===
+        // Check if output ends with "new" (without "line" following) - set as pending for next utterance
+        // This handles the case where "new line" is split across utterance boundaries
+        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let outputWords = trimmedOutput.lowercased().split(separator: " ")
+        if let lastWord = outputWords.last, lastWord == "new" {
+            // Check if this "new" is isolated at the end (not part of "new line" which was already processed)
+            // We should only set pending if:
+            // 1. The output ends with "new"
+            // 2. There's no "line" after it (which there shouldn't be if we're here)
+            logDebug("Utterance ends with 'new' - saving as pending for potential cross-utterance 'new line'")
+            pendingCrossUtteranceKeyword = "new"
+            pendingCrossUtteranceTime = Date()
+            // Remove "new" from output - we'll output it later if needed
+            if let range = output.range(of: "new", options: [.backwards, .caseInsensitive]) {
+                // Only remove if it's at the end (possibly with trailing space)
+                let afterNew = output[range.upperBound...]
+                if afterNew.trimmingCharacters(in: .whitespaces).isEmpty {
+                    output = String(output[..<range.lowerBound])
+                    logDebug("Removed trailing 'new' from output, will be handled in next utterance")
+                }
+            }
         }
 
         return (output, keyword)
@@ -2581,6 +2644,8 @@ class AppState: ObservableObject {
         forceEndRequestedAt = nil
         suppressNextAutoCap = false
         bufferedTerminalNewlines = 0  // Reset buffer (should already be flushed, but safety)
+        // Note: We intentionally DON'T reset pendingCrossUtteranceKeyword here
+        // because it needs to persist across utterances for cross-utterance keyword detection
     }
 
     private func isSayPrefix(_ text: String) -> Bool {
