@@ -3248,7 +3248,10 @@ class AppState: ObservableObject {
             logDebug("Using \(Int(interCharDelay * 1000))ms inter-character delay for browser app")
         }
 
-        let minDelayBeforeReturn: TimeInterval = 0.10  // 100ms minimum delay before Return key
+        // Terminal UIs (Claude Code, Gemini CLI) need longer delay before Enter for reliable submission
+        // Regular apps work fine with shorter delay
+        let isTerminal = focusContextManager.isCurrentAppTerminal()
+        let minDelayBeforeReturn: TimeInterval = isTerminal ? 0.10 : 0.02  // 100ms for terminals, 20ms otherwise
 
         for char in output {
             if char == "\n" {

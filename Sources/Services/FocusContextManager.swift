@@ -238,4 +238,10 @@ class FocusContextManager: ObservableObject {
         }
         return 0  // No delay for native apps
     }
+
+    /// Check if current focused app is a terminal/CLI
+    /// Used to apply longer Enter key delay for terminal UIs
+    func isCurrentAppTerminal() -> Bool {
+        return currentSegment?.isTerminal ?? false
+    }
 }
