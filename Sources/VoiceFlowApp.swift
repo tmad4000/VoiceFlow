@@ -475,6 +475,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 Task { @MainActor in
                     if isPTTPressed {
+                        // Cancel any pending sleep from previous PTT release
+                        self.appState.cancelPendingPTTSleep()
                         if self.appState.microphoneMode != .on {
                             self.appState.setMode(.on)
                             self.pttActivatedOnMode = true  // Mark that PTT activated On mode
@@ -483,15 +485,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     } else if isPTTReleased {
                         // Only trigger sleep if PTT was actually used to enter On mode
                         if self.appState.microphoneMode == .on && self.pttActivatedOnMode {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                Task { @MainActor in
-                                    if self.appState.microphoneMode == .on && self.pttActivatedOnMode {
-                                        self.appState.setMode(.sleep)
-                                        self.pttActivatedOnMode = false  // Reset flag
-                                        self.appState.logDebug("PTT: SLEEP")
-                                    }
-                                }
-                            }
+                            self.pttActivatedOnMode = false  // Reset flag
+                            // Wait for finalized text before switching to sleep
+                            self.appState.requestGracefulSleep()
                         }
                     }
                 }

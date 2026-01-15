@@ -387,6 +387,8 @@ class AppState: ObservableObject {
     private var typedFinalWordCount = 0
     private var didTypeDictationThisUtterance = false
     private var hasTypedInSession = false  // Tracks if we've typed anything since going On
+    private var pendingPTTSleep = false  // When true, switch to sleep after receiving endOfTurn
+    private var pttSleepTimeoutTask: Task<Void, Never>?  // Fallback timeout for PTT sleep
     private var forceEndPending = false
     private var forceEndRequestedAt: Date?
     private let forceEndTimeoutSeconds: TimeInterval = 2.0
@@ -1238,6 +1240,15 @@ class AppState: ObservableObject {
             currentUtteranceIsLiteral = false
             didTriggerSayKeyword = false
             turnHandledBySpecialCommand = false
+
+            // Handle pending PTT sleep - switch to sleep after finalized text is received
+            if pendingPTTSleep {
+                logDebug("PTT: Received finalized text, switching to sleep")
+                pendingPTTSleep = false
+                pttSleepTimeoutTask?.cancel()
+                pttSleepTimeoutTask = nil
+                setMode(.sleep)
+            }
         }
     }
 
@@ -3969,6 +3980,40 @@ class AppState: ObservableObject {
         pttShortcut = shortcut
         if let data = try? JSONEncoder().encode(shortcut) {
             UserDefaults.standard.set(data, forKey: "shortcut_ptt")
+        }
+    }
+
+    /// Request graceful transition to sleep mode - waits for finalized text before switching
+    /// Called when PTT is released so we don't cut off mid-word
+    func requestGracefulSleep() {
+        guard microphoneMode == .on else { return }
+
+        logDebug("PTT: Requesting graceful sleep, waiting for finalized text")
+        pendingPTTSleep = true
+
+        // Tell the speech service to finalize current utterance
+        assemblyAIService?.forceEndUtterance()
+        appleSpeechService?.forceEndUtterance()
+
+        // Set a timeout - if we don't get a final turn within 2 seconds, force sleep
+        pttSleepTimeoutTask?.cancel()
+        pttSleepTimeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
+            if self.pendingPTTSleep {
+                self.logDebug("PTT: Timeout waiting for finalized text, forcing sleep")
+                self.pendingPTTSleep = false
+                self.setMode(.sleep)
+            }
+        }
+    }
+
+    /// Cancel pending PTT sleep (e.g., if PTT is pressed again)
+    func cancelPendingPTTSleep() {
+        if pendingPTTSleep {
+            logDebug("PTT: Cancelling pending sleep")
+            pendingPTTSleep = false
+            pttSleepTimeoutTask?.cancel()
+            pttSleepTimeoutTask = nil
         }
     }
 
