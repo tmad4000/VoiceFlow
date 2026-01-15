@@ -149,7 +149,9 @@ struct CommandPanelView: View {
     }
 
     private var canSend: Bool {
-        appState.isClaudeConnected && !inputText.trimmingCharacters(in: .whitespaces).isEmpty
+        appState.isClaudeConnected &&
+        !appState.isClaudeProcessing &&
+        !inputText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     // MARK: - Actions
