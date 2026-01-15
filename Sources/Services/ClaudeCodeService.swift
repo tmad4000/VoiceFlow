@@ -89,7 +89,8 @@ class ClaudeCodeService: ObservableObject {
         process.executableURL = URL(fileURLWithPath: claudePath)
         var args = [
             "--dangerously-skip-permissions",
-            "--output-format", "stream-json"
+            "--output-format", "stream-json",
+            "--verbose"
         ]
         // Add model flag if specified
         if let model = model {
