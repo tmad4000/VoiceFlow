@@ -72,6 +72,15 @@ struct MenuBarView: View {
                 }
             }
 
+            Button {
+                appState.toggleCommandPanel()
+            } label: {
+                HStack {
+                    Image(systemName: "terminal")
+                    Text(appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code")
+                }
+            }
+
             Button("Settings...") {
                 NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
