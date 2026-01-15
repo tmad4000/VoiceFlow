@@ -362,6 +362,7 @@ class AppState: ObservableObject {
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
     private var currentUtteranceIsLiteral = false
+    private var pendingLiteralMode = false  // Persists "say" literal mode across turn boundaries
     private var literalStartWordIndex: Int = 0  // Word index AFTER "say" keyword
     private var lastHaltingCommandEndIndex = -1
     private var wakeUpTime: Date?
@@ -1805,6 +1806,7 @@ class AppState: ObservableObject {
                         // Always treat "new line" as a newline command when spoken together
                         // Users can say "say new line" if they want the literal text
                         keyword = keyword ?? "New line"
+                        logDebug("Keyword \"new line\" detected at word index \(index), appending newline")
                         appendNewline()
                         if index + 2 < words.count, isSkippablePunctuation(words[index + 2].text) {
                             index += 3
@@ -2241,6 +2243,14 @@ class AppState: ObservableObject {
 
     /// Detect "say" prefix for literal/escape mode (used in dictation mode where full command processing is skipped)
     private func detectSayPrefix(_ turn: TranscriptTurn) {
+        // Check if previous turn ended with "say" alone - restore literal mode
+        if pendingLiteralMode {
+            currentUtteranceIsLiteral = true
+            pendingLiteralMode = false
+            literalStartWordIndex = 0  // Start from beginning since "say" was in previous turn
+            NSLog("[VoiceFlow] detectSayPrefix: restored literal mode from pending (cross-turn 'say')")
+        }
+
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         let transcriptForPrefix = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
         // Check both transcript prefix AND first word token (transcript may not reflect words accurately)
@@ -2256,10 +2266,25 @@ class AppState: ObservableObject {
                 didTriggerSayKeyword = true
             }
             NSLog("[VoiceFlow] detectSayPrefix: detected 'say' in dictation mode, entering literal mode")
+
+            // If turn ends with just "say" (no content after), set pending for next turn
+            let wordsAfterSay = normalizedTokens.dropFirst()
+            if turn.endOfTurn && wordsAfterSay.isEmpty {
+                pendingLiteralMode = true
+                NSLog("[VoiceFlow] detectSayPrefix: 'say' alone at end of turn, setting pendingLiteralMode")
+            }
         }
     }
 
     private func processVoiceCommands(_ turn: TranscriptTurn) {
+        // Check if previous turn ended with "say" alone - restore literal mode
+        if pendingLiteralMode {
+            currentUtteranceIsLiteral = true
+            pendingLiteralMode = false
+            literalStartWordIndex = 0  // Start from beginning since "say" was in previous turn
+            NSLog("[VoiceFlow] processVoiceCommands: restored literal mode from pending (cross-turn 'say')")
+        }
+
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         let transcriptForPrefix = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
         // Check both transcript AND first token (transcript may not match words accurately)
@@ -2276,6 +2301,13 @@ class AppState: ObservableObject {
                 didTriggerSayKeyword = true
             }
             logger.debug("Utterance starts with 'say', skipping command processing")
+
+            // If turn ends with just "say" (no content after), set pending for next turn
+            let wordsAfterSay = normalizedTokens.dropFirst()
+            if turn.endOfTurn && wordsAfterSay.isEmpty {
+                pendingLiteralMode = true
+                NSLog("[VoiceFlow] processVoiceCommands: 'say' alone at end of turn, setting pendingLiteralMode")
+            }
             return
         }
         if currentUtteranceIsLiteral {
@@ -2625,8 +2657,9 @@ class AppState: ObservableObject {
         forceEndPending = false
         forceEndRequestedAt = nil
         suppressNextAutoCap = false
-        // Note: We intentionally DON'T reset pendingCrossUtteranceKeyword here
-        // because it needs to persist across utterances for cross-utterance keyword detection
+        // Note: We intentionally DON'T reset these flags here because they persist across utterances:
+        // - pendingCrossUtteranceKeyword: for cross-utterance keyword detection (e.g., "new" + "line")
+        // - pendingLiteralMode: for cross-turn "say" escape (e.g., "say" + [pause] + "newline")
     }
 
     private func isSayPrefix(_ text: String) -> Bool {
@@ -3263,6 +3296,7 @@ class AppState: ObservableObject {
 
         for char in output {
             if char == "\n" {
+                logDebug("Sending Return key for newline (isTerminal=\(isTerminal))")
                 // Ensure sufficient delay before Return key, even across typeText calls
                 // This fixes inconsistent newline submission at end of utterances
                 // Terminal UIs (like Claude Code) need time to process the keypress as "submit"
