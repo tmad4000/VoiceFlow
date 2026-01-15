@@ -56,6 +56,16 @@ class ClaudeCodeService: ObservableObject {
             return
         }
 
+        // Verify working directory exists
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: workingDirectory, isDirectory: &isDir), isDir.boolValue else {
+            let error = "Working directory does not exist: \(workingDirectory)"
+            NSLog("[ClaudeCode] \(error)")
+            lastError = error
+            onEvent?(.error(error))
+            return
+        }
+
         NSLog("[ClaudeCode] Starting claude process in \(workingDirectory)")
 
         let process = Process()
@@ -79,6 +89,20 @@ class ClaudeCodeService: ObservableObject {
             "--output-format", "stream-json"
         ]
         process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
+
+        // Inherit environment and add common paths for node, etc.
+        var env = ProcessInfo.processInfo.environment
+        let homeDir = NSHomeDirectory()
+        let additionalPaths = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "\(homeDir)/.nvm/versions/node/*/bin",
+            "\(homeDir)/.local/bin"
+        ]
+        if let existingPath = env["PATH"] {
+            env["PATH"] = additionalPaths.joined(separator: ":") + ":" + existingPath
+        }
+        process.environment = env
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
@@ -175,6 +199,7 @@ class ClaudeCodeService: ObservableObject {
     // MARK: - Output Parsing
 
     private func handleStdout(_ text: String) {
+        NSLog("[ClaudeCode] Raw stdout: \(text.prefix(500))")
         outputBuffer += text
 
         // Process complete JSON lines
@@ -202,11 +227,16 @@ class ClaudeCodeService: ObservableObject {
 
         do {
             if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                NSLog("[ClaudeCode] Parsed JSON event type: \(json["type"] as? String ?? "unknown")")
                 handleJSONEvent(json)
             }
         } catch {
             // Not valid JSON - might be plain text output
-            NSLog("[ClaudeCode] Non-JSON output: \(line.prefix(100))")
+            NSLog("[ClaudeCode] Non-JSON output: \(line.prefix(200))")
+            // If it looks like a prompt or status, emit as text chunk
+            if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                onEvent?(.textChunk(line + "\n"))
+            }
         }
     }
 
@@ -271,8 +301,22 @@ class ClaudeCodeService: ObservableObject {
             isProcessing = false
             onEvent?(.error(errorMsg))
 
+        case "system":
+            // System message/prompt - can be ignored or logged
+            if let message = json["message"] as? String {
+                NSLog("[ClaudeCode] System: \(message.prefix(100))")
+            }
+
+        case "user":
+            // Echo of user input - can be ignored
+            break
+
+        case "init":
+            // Initialization complete
+            NSLog("[ClaudeCode] Init event received")
+
         default:
-            NSLog("[ClaudeCode] Unknown event type: \(type)")
+            NSLog("[ClaudeCode] Unknown event type: \(type) - \(json)")
         }
     }
 

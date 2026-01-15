@@ -32,6 +32,9 @@ struct CommandPanelView: View {
         .onAppear {
             isInputFocused = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CommandPanelShouldFocusInput"))) { _ in
+            isInputFocused = true
+        }
     }
 
     // MARK: - Header

@@ -328,7 +328,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let commandPanelWindow else { return }
         positionCommandPanelWindow(commandPanelWindow)
+
+        // Activate the app briefly to allow keyboard focus
+        NSApp.activate(ignoringOtherApps: true)
         commandPanelWindow.makeKeyAndOrderFront(nil)
+
+        // Post notification to focus the text field
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("CommandPanelShouldFocusInput"),
+                object: nil
+            )
+        }
     }
 
     @objc func hideCommandPanel() {
