@@ -210,7 +210,7 @@ class AppState: ObservableObject {
     @Published var commandMessageQueue: [String] = []
     @Published var isClaudeProcessing: Bool = false
     @Published var isClaudeConnected: Bool = false
-    @Published var commandWorkingDirectory: String = "~/code/ai-os"
+    @Published var commandWorkingDirectory: String = "~/code/ai-os-apple-data/workspace"
     @Published var commandError: String?
     @Published var inlineCommandResponse: CommandMessage?
     @Published var showInlineResponse: Bool = false
