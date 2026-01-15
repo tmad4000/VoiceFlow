@@ -95,6 +95,31 @@ enum DictationProvider: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+/// Claude model options for command panel
+enum ClaudeModel: String, CaseIterable, Codable, Identifiable {
+    case opus = "opus"
+    case sonnet = "sonnet"
+    case haiku = "haiku"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .opus: return "Opus (Smartest)"
+        case .sonnet: return "Sonnet (Balanced)"
+        case .haiku: return "Haiku (Fastest)"
+        }
+    }
+
+    var cliFlag: String? {
+        switch self {
+        case .opus: return "opus"
+        case .sonnet: return nil  // Default, no flag needed
+        case .haiku: return "haiku"
+        }
+    }
+}
+
 struct AppWarning: Identifiable {
     let id: String
     let message: String
@@ -191,7 +216,8 @@ class AppState: ObservableObject {
     @Published var modeOnShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_1), modifiers: [.control, .option, .command])
     @Published var modeSleepShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_2), modifiers: [.control, .option, .command])
     @Published var modeOffShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_0), modifiers: [.control, .option, .command])
-    
+    @Published var commandPanelShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_C), modifiers: [.control, .option])  // Ctrl+Opt+C
+
     #if DEBUG
     @Published var isDebugMode: Bool = true
     #else
@@ -214,6 +240,9 @@ class AppState: ObservableObject {
     @Published var commandError: String?
     @Published var inlineCommandResponse: CommandMessage?
     @Published var showInlineResponse: Bool = false
+    @Published var claudeModel: ClaudeModel = .sonnet
+    @Published var claudeDebugLog: [String] = []
+    @Published var showClaudeDebugPanel: Bool = false
     var claudeCodeService: ClaudeCodeService?
 
     let focusContextManager = FocusContextManager()
@@ -4189,7 +4218,10 @@ class AppState: ObservableObject {
 
         // Start Claude Code service if needed
         if claudeCodeService == nil {
-            claudeCodeService = ClaudeCodeService(workingDirectory: commandWorkingDirectory)
+            claudeCodeService = ClaudeCodeService(
+                workingDirectory: commandWorkingDirectory,
+                model: claudeModel.cliFlag
+            )
             setupClaudeCodeEventHandler()
         }
         claudeCodeService?.start()
@@ -4227,7 +4259,10 @@ class AppState: ObservableObject {
     func executeInlineCommand(_ text: String) {
         // Ensure service is running
         if claudeCodeService == nil {
-            claudeCodeService = ClaudeCodeService(workingDirectory: commandWorkingDirectory)
+            claudeCodeService = ClaudeCodeService(
+                workingDirectory: commandWorkingDirectory,
+                model: claudeModel.cliFlag
+            )
             setupClaudeCodeEventHandler()
         }
         if !isClaudeConnected {
@@ -4251,6 +4286,15 @@ class AppState: ObservableObject {
         claudeCodeService?.onEvent = { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.handleClaudeEvent(event)
+            }
+        }
+        claudeCodeService?.onDebugLog = { [weak self] logEntry in
+            Task { @MainActor [weak self] in
+                self?.claudeDebugLog.append(logEntry)
+                // Keep only last 200 entries
+                if self?.claudeDebugLog.count ?? 0 > 200 {
+                    self?.claudeDebugLog.removeFirst()
+                }
             }
         }
     }

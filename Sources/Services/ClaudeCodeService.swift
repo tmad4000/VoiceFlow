@@ -32,12 +32,15 @@ class ClaudeCodeService: ObservableObject {
     private var outputBuffer: String = ""
 
     let workingDirectory: String
+    var model: String?  // e.g., "opus", "haiku", or nil for default (sonnet)
     var onEvent: ((ClaudeEvent) -> Void)?
+    var onDebugLog: ((String) -> Void)?  // For debug panel
 
     // MARK: - Initialization
 
-    init(workingDirectory: String = "~/ai-os") {
+    init(workingDirectory: String = "~/ai-os", model: String? = nil) {
         self.workingDirectory = (workingDirectory as NSString).expandingTildeInPath
+        self.model = model
     }
 
     nonisolated func cleanup() {
@@ -84,10 +87,16 @@ class ClaudeCodeService: ObservableObject {
         }
 
         process.executableURL = URL(fileURLWithPath: claudePath)
-        process.arguments = [
+        var args = [
             "--dangerously-skip-permissions",
             "--output-format", "stream-json"
         ]
+        // Add model flag if specified
+        if let model = model {
+            args.append(contentsOf: ["--model", model])
+            debugLog("Using model: \(model)")
+        }
+        process.arguments = args
         process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
 
         // Inherit environment and add common paths for node, etc.
@@ -178,6 +187,18 @@ class ClaudeCodeService: ObservableObject {
         }
     }
 
+    /// Interrupt the current request (send SIGINT)
+    func interrupt() {
+        guard let process = process, process.isRunning else {
+            NSLog("[ClaudeCode] Cannot interrupt - process not running")
+            return
+        }
+
+        NSLog("[ClaudeCode] Sending SIGINT to interrupt current request")
+        process.interrupt()  // Sends SIGINT
+        isProcessing = false
+    }
+
     /// Send a message to Claude
     func send(_ message: String) {
         guard let stdinPipe = stdinPipe, process?.isRunning == true else {
@@ -199,7 +220,7 @@ class ClaudeCodeService: ObservableObject {
     // MARK: - Output Parsing
 
     private func handleStdout(_ text: String) {
-        NSLog("[ClaudeCode] Raw stdout: \(text.prefix(500))")
+        debugLog("stdout: \(text.prefix(300))")
         outputBuffer += text
 
         // Process complete JSON lines
@@ -214,7 +235,7 @@ class ClaudeCodeService: ObservableObject {
     }
 
     private func handleStderr(_ text: String) {
-        NSLog("[ClaudeCode] stderr: \(text)")
+        debugLog("stderr: \(text)")
         // stderr is often just informational, but log errors
         if text.lowercased().contains("error") {
             lastError = text
@@ -227,12 +248,13 @@ class ClaudeCodeService: ObservableObject {
 
         do {
             if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                NSLog("[ClaudeCode] Parsed JSON event type: \(json["type"] as? String ?? "unknown")")
+                let eventType = json["type"] as? String ?? "unknown"
+                debugLog("JSON event: \(eventType)")
                 handleJSONEvent(json)
             }
         } catch {
             // Not valid JSON - might be plain text output
-            NSLog("[ClaudeCode] Non-JSON output: \(line.prefix(200))")
+            debugLog("Non-JSON: \(line.prefix(100))")
             // If it looks like a prompt or status, emit as text chunk
             if !line.trimmingCharacters(in: .whitespaces).isEmpty {
                 onEvent?(.textChunk(line + "\n"))
@@ -358,5 +380,12 @@ class ClaudeCodeService: ObservableObject {
 
         // Default fallback
         return "/usr/local/bin/claude"
+    }
+
+    private func debugLog(_ message: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let logEntry = "[\(timestamp)] \(message)"
+        NSLog("[ClaudeCode] \(message)")
+        onDebugLog?(logEntry)
     }
 }

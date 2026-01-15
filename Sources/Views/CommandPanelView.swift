@@ -16,6 +16,13 @@ struct CommandPanelView: View {
             Divider()
                 .background(Color.white.opacity(0.1))
 
+            // Debug panel (collapsible)
+            if appState.showClaudeDebugPanel {
+                debugPanel
+                Divider()
+                    .background(Color.white.opacity(0.1))
+            }
+
             // Messages
             messageList
 
@@ -40,7 +47,7 @@ struct CommandPanelView: View {
     // MARK: - Header
 
     private var headerBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             // Working directory indicator
             HStack(spacing: 4) {
                 Image(systemName: "folder.fill")
@@ -49,19 +56,40 @@ struct CommandPanelView: View {
                 Text(appState.commandWorkingDirectory)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
 
             Spacer()
+
+            // Model picker
+            Picker("", selection: $appState.claudeModel) {
+                ForEach(ClaudeModel.allCases) { model in
+                    Text(model.displayName).tag(model)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(width: 130)
+            .onChange(of: appState.claudeModel) {
+                restartServiceWithNewModel()
+            }
+
+            // Debug toggle
+            Button(action: { appState.showClaudeDebugPanel.toggle() }) {
+                Image(systemName: appState.showClaudeDebugPanel ? "ladybug.fill" : "ladybug")
+                    .font(.system(size: 11))
+                    .foregroundColor(appState.showClaudeDebugPanel ? .orange : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Toggle debug panel")
 
             // Connection status
             HStack(spacing: 4) {
                 Circle()
                     .fill(appState.isClaudeConnected ? Color.green : Color.red)
                     .frame(width: 6, height: 6)
-                Text(appState.isClaudeConnected ? "Connected" : "Disconnected")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
             }
+            .help(appState.isClaudeConnected ? "Connected" : "Disconnected")
 
             // Close button
             Button(action: closePanel) {
@@ -75,6 +103,50 @@ struct CommandPanelView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    // MARK: - Debug Panel
+
+    private var debugPanel: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Debug Log")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button("Clear") {
+                    appState.claudeDebugLog.removeAll()
+                }
+                .font(.system(size: 9))
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(appState.claudeDebugLog.enumerated()), id: \.offset) { _, entry in
+                        Text(entry)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.primary.opacity(0.8))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            .frame(height: 100)
+            .background(Color.black.opacity(0.2))
+            .cornerRadius(4)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func restartServiceWithNewModel() {
+        // Stop existing service and clear it so it restarts with new model
+        appState.claudeCodeService?.stop()
+        appState.claudeCodeService = nil
+        appState.isClaudeConnected = false
+        // It will restart when user sends next message or we can restart now
+        appState.claudeDebugLog.append("[Model changed to \(appState.claudeModel.displayName)]")
     }
 
     // MARK: - Message List
@@ -133,16 +205,26 @@ struct CommandPanelView: View {
                 .onSubmit {
                     sendMessage()
                 }
-                .disabled(!appState.isClaudeConnected)
+                .disabled(!appState.isClaudeConnected || appState.isClaudeProcessing)
 
-            // Send button
-            Button(action: sendMessage) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 22))
-                    .foregroundColor(canSend ? .accentColor : .secondary)
+            // Stop button (when processing) or Send button
+            if appState.isClaudeProcessing {
+                Button(action: stopProcessing) {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(.red)
+                }
+                .buttonStyle(.plain)
+                .help("Stop current request")
+            } else {
+                Button(action: sendMessage) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(canSend ? .accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
             }
-            .buttonStyle(.plain)
-            .disabled(!canSend)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -155,6 +237,15 @@ struct CommandPanelView: View {
     }
 
     // MARK: - Actions
+
+    private func stopProcessing() {
+        appState.claudeCodeService?.interrupt()
+        // Mark the last assistant message as interrupted
+        if let lastIndex = appState.commandMessages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) {
+            appState.commandMessages[lastIndex].isStreaming = false
+            appState.commandMessages[lastIndex].content += " [Interrupted]"
+        }
+    }
 
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespaces)

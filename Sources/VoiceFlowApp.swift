@@ -638,6 +638,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         self.appState.logDebug("Shortcut: modeOff triggered")
                         self.appState.setMode(.off)
                     }
+                } else if matches(self.appState.commandPanelShortcut) {
+                    Task { @MainActor in
+                        self.appState.logDebug("Shortcut: commandPanel triggered")
+                        self.appState.toggleCommandPanel()
+                    }
                 }
             }
         }
