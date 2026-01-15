@@ -77,6 +77,7 @@ struct FloatingPanelView: View {
                         .padding(.vertical, 2)
                         .background(Color.orange.opacity(0.2))
                         .clipShape(RoundedRectangle(cornerRadius: 3))
+                        .fixedSize()  // Prevent text from wrapping when window is narrow
                 }
 
                 if appState.isNewerBuildAvailable {
