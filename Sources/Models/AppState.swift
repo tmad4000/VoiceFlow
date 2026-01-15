@@ -2526,8 +2526,9 @@ class AppState: ObservableObject {
                 } as () -> Void),
                 (phrase: "cancel that", key: "system.cancel_command", name: "Cancel", haltsProcessing: true, action: { [weak self] in self?.cancelLastCommandIfRecent() } as () -> Void),
                 (phrase: "no wait", key: "system.cancel_command", name: "Cancel", haltsProcessing: true, action: { [weak self] in self?.cancelLastCommandIfRecent() } as () -> Void),
-                (phrase: "submit dictation", key: "system.force_end_utterance", name: "Submit", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void),
-                (phrase: "send dictation", key: "system.force_end_utterance", name: "Send", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance() } as () -> Void),
+                (phrase: "submit dictation", key: "system.force_end_utterance", name: "Submit", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance(contactServices: true) } as () -> Void),
+                (phrase: "send dictation", key: "system.force_end_utterance", name: "Send", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance(contactServices: true) } as () -> Void),
+                (phrase: "submit", key: "system.force_end_utterance", name: "Submit", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance(contactServices: true) } as () -> Void),
                 (phrase: "window recent", key: "system.window_recent", name: "Previous Window", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 1) } as () -> Void),
                 (phrase: "flip", key: "system.window_recent", name: "Flip", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 1) } as () -> Void),
                 (phrase: "window recent 2", key: "system.window_recent_2", name: "Previous Window 2", haltsProcessing: true, action: { [weak self] in self?.windowManager.switchToRecent(index: 2) } as () -> Void),
@@ -3994,7 +3995,15 @@ class AppState: ObservableObject {
     }
 
     private func flushDictationBuffer(isForceEnd: Bool) {
-        guard !currentTranscript.isEmpty, microphoneMode == .on else { return }
+        logDebug("flushDictationBuffer called: transcript=\"\(currentTranscript.prefix(50))\", mode=\(microphoneMode.rawValue), isForceEnd=\(isForceEnd)")
+        guard !currentTranscript.isEmpty else {
+            logDebug("flushDictationBuffer: skipped - transcript is empty")
+            return
+        }
+        guard microphoneMode == .on else {
+            logDebug("flushDictationBuffer: skipped - mode is \(microphoneMode.rawValue), not on")
+            return
+        }
         // Construct a temporary turn to process commands from the current buffer
         let tempTurn = TranscriptTurn(
             transcript: currentTranscript,
