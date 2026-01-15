@@ -43,6 +43,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var showHideMenuItem: NSMenuItem?
     private var settingsWindow: NSWindow?
     private var panelWindow: FloatingPanelWindow?
+    private var commandPanelWindow: CommandPanelWindow?
     private var cancellables = Set<AnyCancellable>()
     private var pttMonitor: Any?
     private var pttActivatedOnMode: Bool = false  // Track if On mode was activated via PTT
@@ -146,6 +147,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(openSettings),
             name: Notification.Name("openHistory"),
+            object: nil
+        )
+
+        // Listen for command panel notifications
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showCommandPanel),
+            name: Notification.Name("CommandPanelShouldOpen"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideCommandPanel),
+            name: Notification.Name("CommandPanelShouldClose"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideCommandPanel),
+            name: Notification.Name("CommandPanelDidClose"),
             object: nil
         )
 
@@ -297,6 +318,83 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func togglePanel() {
         setPanelVisible(!appState.isPanelVisible)
+    }
+
+    // MARK: - Command Panel
+
+    @objc func showCommandPanel() {
+        if commandPanelWindow == nil {
+            configureCommandPanelWindow()
+        }
+        guard let commandPanelWindow else { return }
+        positionCommandPanelWindow(commandPanelWindow)
+        commandPanelWindow.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func hideCommandPanel() {
+        commandPanelWindow?.orderOut(nil)
+        appState.isCommandPanelVisible = false
+    }
+
+    private func configureCommandPanelWindow() {
+        let panel = CommandPanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 600),
+            styleMask: [.titled, .resizable, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingController = NSHostingController(
+            rootView: CommandPanelView()
+                .environmentObject(appState)
+        )
+
+        let containerView = FirstMouseContainerView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(hostingController.view)
+
+        NSLayoutConstraint.activate([
+            hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor)
+        ])
+
+        panel.contentView = containerView
+
+        panel.identifier = NSUserInterfaceItemIdentifier("voiceflow.commandpanel")
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = false  // Can become key for text input
+        panel.isFloatingPanel = true
+        panel.title = "Claude Code"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+
+        // Set size constraints
+        panel.minSize = NSSize(width: 400, height: 400)
+        panel.maxSize = NSSize(width: 800, height: 1000)
+
+        commandPanelWindow = panel
+    }
+
+    private func positionCommandPanelWindow(_ window: NSWindow) {
+        guard let screen = NSScreen.main else { return }
+        // Position to the right of center, below the main panel
+        let panelWidth = window.frame.width
+        let panelHeight = window.frame.height
+        let x = (screen.frame.width - panelWidth) / 2 + 100 + screen.frame.origin.x
+        let y = screen.frame.maxY - panelHeight - 100
+        window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
     @objc func setModeOff() {

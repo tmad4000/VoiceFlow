@@ -202,6 +202,20 @@ class AppState: ObservableObject {
     // AI Formatter
     @Published var aiFormatterEnabled: Bool = true
     @Published var anthropicApiKey: String = ""
+
+    // MARK: - Command Panel (Claude Code Integration)
+    @Published var isCommandPanelVisible: Bool = false
+    @Published var commandMessages: [CommandMessage] = []
+    @Published var commandInput: String = ""
+    @Published var commandMessageQueue: [String] = []
+    @Published var isClaudeProcessing: Bool = false
+    @Published var isClaudeConnected: Bool = false
+    @Published var commandWorkingDirectory: String = "~/ai-os"
+    @Published var commandError: String?
+    @Published var inlineCommandResponse: CommandMessage?
+    @Published var showInlineResponse: Bool = false
+    var claudeCodeService: ClaudeCodeService?
+
     let focusContextManager = FocusContextManager()
     private(set) lazy var aiFormatterService: AIFormatterService = {
         AIFormatterService(focusContext: focusContextManager)
@@ -231,7 +245,10 @@ class AppState: ObservableObject {
         ("focus [app]", "Switch to a running application by name"),
         ("press [modifier] [key]", "Press a keyboard shortcut (e.g., \"press command x\")"),
         ("spell [text]", "Type characters one-by-one without spaces"),
-        ("save to idea flow", "Copy last dictation and open Idea Flow")
+        ("save to idea flow", "Copy last dictation and open Idea Flow"),
+        ("command open", "Open the Claude Code command panel"),
+        ("command close", "Close the Claude Code command panel"),
+        ("command [text]", "Execute command immediately via Claude Code")
     ]
 
     /// Special dictation keywords (not commands)
@@ -2481,6 +2498,37 @@ class AppState: ObservableObject {
             }
         }
 
+        // Claude Code Command Mode - "command [text]" sends to Claude Code
+        if lowerTranscript.hasPrefix("command ") {
+            let commandText = String(turn.transcript.dropFirst(8)).trimmingCharacters(in: .whitespaces)
+            if turn.endOfTurn {
+                // Check for "command open" or "command close"
+                let commandLower = commandText.lowercased()
+                if commandLower == "open" || commandLower.isEmpty {
+                    logDebug("Opening command panel")
+                    openCommandPanel()
+                    triggerCommandFlash(name: "Command Open")
+                } else if commandLower == "close" {
+                    logDebug("Closing command panel")
+                    closeCommandPanel()
+                    triggerCommandFlash(name: "Command Close")
+                } else {
+                    // Execute inline command
+                    logDebug("Executing command: \"\(commandText)\"")
+                    executeInlineCommand(commandText)
+                    triggerCommandFlash(name: "Command")
+                }
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.command"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
         let tokenStrings = normalizedTokens.map { $0.token }
 
         var matches: [PendingCommandMatch] = []
@@ -4131,7 +4179,144 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
+    // MARK: - Command Panel (Claude Code)
+
+    /// Open the command panel and start Claude Code service
+    func openCommandPanel() {
+        guard !isCommandPanelVisible else { return }
+        isCommandPanelVisible = true
+
+        // Start Claude Code service if needed
+        if claudeCodeService == nil {
+            claudeCodeService = ClaudeCodeService(workingDirectory: commandWorkingDirectory)
+            setupClaudeCodeEventHandler()
+        }
+        claudeCodeService?.start()
+
+        // Post notification for AppDelegate to show window
+        NotificationCenter.default.post(
+            name: NSNotification.Name("CommandPanelShouldOpen"),
+            object: nil
+        )
+    }
+
+    /// Close the command panel
+    func closeCommandPanel() {
+        guard isCommandPanelVisible else { return }
+        isCommandPanelVisible = false
+        claudeCodeService?.stop()
+
+        // Post notification for AppDelegate to hide window
+        NotificationCenter.default.post(
+            name: NSNotification.Name("CommandPanelShouldClose"),
+            object: nil
+        )
+    }
+
+    /// Toggle the command panel
+    func toggleCommandPanel() {
+        if isCommandPanelVisible {
+            closeCommandPanel()
+        } else {
+            openCommandPanel()
+        }
+    }
+
+    /// Execute an inline command (no panel needed for simple commands)
+    func executeInlineCommand(_ text: String) {
+        // Ensure service is running
+        if claudeCodeService == nil {
+            claudeCodeService = ClaudeCodeService(workingDirectory: commandWorkingDirectory)
+            setupClaudeCodeEventHandler()
+        }
+        if !isClaudeConnected {
+            claudeCodeService?.start()
+        }
+
+        // Add user message to history
+        commandMessages.append(CommandMessage.user(text))
+
+        // Create placeholder for response
+        let assistantMessage = CommandMessage.assistant()
+        commandMessages.append(assistantMessage)
+        inlineCommandResponse = assistantMessage
+        showInlineResponse = true
+
+        // Send to Claude
+        claudeCodeService?.send(text)
+    }
+
+    private func setupClaudeCodeEventHandler() {
+        claudeCodeService?.onEvent = { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handleClaudeEvent(event)
+            }
+        }
+    }
+
+    private func handleClaudeEvent(_ event: ClaudeCodeService.ClaudeEvent) {
+        switch event {
+        case .connected:
+            isClaudeConnected = true
+            commandError = nil
+
+        case .disconnected(let error):
+            isClaudeConnected = false
+            if let error = error {
+                commandError = error.localizedDescription
+            }
+
+        case .textChunk(let text):
+            // Append to the last assistant message
+            if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
+                commandMessages[lastIndex].content += text
+                // Also update inline response if showing
+                if showInlineResponse {
+                    inlineCommandResponse?.content += text
+                }
+            }
+
+        case .textComplete(let text):
+            // Set the complete text on the last assistant message
+            if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
+                commandMessages[lastIndex].content = text
+                commandMessages[lastIndex].isStreaming = false
+                commandMessages[lastIndex].isComplete = true
+            }
+
+        case .toolUseStart(_, let name, let input):
+            // Add tool use to the last assistant message
+            if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
+                let toolUse = CommandToolUse(toolName: name, input: input)
+                commandMessages[lastIndex].toolUses.append(toolUse)
+            }
+
+        case .toolUseEnd(_, let output):
+            // Update tool use with output
+            if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
+                if var lastToolUse = commandMessages[lastIndex].toolUses.last {
+                    lastToolUse.output = output
+                    lastToolUse.endTime = Date()
+                    let toolIndex = commandMessages[lastIndex].toolUses.count - 1
+                    commandMessages[lastIndex].toolUses[toolIndex] = lastToolUse
+                }
+            }
+
+        case .messageComplete:
+            isClaudeProcessing = false
+            // Mark the last assistant message as complete
+            if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
+                commandMessages[lastIndex].isStreaming = false
+                commandMessages[lastIndex].isComplete = true
+            }
+
+        case .error(let errorMsg):
+            commandError = errorMsg
+            isClaudeProcessing = false
+        }
+    }
+
     private func startBuildCheckTimer() {
         // Check every 5 seconds (for dev/local)
         buildCheckTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
