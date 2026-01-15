@@ -2238,6 +2238,7 @@ class AppState: ObservableObject {
         let isStable: Bool
         let requiresPause: Bool
         let haltsProcessing: Bool
+        let skipStabilityCheck: Bool  // For commands like "submit" that should execute even if words aren't final
         let turn: TranscriptTurn
         let action: () -> Void
     }
@@ -2561,6 +2562,8 @@ class AppState: ObservableObject {
                 let isPrefixed = startTokenIndex > 0 && normalizedTokens[startTokenIndex - 1].token == commandPrefixToken
                 let wordIndices = normalizedTokens[range].map { $0.wordIndex }
                 let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
+                // Submit/send commands should execute even if words aren't final
+                let skipStability = systemCommand.key == "system.force_end_utterance"
                 matches.append(PendingCommandMatch(
                     key: systemCommand.key,
                     startWordIndex: startWordIndex,
@@ -2569,6 +2572,7 @@ class AppState: ObservableObject {
                     isStable: isStable,
                     requiresPause: false,
                     haltsProcessing: systemCommand.haltsProcessing,
+                    skipStabilityCheck: skipStability,
                     turn: turn,
                     action: { [weak self] in
                         systemCommand.action()
@@ -2599,6 +2603,7 @@ class AppState: ObservableObject {
                         isStable: isStable,
                         requiresPause: command.requiresPause,
                         haltsProcessing: false,
+                        skipStabilityCheck: false,
                         turn: turn,
                         action: { [weak self] in
                             if let text = command.replacementText, !text.isEmpty {
@@ -2621,7 +2626,7 @@ class AppState: ObservableObject {
         }
 
         for (index, match) in matches.enumerated() {
-            guard match.isStable else { continue }
+            guard match.isStable || match.skipStabilityCheck else { continue }
             let lastEndIndex = lastExecutedEndWordIndexByCommand[match.key] ?? -1
             guard match.endWordIndex > lastEndIndex else { continue }
 
@@ -3101,6 +3106,7 @@ class AppState: ObservableObject {
                 isStable: isStable,
                 requiresPause: false,
                 haltsProcessing: false,
+                skipStabilityCheck: false,
                 turn: turn,
                 action: { [weak self] in
                     self?.executeKeyboardShortcut(shortcut)
