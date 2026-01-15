@@ -820,6 +820,12 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Reconnect to speech recognition service (useful after network errors)
+    func reconnect() {
+        errorMessage = nil
+        restartServicesIfActive()
+    }
+
     func setMode(_ mode: MicrophoneMode, caller: String = #function, file: String = #file, line: Int = #line) {
         let fileName = (file as NSString).lastPathComponent
         NSLog("[VoiceFlow] setMode called: %@ from %@:%d (%@)", mode.rawValue, fileName, line, caller)

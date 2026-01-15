@@ -316,25 +316,43 @@ struct FloatingPanelView: View {
                 ToastView(message: "Panel hidden. Click menu bar icon to show.")
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            // Error Popup Overlay (Debug Mode)
+            // Error Popup Overlay (Compact)
             if appState.showCompactError, let error = appState.errorMessage {
-                HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .center, spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
                         .foregroundColor(.white)
                     Text(error)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.white)
-                        .lineLimit(2)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    // Reconnect button for connection errors
+                    Button(action: {
+                        appState.showCompactError = false
+                        appState.reconnect()
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.white)
+                    }
+                    .buttonStyle(.plain)
+                    // Dismiss button
+                    Button(action: {
+                        appState.showCompactError = false
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.red.opacity(0.9))
-                .cornerRadius(8)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.red.opacity(0.85))
+                .cornerRadius(6)
                 .padding(.bottom, 50) // Above status/toast
                 .transition(.scale.combined(with: .opacity))
-                .onTapGesture {
-                    appState.showCompactError = false
-                }
             }
         }
     }
