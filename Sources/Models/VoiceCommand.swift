@@ -18,7 +18,7 @@ struct VoiceCommand: Codable, Identifiable, Equatable, Hashable {
         VoiceCommand(phrase: "tab back", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Tab), modifiers: [.control, .shift])),
         VoiceCommand(phrase: "tab forward", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Tab), modifiers: [.control])),
         VoiceCommand(phrase: "new tab", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_T), modifiers: [.command])),
-        VoiceCommand(phrase: "close tab", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_W), modifiers: [.command])),
+        VoiceCommand(phrase: "tab new", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_T), modifiers: [.command])),
         VoiceCommand(phrase: "undo that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command]), requiresPause: true),
         VoiceCommand(phrase: "redo that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Z), modifiers: [.command, .shift]), requiresPause: true),
         VoiceCommand(phrase: "copy that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_C), modifiers: [.command])),
@@ -26,7 +26,6 @@ struct VoiceCommand: Codable, Identifiable, Equatable, Hashable {
         VoiceCommand(phrase: "cut that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_X), modifiers: [.command])),
         VoiceCommand(phrase: "select all", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command])),
         VoiceCommand(phrase: "save that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_S), modifiers: [.command])),
-        VoiceCommand(phrase: "find that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_F), modifiers: [.command])),
         VoiceCommand(phrase: "go back", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_LeftArrow), modifiers: [.command])),
         VoiceCommand(phrase: "go forward", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_RightArrow), modifiers: [.command])),
         VoiceCommand(phrase: "page up", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_PageUp), modifiers: [])),
@@ -122,6 +121,36 @@ struct KeyboardShortcut: Codable, Equatable, Hashable {
         case kVK_ANSI_8: return "8"
         case kVK_ANSI_9: return "9"
         case kVK_ANSI_Grave: return "`"
+        case kVK_ANSI_Minus: return "-"
+        case kVK_ANSI_Equal: return "="
+        case kVK_ANSI_LeftBracket: return "["
+        case kVK_ANSI_RightBracket: return "]"
+        case kVK_ANSI_Backslash: return "\\"
+        case kVK_ANSI_Semicolon: return ";"
+        case kVK_ANSI_Quote: return "'"
+        case kVK_ANSI_Comma: return ","
+        case kVK_ANSI_Period: return "."
+        case kVK_ANSI_Slash: return "/"
+        case kVK_F1: return "F1"
+        case kVK_F2: return "F2"
+        case kVK_F3: return "F3"
+        case kVK_F4: return "F4"
+        case kVK_F5: return "F5"
+        case kVK_F6: return "F6"
+        case kVK_F7: return "F7"
+        case kVK_F8: return "F8"
+        case kVK_F9: return "F9"
+        case kVK_F10: return "F10"
+        case kVK_F11: return "F11"
+        case kVK_F12: return "F12"
+        case kVK_F13: return "F13"
+        case kVK_F14: return "F14"
+        case kVK_F15: return "F15"
+        case kVK_F16: return "F16"
+        case kVK_F17: return "F17"
+        case kVK_F18: return "F18"
+        case kVK_F19: return "F19"
+        case kVK_F20: return "F20"
         default: return "?"
         }
     }

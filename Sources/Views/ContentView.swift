@@ -118,6 +118,7 @@ struct ModeButton: View {
             .contentShape(RoundedRectangle(cornerRadius: compact ? 6 : 8))
         }
         .buttonStyle(.plain)
+        .pointerCursor()
         .help(mode.description)
     }
 }
@@ -164,19 +165,35 @@ struct PlaceholderView: View {
         case .off:
             return "Microphone is off\nClick \"On\" to start dictating or \"Sleep\" for voice commands"
         case .on:
-            if appState.apiKey.isEmpty {
+            if appState.effectiveIsOffline {
+                return appState.isConnected ? "Listening (Mac Speech)..." : "Starting Mac Speech..."
+            }
+            if appState.dictationProvider == .deepgram && appState.deepgramApiKey.isEmpty {
+                return "Please add your Deepgram API key in Settings (⌘,)"
+            }
+            if (appState.dictationProvider == .online || appState.dictationProvider == .auto) && appState.apiKey.isEmpty {
                 return "Please add your AssemblyAI API key in Settings (⌘,)"
             }
+            let connectingText = appState.dictationProvider == .deepgram ? "Connecting to Deepgram..." : "Connecting to AssemblyAI..."
             return appState.isConnected
                 ? "Listening... Start speaking"
-                : "Connecting to AssemblyAI..."
+                : connectingText
         case .sleep:
-            if appState.apiKey.isEmpty {
+            if appState.effectiveIsOffline {
+                return appState.isConnected
+                    ? "Listening for 'Speech on' (Mac Speech)..."
+                    : "Starting Mac Speech..."
+            }
+            if appState.dictationProvider == .deepgram && appState.deepgramApiKey.isEmpty {
+                return "Please add your Deepgram API key in Settings (⌘,)"
+            }
+            if (appState.dictationProvider == .online || appState.dictationProvider == .auto) && appState.apiKey.isEmpty {
                 return "Please add your AssemblyAI API key in Settings (⌘,)"
             }
+            let connectingText = appState.dictationProvider == .deepgram ? "Connecting to Deepgram..." : "Connecting to AssemblyAI..."
             return appState.isConnected
-                ? "Listening for 'Wake up'...\nSay \"microphone on\" to start dictating"
-                : "Connecting to AssemblyAI..."
+                ? "Listening for 'Speech on'...\nSay \"speech on\" to start dictating"
+                : connectingText
         }
     }
 }
@@ -225,7 +242,7 @@ struct StatusBar: View {
         switch appState.microphoneMode {
         case .off: return "Microphone off"
         case .on: return appState.isConnected ? "Transcribing" : "Connecting..."
-        case .sleep: return appState.isConnected ? "Listening for 'Wake up'" : "Connecting..."
+        case .sleep: return appState.isConnected ? "Listening for 'Speech on'" : "Connecting..."
         }
     }
 }

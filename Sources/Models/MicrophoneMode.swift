@@ -32,7 +32,7 @@ enum MicrophoneMode: String, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .off: return "Microphone off"
-        case .sleep: return "Listening for 'Wake up'"
+        case .sleep: return "Listening for 'Speech on'"
         case .on: return "Active"
         }
     }

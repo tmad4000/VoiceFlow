@@ -7,6 +7,7 @@ enum FocusMatchType {
     case exact
     case prefix
     case contains
+    case windowTitle  // Matched by window title (e.g., terminal window)
 }
 
 enum FocusResult {
@@ -23,7 +24,22 @@ class WindowManager: ObservableObject {
         "imessage": "messages",
         "i message": "messages",
         "message": "messages",
-        "messages app": "messages"
+        "messages app": "messages",
+        "one password": "1password",
+        "onepassword": "1password",
+        "idf flow": "ideaflow",
+        "idea flow": "ideaflow",
+        "ideaflow": "ideaflow",
+        "thoughtstream": "ideaflow",
+        "markdown": "open markdown",  // Window title for markdown editor
+        "open markdown": "open markdown"
+    ]
+
+    // Terminal window title aliases - "terminal voice flow" focuses Terminal with "VoiceFlow" in title
+    // This is a special shorthand for focusing specific terminal windows by their title
+    private let terminalWindowAliases: [String: String] = [
+        "voice flow": "voiceflow",
+        "voiceflow": "voiceflow"
     ]
     
     init() {
@@ -99,34 +115,173 @@ class WindowManager: ObservableObject {
 
     func focusApp(named query: String) -> FocusResult {
         let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-        var lowerQuery = normalizeQuery(query)
-        if let alias = focusAliases[lowerQuery] {
-            lowerQuery = alias
+        var normalizedQuery = normalizeQuery(query)
+        if let alias = focusAliases[normalizedQuery] {
+            normalizedQuery = alias
         }
-        guard !lowerQuery.isEmpty else {
+        guard !normalizedQuery.isEmpty else {
             logger.warning("Focus requested with empty query")
             return .emptyQuery
         }
+        let compactQuery = normalizedQuery.replacingOccurrences(of: " ", with: "")
+
+        struct NormalizedApp {
+            let app: NSRunningApplication
+            let normalizedName: String
+            let compactName: String
+        }
+
+        let normalizedApps: [NormalizedApp] = apps.map { app in
+            let normalizedName = normalizeQuery(app.localizedName ?? "")
+            let compactName = normalizedName.replacingOccurrences(of: " ", with: "")
+            return NormalizedApp(app: app, normalizedName: normalizedName, compactName: compactName)
+        }
         
         // 1. Try exact match
-        if let exactMatch = apps.first(where: { normalizeQuery($0.localizedName ?? "") == lowerQuery }) {
-            exactMatch.activate()
-            return .focused(appName: exactMatch.localizedName ?? query, matchType: .exact)
+        if let exactMatch = normalizedApps.first(where: { $0.normalizedName == normalizedQuery }) {
+            exactMatch.app.activate()
+            return .focused(appName: exactMatch.app.localizedName ?? query, matchType: .exact)
+        }
+        
+        if !compactQuery.isEmpty, let exactCompactMatch = normalizedApps.first(where: { $0.compactName == compactQuery }) {
+            exactCompactMatch.app.activate()
+            return .focused(appName: exactCompactMatch.app.localizedName ?? query, matchType: .exact)
         }
         
         // 2. Try prefix match
-        if let prefixMatch = apps.first(where: { normalizeQuery($0.localizedName ?? "").hasPrefix(lowerQuery) }) {
-            prefixMatch.activate()
-            return .focused(appName: prefixMatch.localizedName ?? query, matchType: .prefix)
+        if let prefixMatch = normalizedApps.first(where: { $0.normalizedName.hasPrefix(normalizedQuery) }) {
+            prefixMatch.app.activate()
+            return .focused(appName: prefixMatch.app.localizedName ?? query, matchType: .prefix)
+        }
+        
+        if !compactQuery.isEmpty, let prefixCompactMatch = normalizedApps.first(where: { $0.compactName.hasPrefix(compactQuery) }) {
+            prefixCompactMatch.app.activate()
+            return .focused(appName: prefixCompactMatch.app.localizedName ?? query, matchType: .prefix)
         }
         
         // 3. Try contains match
-        if let containsMatch = apps.first(where: { normalizeQuery($0.localizedName ?? "").contains(lowerQuery) }) {
-            containsMatch.activate()
-            return .focused(appName: containsMatch.localizedName ?? query, matchType: .contains)
+        if let containsMatch = normalizedApps.first(where: { $0.normalizedName.contains(normalizedQuery) }) {
+            containsMatch.app.activate()
+            return .focused(appName: containsMatch.app.localizedName ?? query, matchType: .contains)
         }
         
+        if !compactQuery.isEmpty, let containsCompactMatch = normalizedApps.first(where: { $0.compactName.contains(compactQuery) }) {
+            containsCompactMatch.app.activate()
+            return .focused(appName: containsCompactMatch.app.localizedName ?? query, matchType: .contains)
+        }
+
+        // 4. Try matching window titles (especially useful for terminal windows)
+        if let windowMatch = focusWindowByTitle(query: normalizedQuery, compactQuery: compactQuery, apps: apps) {
+            return windowMatch
+        }
+
         logger.warning("No running app found matching: \(query)")
+        return .notFound(query: query)
+    }
+
+    /// Focus a window by its title (useful for terminal windows like "VoiceFlow")
+    private func focusWindowByTitle(query: String, compactQuery: String, apps: [NSRunningApplication]) -> FocusResult? {
+        // Apps that commonly have meaningful window titles we want to search
+        let windowTitleApps = [
+            "com.apple.Terminal",
+            "com.googlecode.iterm2",
+            "io.alacritty",
+            "com.github.wez.wezterm",
+            "net.kovidgoyal.kitty",
+            "com.microsoft.VSCode",
+            "com.sublimetext.4"
+        ]
+
+        for app in apps {
+            guard let bundleId = app.bundleIdentifier,
+                  windowTitleApps.contains(bundleId) else { continue }
+
+            // Get windows for this app using Accessibility API
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            var windowsRef: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+            guard result == .success, let windows = windowsRef as? [AXUIElement] else { continue }
+
+            for window in windows {
+                var titleRef: CFTypeRef?
+                let titleResult = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
+
+                guard titleResult == .success, let title = titleRef as? String else { continue }
+
+                let normalizedTitle = normalizeQuery(title)
+                let compactTitle = normalizedTitle.replacingOccurrences(of: " ", with: "")
+
+                // Check if query matches window title
+                let matches = normalizedTitle.contains(query) ||
+                              (!compactQuery.isEmpty && compactTitle.contains(compactQuery))
+
+                if matches {
+                    // Raise this specific window and activate the app
+                    AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                    app.activate()
+
+                    logger.info("Focused window by title: \"\(title)\" in \(app.localizedName ?? "unknown")")
+                    return .focused(appName: "\(app.localizedName ?? "App"): \(title)", matchType: .windowTitle)
+                }
+            }
+        }
+
+        return nil
+    }
+
+    /// Focus a terminal window by title - "terminal [name]" command
+    /// This is a shorthand for focusing specific terminal windows (e.g., "terminal voice flow" → VoiceFlow window)
+    func focusTerminalWindow(named query: String) -> FocusResult {
+        guard !query.isEmpty else { return .emptyQuery }
+
+        // Apply aliases (e.g., "voice flow" → "voiceflow")
+        let normalizedQuery = normalizeQuery(query)
+        let effectiveQuery = terminalWindowAliases[normalizedQuery] ?? normalizedQuery
+        let compactQuery = effectiveQuery.replacingOccurrences(of: " ", with: "")
+
+        let apps = NSWorkspace.shared.runningApplications
+        let terminalApps = [
+            "com.apple.Terminal",
+            "com.googlecode.iterm2",
+            "io.alacritty",
+            "com.github.wez.wezterm",
+            "net.kovidgoyal.kitty"
+        ]
+
+        for app in apps {
+            guard let bundleId = app.bundleIdentifier,
+                  terminalApps.contains(bundleId) else { continue }
+
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            var windowsRef: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+            guard result == .success, let windows = windowsRef as? [AXUIElement] else { continue }
+
+            for window in windows {
+                var titleRef: CFTypeRef?
+                let titleResult = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
+
+                guard titleResult == .success, let title = titleRef as? String else { continue }
+
+                let normalizedTitle = normalizeQuery(title)
+                let compactTitle = normalizedTitle.replacingOccurrences(of: " ", with: "")
+
+                let matches = normalizedTitle.contains(effectiveQuery) ||
+                              (!compactQuery.isEmpty && compactTitle.contains(compactQuery))
+
+                if matches {
+                    AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                    app.activate()
+
+                    logger.info("Focused terminal window: \"\(title)\"")
+                    return .focused(appName: "Terminal: \(title)", matchType: .windowTitle)
+                }
+            }
+        }
+
+        logger.warning("No terminal window found matching: \(query)")
         return .notFound(query: query)
     }
 }

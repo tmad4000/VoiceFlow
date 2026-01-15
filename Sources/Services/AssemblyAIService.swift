@@ -19,11 +19,21 @@ class AssemblyAIService: NSObject, ObservableObject {
     @Published var isConnected = false
     @Published var latestTurn: TranscriptTurn?
     @Published var errorMessage: String?
+    @Published var lastPingLatencyMs: Int?
 
     private var transcribeMode = true
     private var formatTurns = true
     private var vocabularyPrompt: String?
     private var utteranceConfig: UtteranceConfig = .default
+    private var pingTimer: Timer?
+    private var lastPingSentAt: Date?
+    private let pingIntervalSeconds: TimeInterval = 10
+
+    // Session expiration handling
+    private var sessionExpiresAt: Date?
+    private var expirationTimer: Timer?
+    private let reconnectBeforeExpirationSeconds: TimeInterval = 30  // Reconnect 30s before expiration
+    private var isReconnecting = false
 
     init(apiKey: String) {
         self.apiKey = apiKey
@@ -93,6 +103,9 @@ class AssemblyAIService: NSObject, ObservableObject {
         socket.disconnect()
         self.socket = nil
         isConnected = false
+        stopPingTimer()
+        stopExpirationTimer()
+        sessionExpiresAt = nil
     }
 
     func sendAudio(_ data: Data) {
@@ -119,7 +132,30 @@ class AssemblyAIService: NSObject, ObservableObject {
 
         switch type {
         case "Begin":
-            print("Session started: \(message["id"] ?? "unknown")")
+            let sessionId = message["id"] as? String ?? "unknown"
+            print("Session started: \(sessionId)")
+
+            // Parse session expiration time and schedule reconnection
+            // expires_at can be Int or Double depending on JSON parsing
+            var expiresAtUnix: TimeInterval? = nil
+            if let unix = message["expires_at"] as? TimeInterval {
+                expiresAtUnix = unix
+            } else if let unix = message["expires_at"] as? Int {
+                expiresAtUnix = TimeInterval(unix)
+            } else if let unix = (message["expires_at"] as? NSNumber)?.doubleValue {
+                expiresAtUnix = unix
+            }
+
+            if let unix = expiresAtUnix {
+                let expiresAt = Date(timeIntervalSince1970: unix)
+                sessionExpiresAt = expiresAt
+                let expiresInSeconds = expiresAt.timeIntervalSinceNow
+                NSLog("[AssemblyAI] Session expires at: \(expiresAt) (in \(Int(expiresInSeconds))s)")
+                // Schedule on main thread to ensure timer fires
+                DispatchQueue.main.async { [weak self] in
+                    self?.scheduleExpirationReconnect(expiresAt: expiresAt)
+                }
+            }
 
         case "Turn":
             let transcript = message["transcript"] as? String ?? ""
@@ -203,6 +239,14 @@ class AssemblyAIService: NSObject, ObservableObject {
 
         case "Error":
             if let error = message["error"] as? String {
+                NSLog("[AssemblyAI] Error received: %@", error)
+                // Check if this is a session expiration error - attempt automatic reconnection
+                let lowerError = error.lowercased()
+                if lowerError.contains("session expired") || lowerError.contains("maximum session duration") {
+                    NSLog("[AssemblyAI] Session expired - attempting automatic reconnection")
+                    handleSessionExpiration()
+                    return  // Don't show error to user - we're handling it
+                }
                 DispatchQueue.main.async { [weak self] in
                     self?.errorMessage = error
                 }
@@ -229,6 +273,7 @@ extension AssemblyAIService: WebSocketDelegate {
                 self?.errorMessage = nil
             }
             print("WebSocket connected")
+            startPingTimer()
 
         case .disconnected(let reason, let code):
             print("WebSocket disconnected: \(reason) (code: \(code))")
@@ -236,6 +281,8 @@ extension AssemblyAIService: WebSocketDelegate {
                 self?.isConnected = false
                 self?.errorMessage = "Disconnected: \(reason)"
             }
+            stopPingTimer()
+            stopExpirationTimer()
 
         case .text(let text):
             if let data = text.data(using: .utf8),
@@ -256,12 +303,16 @@ extension AssemblyAIService: WebSocketDelegate {
                 self?.isConnected = false
             }
             print("WebSocket error: \(String(describing: error))")
+            stopPingTimer()
+            stopExpirationTimer()
 
         case .cancelled:
             DispatchQueue.main.async { [weak self] in
                 self?.isConnected = false
             }
             print("WebSocket cancelled")
+            stopPingTimer()
+            stopExpirationTimer()
 
         case .viabilityChanged(let viable):
             print("WebSocket viability: \(viable)")
@@ -276,9 +327,108 @@ extension AssemblyAIService: WebSocketDelegate {
                 self?.isConnected = false
             }
             print("WebSocket peer closed")
+            stopPingTimer()
+            stopExpirationTimer()
 
-        case .ping, .pong:
+        case .ping:
             break
+
+        case .pong:
+            if let sentAt = lastPingSentAt {
+                let latencyMs = Int(Date().timeIntervalSince(sentAt) * 1000)
+                DispatchQueue.main.async { [weak self] in
+                    self?.lastPingLatencyMs = latencyMs
+                }
+            }
+        }
+    }
+}
+
+private extension AssemblyAIService {
+    func startPingTimer() {
+        stopPingTimer()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: pingIntervalSeconds, repeats: true) { [weak self] _ in
+            self?.sendPing()
+        }
+    }
+
+    func stopPingTimer() {
+        pingTimer?.invalidate()
+        pingTimer = nil
+        lastPingSentAt = nil
+        lastPingLatencyMs = nil
+    }
+
+    func sendPing() {
+        guard isConnected, let socket = socket else { return }
+        lastPingSentAt = Date()
+        socket.write(ping: Data())
+    }
+
+    // MARK: - Session Expiration Handling
+
+    func scheduleExpirationReconnect(expiresAt: Date) {
+        stopExpirationTimer()
+
+        // Calculate when to reconnect (30 seconds before expiration)
+        let reconnectTime = expiresAt.addingTimeInterval(-reconnectBeforeExpirationSeconds)
+        let timeUntilReconnect = reconnectTime.timeIntervalSinceNow
+
+        if timeUntilReconnect <= 0 {
+            // Already past reconnection time - reconnect immediately
+            NSLog("[AssemblyAI] Session about to expire - reconnecting immediately")
+            handleSessionExpiration()
+            return
+        }
+
+        NSLog("[AssemblyAI] Scheduling proactive reconnection in \(Int(timeUntilReconnect))s (30s before expiration)")
+
+        expirationTimer = Timer.scheduledTimer(withTimeInterval: timeUntilReconnect, repeats: false) { [weak self] _ in
+            NSLog("[AssemblyAI] Proactive session reconnection triggered")
+            self?.handleSessionExpiration()
+        }
+    }
+
+    func stopExpirationTimer() {
+        expirationTimer?.invalidate()
+        expirationTimer = nil
+    }
+
+    func handleSessionExpiration() {
+        // Must run on main thread for UI updates and timer management
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.handleSessionExpiration()
+            }
+            return
+        }
+
+        guard !isReconnecting else {
+            NSLog("[AssemblyAI] Already reconnecting - skipping duplicate request")
+            return
+        }
+
+        NSLog("[AssemblyAI] Handling session expiration - will reconnect")
+        isReconnecting = true
+        stopExpirationTimer()
+
+        // Mark as disconnected so audio isn't sent to dead socket
+        isConnected = false
+
+        // Disconnect existing socket
+        if let socket = socket {
+            socket.disconnect()
+            self.socket = nil
+        }
+        stopPingTimer()
+        sessionExpiresAt = nil
+
+        // Reconnect after a brief delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self = self else { return }
+            NSLog("[AssemblyAI] Reconnecting after session expiration...")
+            self.isReconnecting = false
+            self.connect()
         }
     }
 }

@@ -11,11 +11,14 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     @Published var isConnected = false
     @Published var latestTurn: TranscriptTurn?
     @Published var errorMessage: String?
+    @Published var lastPingLatencyMs: Int?
 
     private var transcribeMode = true
     private var formatTurns = true
     private var vocabularyPrompt: String?
     private var utteranceConfig: UtteranceConfig = .default
+    private var pingTimer: Timer?
+    private let pingIntervalSeconds: TimeInterval = 10
 
     // Track turn order locally since Deepgram doesn't provide it directly in the same way
     private var turnOrder = 0
@@ -129,6 +132,7 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
         urlSession?.invalidateAndCancel()
         urlSession = nil
         isConnected = false
+        stopPingTimer()
     }
 
     func sendAudio(_ data: Data) {
@@ -229,6 +233,7 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
             self?.isConnected = true
             self?.errorMessage = nil
         }
+        startPingTimer()
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
@@ -240,6 +245,7 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
                 self?.errorMessage = "Disconnected: \(reasonStr)"
             }
         }
+        stopPingTimer()
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -258,6 +264,7 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
                 self?.errorMessage = error.localizedDescription
                 self?.isConnected = false
             }
+            stopPingTimer()
         }
     }
 
@@ -268,5 +275,37 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
 
     deinit {
         disconnect()
+    }
+}
+
+private extension DeepgramService {
+    func startPingTimer() {
+        stopPingTimer()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: pingIntervalSeconds, repeats: true) { [weak self] _ in
+            self?.sendPing()
+        }
+    }
+
+    func stopPingTimer() {
+        pingTimer?.invalidate()
+        pingTimer = nil
+        lastPingLatencyMs = nil
+    }
+
+    func sendPing() {
+        guard isConnected, let task = webSocketTask else { return }
+        let sentAt = Date()
+        task.sendPing { [weak self] error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    self?.errorMessage = error.localizedDescription
+                    self?.isConnected = false
+                    self?.stopPingTimer()
+                } else if let self = self {
+                    let latencyMs = Int(Date().timeIntervalSince(sentAt) * 1000)
+                    self.lastPingLatencyMs = latencyMs
+                }
+            }
+        }
     }
 }

@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import Accelerate
+import CoreAudio
 
 /// Manages microphone audio capture for streaming to AssemblyAI
 /// Captures mono 16-bit PCM audio at 16kHz
@@ -9,6 +10,7 @@ class AudioCaptureManager: NSObject {
     private var inputNode: AVAudioInputNode?
     private let targetSampleRate: Double = 16000
     private let bufferSize: AVAudioFrameCount = 1024
+    private let preferredDeviceID: String?
 
     /// Callback for audio data ready to send
     var onAudioData: ((Data) -> Void)?
@@ -18,7 +20,8 @@ class AudioCaptureManager: NSObject {
 
     private var isCapturing = false
 
-    override init() {
+    init(deviceID: String? = nil) {
+        self.preferredDeviceID = deviceID
         super.init()
     }
 
@@ -28,6 +31,36 @@ class AudioCaptureManager: NSObject {
         do {
             audioEngine = AVAudioEngine()
             guard let audioEngine = audioEngine else { return }
+            
+            // Configure input device if specified
+            if let deviceID = preferredDeviceID {
+                // Find the device
+                let discoverySession = AVCaptureDevice.DiscoverySession(
+                    deviceTypes: [.builtInMicrophone, .externalUnknown],
+                    mediaType: .audio,
+                    position: .unspecified
+                )
+                
+                if let device = discoverySession.devices.first(where: { $0.uniqueID == deviceID }) {
+                    // We need to set the device on the input node's AU
+                    // However, AVAudioEngine automatically uses the system default or whatever is set in AudioUnit
+                    // A better way with AVAudioEngine is often to rely on system default or use aggregate device,
+                    // but we can try to set the input node's device via Core Audio if needed.
+                    // For now, let's use the simpler approach:
+                    // If we want to support specific device selection properly with AVAudioEngine,
+                    // we often need to set the device for the engine's input node via AudioUnit SetProperty.
+                    
+                    do {
+                        try setInputDevice(device.uniqueID, for: audioEngine.inputNode)
+                        print("Set input device to: \(device.localizedName)")
+                    } catch {
+                        print("Failed to set input device: \(error)")
+                        // Fallback to default
+                    }
+                } else {
+                    print("Preferred device \(deviceID) not found, using default")
+                }
+            }
 
             inputNode = audioEngine.inputNode
             guard let inputNode = inputNode else { return }
@@ -113,14 +146,75 @@ class AudioCaptureManager: NSObject {
         }
         let rms = sqrt(sum / Float(frameLength))
         // Convert to 0-1 range with some scaling for better visualization
-        // Increased scaling from 4.0 to 8.0 for better sensitivity
-        let level = min(1.0, rms * 8.0)
+        // Use Logarithmic scale (dB) normalized from -40dB to 0dB
+        // This is extremely sensitive.
+        let db = 20 * log10(max(rms, 1e-9))
+        let normalized = max(0.0, min(1.0, (db + 40) / 40))
+        let level = Float(pow(normalized, 0.5)) // Even more dramatic curve
 
         // Send to callbacks
         DispatchQueue.main.async { [weak self] in
             self?.onAudioData?(data)
             self?.onAudioLevel?(level)
         }
+    }
+
+    private func setInputDevice(_ deviceID: String, for inputNode: AVAudioInputNode) throws {
+        let audioUnit = inputNode.audioUnit!
+        var deviceID = getAudioDeviceID(from: deviceID)
+        
+        guard deviceID != kAudioDeviceUnknown else {
+            throw NSError(domain: "AudioCaptureManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unknown device ID"])
+        }
+
+        let error = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+
+        if error != noErr {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(error), userInfo: nil)
+        }
+    }
+
+    private func getAudioDeviceID(from uniqueID: String) -> AudioDeviceID {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var dataSize: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize)
+        guard status == noErr else { return kAudioDeviceUnknown }
+
+        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
+        status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize, &deviceIDs)
+        guard status == noErr else { return kAudioDeviceUnknown }
+
+        for id in deviceIDs {
+            var uidString: CFString? = nil
+            var uidSize = UInt32(MemoryLayout<CFString?>.size)
+            var uidAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDeviceUID,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            
+            status = AudioObjectGetPropertyData(id, &uidAddress, 0, nil, &uidSize, &uidString)
+            if status == noErr, let uid = uidString as String? {
+                if uid == uniqueID {
+                    return id
+                }
+            }
+        }
+
+        return kAudioDeviceUnknown
     }
 
     deinit {

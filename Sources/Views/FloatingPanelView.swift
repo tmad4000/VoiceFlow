@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 
 struct FloatingPanelView: View {
     @EnvironmentObject var appState: AppState
@@ -7,9 +8,66 @@ struct FloatingPanelView: View {
     @State private var autoScrollEnabled = true
 
     var body: some View {
+        Group {
+            if appState.isPanelMinimal {
+                minimalPanel
+            } else {
+                fullPanel
+            }
+        }
+    }
+
+    private var minimalPanel: some View {
+        HStack(spacing: 6) {
+            // Compact mode buttons
+            CompactModeButtons()
+
+            // Audio pulse indicator when active
+            if appState.microphoneMode != .off {
+                AudioPulseIndicator(level: appState.audioLevel, mode: appState.microphoneMode)
+            }
+
+            if appState.isNewerBuildAvailable {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(.green)
+                    .instantTooltip("New build available - Click to Restart")
+                    .onTapGesture {
+                        appState.restartApp()
+                    }
+            }
+
+            // Expand button
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    appState.isPanelMinimal = false
+                }
+            }) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .instantTooltip("Expand panel")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.green, lineWidth: appState.isCommandFlashActive ? 2 : 0)
+                        .animation(.easeInOut(duration: 0.2), value: appState.isCommandFlashActive)
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var fullPanel: some View {
         VStack(spacing: 0) {
             // Header with mode buttons, volume indicator, and close button
-            HStack(spacing: 8) {
+            HStack(spacing: 14) {
                 // ... DEV indicator ...
                 if Bundle.main.bundleIdentifier?.contains("release") != true {
                     Text("DEV")
@@ -19,69 +77,107 @@ struct FloatingPanelView: View {
                         .padding(.vertical, 2)
                         .background(Color.orange.opacity(0.2))
                         .clipShape(RoundedRectangle(cornerRadius: 3))
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .fixedSize()  // Prevent text from wrapping when window is narrow
                 }
 
-                ModeSelectionView()
+                if appState.isNewerBuildAvailable {
+                    Button(action: { appState.restartApp() }) {
+                        Image(systemName: "arrow.clockwise.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(.green)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .instantTooltip("New build available - Click to Restart")
+                }
+
+                // MODE CONTROL - Icon Only
+                UnifiedModeButton()
+                    .fixedSize()
 
                 Spacer()
 
-                // Mic volume indicator
+                // VOLUME METER - Large & Dramatic
                 if appState.microphoneMode != .off {
-                    MicLevelIndicator(level: appState.audioLevel)
-                        .padding(.trailing, 4)
+                    Menu {
+                        InputDeviceMenuItems()
+                    } label: {
+                        MicLevelIndicator(level: appState.audioLevel)
+                            .frame(width: 100, height: 12)
+                            .background(Color.white.opacity(0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .instantTooltip("Click to change microphone")
 
-                    // Force end utterance button - appears when connected
+                    // Force end button
                     if appState.isConnected {
                         Button(action: { appState.forceEndUtterance() }) {
                             Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 16))
+                                .font(.system(size: 18))
                                 .foregroundColor(.accentColor)
                         }
                         .buttonStyle(.plain)
-                        .help("Force send current dictation")
+                        .pointerCursor()
+                        .instantTooltip("Force send current dictation")
                     }
                 }
 
-                // History button
-                Button(action: openHistory) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Open dictation history")
+                // Utility buttons
+                HStack(spacing: 10) {
+                    Button(action: openHistory) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .instantTooltip("Open history")
 
-                // Settings button
-                Button(action: openSettings) {
-                    Image(systemName: "gear")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Open settings")
-                
-                // Close menu button
-                Menu {
-                    Button(action: hidePanel) {
-                        Label("Hide Panel", systemImage: "minus")
+                    Button(action: openSettings) {
+                        Image(systemName: "gear")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.secondary)
                     }
-                    Button(role: .destructive, action: quitApp) {
-                        Label("Quit VoiceFlow", systemImage: "power")
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .instantTooltip("Open settings")
+
+                    // More options menu
+                    Menu {
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                appState.isPanelMinimal = true
+                            }
+                        }) {
+                            Label("Minimize Panel", systemImage: "arrow.down.right.and.arrow.up.left")
+                        }
+                        Button(action: hidePanel) {
+                            Label("Hide Panel", systemImage: "minus")
+                        }
+                        Button(action: { appState.restartApp() }) {
+                            Label("Restart App", systemImage: "arrow.clockwise")
+                        }
+                        Button(role: .destructive, action: quitApp) {
+                            Label("Quit VoiceFlow", systemImage: "power")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(.secondary)
                     }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.secondary)
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .pointerCursor()
+                    .instantTooltip("More options")
                 }
-                .menuStyle(.borderlessButton)
-                .frame(width: 20)
-                .help("Hide or Quit")
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(Color.black.opacity(0.05))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color.black.opacity(0.1))
 
             // Warning Banners
             VStack(spacing: 0) {
@@ -98,16 +194,11 @@ struct FloatingPanelView: View {
                 ZStack(alignment: .bottomTrailing) {
                     ScrollView {
                         TranscriptContentView()
-                            .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 10)
-                            .background(
-                                GeometryReader { geo in
-                                    Color.clear
-                                        .preference(key: ScrollOffsetPreferenceKey.self, value: geo.frame(in: .named("scroll")).minY)
-                                }
-                            )
+                            .textSelection(.enabled)
+                            .contentShape(Rectangle())
                         
                         // Invisible anchor for scrolling
                         Color.clear.frame(height: 1).id("bottom")
@@ -178,13 +269,14 @@ struct FloatingPanelView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
                     .buttonStyle(.plain)
+                    .pointerCursor()
                     .padding(.top, 4)
                     .padding(.trailing, 4)
                     .help("Copy all visible text to clipboard")
                 }
             }
         }
-        .frame(minWidth: 360, maxWidth: 520, minHeight: 140, maxHeight: 800)
+        .frame(minWidth: 280, maxWidth: 1000, minHeight: 100, maxHeight: 800)
         .background(
             VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
                 .overlay(
@@ -224,6 +316,44 @@ struct FloatingPanelView: View {
                 ToastView(message: "Panel hidden. Click menu bar icon to show.")
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            // Error Popup Overlay (Compact)
+            if appState.showCompactError, let error = appState.errorMessage {
+                HStack(alignment: .center, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white)
+                    Text(error)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    // Reconnect button for connection errors
+                    Button(action: {
+                        appState.showCompactError = false
+                        appState.reconnect()
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.white)
+                    }
+                    .buttonStyle(.plain)
+                    // Dismiss button
+                    Button(action: {
+                        appState.showCompactError = false
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.red.opacity(0.85))
+                .cornerRadius(6)
+                .padding(.bottom, 50) // Above status/toast
+                .transition(.scale.combined(with: .opacity))
+            }
         }
     }
 
@@ -250,30 +380,103 @@ struct FloatingPanelView: View {
     }
 }
 
+private struct InputDeviceMenu: View {
+    @EnvironmentObject var appState: AppState
+    @State private var devices: [AVCaptureDevice] = []
+    
+    var body: some View {
+        Menu {
+            Text("Select Input Device")
+                .font(.caption)
+            Divider()
+            
+            Button {
+                appState.saveInputDevice(nil)
+            } label: {
+                if appState.selectedInputDeviceId == nil {
+                    Label("System Default", systemImage: "checkmark")
+                } else {
+                    Text("System Default")
+                }
+            }
+            
+            ForEach(devices, id: \.uniqueID) { device in
+                Button {
+                    appState.saveInputDevice(device.uniqueID)
+                } label: {
+                    if appState.selectedInputDeviceId == device.uniqueID {
+                        Label(device.localizedName, systemImage: "checkmark")
+                    } else {
+                        Text(device.localizedName)
+                    }
+                }
+            }
+            
+            Divider()
+            Button("Audio Settings...") {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.sound")!)
+            }
+        } label: {
+            EmptyView()
+        }
+        .menuStyle(.borderlessButton)
+        .onAppear {
+            refreshDevices()
+        }
+    }
+    
+    private func refreshDevices() {
+        let discoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInMicrophone, .externalUnknown],
+            mediaType: .audio,
+            position: .unspecified
+        )
+        self.devices = discoverySession.devices
+    }
+}
+
+
 struct WarningBanner: View {
     let warning: AppWarning
     
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             Image(systemName: warning.severity == .error ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
                 .foregroundColor(warning.severity == .error ? .red : .orange)
                 .font(.system(size: 12))
+                .padding(.top, 2)
             
-            Text(warning.message)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.primary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(warning.message)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                
+                if let actionLabel = warning.actionLabel {
+                    Text(actionLabel)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.blue)
+                        .padding(.top, 2)
+                }
+            }
             
             Spacer()
             
             Image(systemName: "chevron.right")
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
+                .padding(.top, 3)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8) // Increased vertical padding slightly
         .background(warning.severity == .error ? Color.red.opacity(0.1) : Color.orange.opacity(0.1))
+        .contentShape(Rectangle()) // Ensure entire area is tappable
         .onTapGesture {
-            NotificationCenter.default.post(name: .openSettings, object: nil)
+            if let action = warning.action {
+                action()
+            } else {
+                NotificationCenter.default.post(name: .openSettings, object: nil)
+            }
         }
     }
 }
@@ -322,11 +525,6 @@ private struct UnifiedModeButton: View {
                     Image(systemName: mode.icon)
                         .font(.system(size: 10, weight: .semibold))
 
-                    Text(mode.rawValue)
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-
                     // Show behavior icon when On
                     if mode == .on {
                         Image(systemName: appState.activeBehavior.icon)
@@ -335,18 +533,17 @@ private struct UnifiedModeButton: View {
                     }
                 }
                 .foregroundColor(modeColor)
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 4)
+                .background(modeColor.opacity(0.15))
             }
             .buttonStyle(.plain)
-            .onHover { hovering in
-                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-            }
-            .help(toggleHelpText)
+            .pointerCursor()
+            .instantTooltip(toggleHelpText)
 
             // Dropdown menu
             Menu {
-                // Mode section
+                // ... menu items ...
                 Section("Mode") {
                     ForEach(MicrophoneMode.allCases) { m in
                         Button {
@@ -386,14 +583,15 @@ private struct UnifiedModeButton: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 6, weight: .semibold))
                     .foregroundColor(modeColor.opacity(0.6))
-                    .frame(width: 14, height: 16)
+                    .frame(width: 14, height: 24)
+                    .background(modeColor.opacity(0.1))
                     .contentShape(Rectangle())
             }
             .menuIndicator(.hidden)
             .menuStyle(.borderlessButton)
+            .pointerCursor()
             .fixedSize()
         }
-        .background(modeColor.opacity(0.15))
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
@@ -446,9 +644,7 @@ private struct SpeakerFilterPill: View {
             .clipShape(RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
-        .onHover { hovering in
-            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .pointerCursor()
         .help("Click to listen to all speakers")
     }
 }
@@ -457,23 +653,150 @@ private struct MicLevelIndicator: View {
     let level: Float  // 0.0 to 1.0
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // Background bar
-            RoundedRectangle(cornerRadius: 1)
-                .fill(Color.secondary.opacity(0.2))
-                .frame(width: 3, height: 16)
+        ZStack(alignment: .leading) {
+            // Background track
+            Capsule()
+                .fill(Color.white.opacity(0.1))
+                .frame(height: 6)
             
-            // Level overlay
-            RoundedRectangle(cornerRadius: 1)
-                .fill(barColor)
-                .frame(width: 3, height: max(2, CGFloat(level) * 16))
+            // Level bar with glow
+            Capsule()
+                .fill(LinearGradient(
+                    gradient: Gradient(colors: [.green, .yellow, .red]),
+                    startPoint: .leading,
+                    endPoint: .trailing
+                ))
+                .frame(width: max(4, CGFloat(level) * 120), height: 6)
+                .shadow(color: levelColor.opacity(level > 0.05 ? 0.6 : 0), radius: 4)
         }
     }
 
-    private var barColor: Color {
+    private var levelColor: Color {
         if level > 0.8 { return .red }
-        if level > 0.5 { return .orange }
+        if level > 0.5 { return .yellow }
         return .green
+    }
+}
+
+private struct InputDeviceMenuItems: View {
+    @EnvironmentObject var appState: AppState
+    @State private var devices: [AVCaptureDevice] = []
+    
+    var body: some View {
+        Group {
+            Text("Select Microphone")
+                .font(.caption)
+            Divider()
+            
+            Button {
+                appState.saveInputDevice(nil)
+            } label: {
+                if appState.selectedInputDeviceId == nil {
+                    Label("System Default", systemImage: "checkmark")
+                } else {
+                    Text("System Default")
+                }
+            }
+            
+            ForEach(devices, id: \.uniqueID) { device in
+                Button {
+                    appState.saveInputDevice(device.uniqueID)
+                } label: {
+                    if appState.selectedInputDeviceId == device.uniqueID {
+                        Label(device.localizedName, systemImage: "checkmark")
+                    } else {
+                        Text(device.localizedName)
+                    }
+                }
+            }
+            
+            Divider()
+            Button("Audio Settings...") {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.sound")!)
+            }
+        }
+        .onAppear {
+            refreshDevices()
+        }
+    }
+    
+    private func refreshDevices() {
+        let discoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInMicrophone, .externalUnknown],
+            mediaType: .audio,
+            position: .unspecified
+        )
+        self.devices = discoverySession.devices
+    }
+}
+
+
+// Compact mode buttons for minimal panel
+private struct CompactModeButtons: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach([MicrophoneMode.off, .sleep, .on], id: \.self) { mode in
+                Button(action: { appState.setMode(mode) }) {
+                    Circle()
+                        .fill(colorFor(mode).opacity(appState.microphoneMode == mode ? 1.0 : 0.3))
+                        .frame(width: 12, height: 12)
+                        .overlay(
+                            Circle()
+                                .stroke(colorFor(mode), lineWidth: appState.microphoneMode == mode ? 0 : 1)
+                                .opacity(0.5)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .help(mode.rawValue.capitalized)
+            }
+        }
+    }
+
+    private func colorFor(_ mode: MicrophoneMode) -> Color {
+        switch mode {
+        case .off: return .gray
+        case .sleep: return .orange
+        case .on: return .green
+        }
+    }
+}
+
+// Audio pulse indicator that pulses based on audio level
+private struct AudioPulseIndicator: View {
+    let level: Float
+    let mode: MicrophoneMode
+
+    // Amplify level for better visibility (input is typically 0-0.3)
+    private var amplifiedLevel: Float {
+        min(1.0, level * 5.0)
+    }
+
+    var body: some View {
+        ZStack {
+            // Outer glow when speaking
+            Circle()
+                .fill(pulseColor.opacity(0.3))
+                .frame(width: 14, height: 14)
+                .scaleEffect(1.0 + CGFloat(amplifiedLevel) * 0.5)
+                .opacity(Double(amplifiedLevel))
+
+            // Inner solid circle
+            Circle()
+                .fill(pulseColor)
+                .frame(width: 8, height: 8)
+        }
+        .animation(.easeInOut(duration: 0.08), value: amplifiedLevel)
+    }
+
+    private var pulseColor: Color {
+        switch mode {
+        case .on: return amplifiedLevel > 0.5 ? .orange : .green
+        case .sleep: return .orange
+        case .off: return .gray
+        }
     }
 }
 
@@ -525,8 +848,16 @@ private struct TranscriptContentView: View {
                     Text(appState.currentTranscript)
                         .font(.system(size: 16, weight: .regular, design: .rounded))
                         .foregroundColor(.primary.opacity(0.6)) // Active is gray
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            
+            // Add a bit of selectable "breathing room" at the bottom
+            // This makes it much easier to click and drag from below the last line.
+            Text("\n ")
+                .font(.system(size: 12))
+                .opacity(0.01)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -549,9 +880,15 @@ private struct TranscriptContentView: View {
         case .off:
             return "Microphone off"
         case .on:
+            if appState.effectiveIsOffline {
+                return appState.isConnected ? "Listening (Mac Speech)…" : "Starting Mac Speech…"
+            }
             return appState.isConnected ? "Listening…" : "Connecting…"
         case .sleep:
-            return appState.isConnected ? "Listening for 'Wake up'…" : "Connecting…"
+            if appState.effectiveIsOffline {
+                return appState.isConnected ? "Listening for 'Speech on' (Mac Speech)…" : "Starting Mac Speech…"
+            }
+            return appState.isConnected ? "Listening for 'Speech on'…" : "Connecting…"
         }
     }
 }
@@ -636,6 +973,8 @@ private struct TranscriptWordsText: View {
             .font(.system(size: 16, weight: .regular, design: .rounded))
             .lineSpacing(3)
             .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
     }
 
     private var textView: Text {

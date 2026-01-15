@@ -25,59 +25,11 @@ ENTITLEMENTS="VoiceFlow-Dev.entitlements"
 # TODO: Investigate why developer signing causes "Launchd job spawn failed" error
 SIGNING_IDENTITY="-"
 
-# Create App Bundle Structure only if it doesn't exist
-# This preserves the bundle identity so permissions persist
-if [ ! -d "${APP_BUNDLE}" ]; then
-    echo "Creating Dev App Bundle (first time only)..."
-    mkdir -p "${MACOS_DIR}"
-    mkdir -p "${RESOURCES_DIR}"
+# ... (omitted)
 
-    # Create modified Info.plist for dev
-    echo "Creating Dev Info.plist..."
-    cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key>
-    <string>VoiceFlow-Dev</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.jacobcole.voiceflow.dev</string>
-    <key>CFBundleVersion</key>
-    <string>1.0.0-dev</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0.0-dev</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleExecutable</key>
-    <string>VoiceFlow-Dev</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>VoiceFlow needs access to your microphone for speech recognition and voice commands.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
-    <string>VoiceFlow uses speech recognition for real-time transcription.</string>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>VoiceFlow needs permission to send keyboard events to other applications.</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-</dict>
-</plist>
-EOF
-    # Convert Info.plist to binary format
-    plutil -convert binary1 "${CONTENTS_DIR}/Info.plist"
-fi
-
-# Copy new binary
-echo "Copying Binary..."
-cp "${BINARY_PATH}" "${MACOS_DIR}/${DEV_APP_NAME}"
-
-# Sign with entitlements
+# Sign with entitlements (REMOVED ENTITLEMENTS FLAG)
 echo "Signing with: ${SIGNING_IDENTITY}"
 codesign --force --sign "${SIGNING_IDENTITY}" \
-    --entitlements "${ENTITLEMENTS}" \
     "${APP_BUNDLE}" 2>&1
 
 # Verify signature
