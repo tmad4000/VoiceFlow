@@ -2644,6 +2644,7 @@ class AppState: ObservableObject {
         }
 
         // Claude Code Command Mode - "command [text]" sends to Claude Code
+        NSLog("[VoiceFlow] 🔍 Checking command prefix: transcript=\"%@\", hasPrefix=%@, isLiteral=%@", String(lowerTranscript.prefix(40)), lowerTranscript.hasPrefix("command ") ? "true" : "false", currentUtteranceIsLiteral ? "true" : "false")
         if lowerTranscript.hasPrefix("command ") {
             let commandText = String(turn.transcript.dropFirst(8)).trimmingCharacters(in: .whitespaces)
             if turn.endOfTurn {
@@ -2895,7 +2896,9 @@ class AppState: ObservableObject {
             return false
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return regex.firstMatch(in: trimmed, options: [], range: NSRange(location: 0, length: trimmed.utf16.count)) != nil
+        let result = regex.firstMatch(in: trimmed, options: [], range: NSRange(location: 0, length: trimmed.utf16.count)) != nil
+        NSLog("[VoiceFlow] 🔍 isSayPrefix: text=\"%@\", result=%@", String(trimmed.prefix(40)), result ? "true" : "false")
+        return result
     }
 
     private func executeMatch(_ match: PendingCommandMatch) {
