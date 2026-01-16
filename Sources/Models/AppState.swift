@@ -1325,9 +1325,10 @@ class AppState: ObservableObject {
             processVoiceCommands(turn)
         }
 
-        // In dictation mode, still check for "say" escape keyword (but skip other commands)
+        // In dictation mode, still check for "say" escape keyword and note-taking commands
         if initialMode == .on && activeBehavior == .dictation && !currentUtteranceIsLiteral {
             detectSayPrefix(turn)
+            detectNoteTakingCommands(turn)
         }
 
         if microphoneMode == .on && activeBehavior != .command {
@@ -2717,6 +2718,126 @@ class AppState: ObservableObject {
                 pendingLiteralMode = true
                 NSLog("[VoiceFlow] detectSayPrefix: 'say' alone at end of turn, setting pendingLiteralMode")
             }
+        }
+    }
+
+    /// Detect note-taking commands even during dictation mode
+    private func detectNoteTakingCommands(_ turn: TranscriptTurn) {
+        let lowerTranscript = (turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript).lowercased()
+
+        // "take a note" / "voiceflow make a note" - capture this utterance as note
+        if lowerTranscript.hasPrefix("take a note") || lowerTranscript.hasPrefix("voiceflow make a note") || lowerTranscript.hasPrefix("voice flow make a note") {
+            if turn.endOfTurn {
+                // Extract the note content (everything after the command)
+                var noteContent = lowerTranscript
+                if noteContent.hasPrefix("take a note") {
+                    noteContent = String(noteContent.dropFirst("take a note".count))
+                } else if noteContent.hasPrefix("voiceflow make a note") {
+                    noteContent = String(noteContent.dropFirst("voiceflow make a note".count))
+                } else if noteContent.hasPrefix("voice flow make a note") {
+                    noteContent = String(noteContent.dropFirst("voice flow make a note".count))
+                }
+                noteContent = noteContent.trimmingCharacters(in: .whitespaces)
+
+                if !noteContent.isEmpty {
+                    // Save the note content directly
+                    saveNote(noteContent)
+                    triggerCommandFlash(name: "Note Saved")
+                } else {
+                    // No content after command - start capture mode for next utterance
+                    startCapturingNote()
+                }
+
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'take a note' detected, content='%@'", noteContent)
+            }
+            return
+        }
+
+        // "voiceflow make a long note" - capture until 10s pause
+        if lowerTranscript.hasPrefix("voiceflow make a long note") || lowerTranscript.hasPrefix("voice flow make a long note") {
+            if turn.endOfTurn {
+                startCapturingLongNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_long_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow make a long note' detected")
+            }
+            return
+        }
+
+        // "voiceflow start making a note" - continuous note until stop
+        if lowerTranscript.hasPrefix("voiceflow start making a note") || lowerTranscript.hasPrefix("voice flow start making a note") {
+            if turn.endOfTurn {
+                startContinuousNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_continuous_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow start making a note' detected")
+            }
+            return
+        }
+
+        // "voiceflow stop making a note" / "stop making a note"
+        if lowerTranscript.hasPrefix("voiceflow stop making a note") || lowerTranscript.hasPrefix("voice flow stop making a note") || lowerTranscript.hasPrefix("stop making a note") {
+            if turn.endOfTurn {
+                stopContinuousNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_continuous_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow stop making a note' detected")
+            }
+            return
+        }
+
+        // "voiceflow start transcribing" - continuous transcription until stop
+        if lowerTranscript.hasPrefix("voiceflow start transcribing") || lowerTranscript.hasPrefix("voice flow start transcribing") {
+            if turn.endOfTurn {
+                startTranscribing()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_transcribing"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow start transcribing' detected")
+            }
+            return
+        }
+
+        // "voiceflow stop transcribing" / "stop transcribing"
+        if lowerTranscript.hasPrefix("voiceflow stop transcribing") || lowerTranscript.hasPrefix("voice flow stop transcribing") || lowerTranscript.hasPrefix("stop transcribing") {
+            if turn.endOfTurn {
+                stopTranscribing()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_transcribing"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow stop transcribing' detected")
+            }
+            return
         }
     }
 
