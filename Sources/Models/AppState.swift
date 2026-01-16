@@ -1747,8 +1747,13 @@ class AppState: ObservableObject {
             let firstToken = normalizeToken(words[0].text)
             if pending == "new" && firstToken == "line" {
                 logDebug("Cross-utterance 'new line' detected! Previous utterance ended with 'new', this one starts with 'line'")
-                // We'll prepend a newline and skip the first word
-                output = "\n"
+                // Buffer newline for terminals, otherwise prepend to output
+                if focusContextManager.isCurrentAppTerminal() {
+                    bufferedTerminalNewlines += 1
+                    logDebug("Buffering cross-utterance newline for terminal")
+                } else {
+                    output = "\n"
+                }
                 keyword = "New line"
                 consumedFirstWordForCrossUtterance = true
                 triggerKeywordFlash(name: "New line")
@@ -1773,7 +1778,13 @@ class AppState: ObservableObject {
             while output.last == " " {
                 output.removeLast()
             }
-            if output.last != "\n" {
+            // In terminal mode, buffer the newline to send at end of utterance
+            // This ensures Enter is sent AFTER all text is typed, which is required
+            // for terminal UIs like Claude Code to register it as a submit
+            if focusContextManager.isCurrentAppTerminal() {
+                bufferedTerminalNewlines += 1
+                logDebug("Buffering newline for terminal (total buffered: \(bufferedTerminalNewlines))")
+            } else if output.last != "\n" {
                 output.append("\n")
             }
         }
@@ -2029,6 +2040,20 @@ class AppState: ObservableObject {
                 if nextToken == "space", isKeywordGapAcceptable(previous: word, next: next) {
                     keyword = keyword ?? "No space"
                     suppressNextSpace = true  // Next word will join directly
+                    index += 2
+                    continue
+                }
+            }
+
+            // "press enter" - sends Enter key (useful for submitting in terminals)
+            if token == "press", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "enter", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Press enter"
+                    NSLog("[VoiceFlow] ⏎ Press enter keyword detected at word index %d", index)
+                    triggerKeywordFlash(name: "Press enter")
+                    appendNewline()
                     index += 2
                     continue
                 }

@@ -185,6 +185,16 @@ struct FloatingPanelView: View {
 
                         Divider()
 
+                        // Auto-submit toggle (experiment)
+                        Toggle(isOn: Binding(
+                            get: { appState.autoSubmitEnabled },
+                            set: { appState.autoSubmitEnabled = $0 }
+                        )) {
+                            Label("Auto-Submit (\(String(format: "%.1f", appState.autoSubmitDelaySeconds))s)", systemImage: "return")
+                        }
+
+                        Divider()
+
                         Button(action: {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 appState.isPanelMinimal = true
