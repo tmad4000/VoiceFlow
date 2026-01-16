@@ -277,6 +277,30 @@ class AppState: ObservableObject {
         return dir
     }()
 
+    // Note-taking modes
+    @Published var isCapturingNote: Bool = false           // Single utterance note
+    @Published var isCapturingLongNote: Bool = false       // Timeout-based long note
+    @Published var isContinuousNote: Bool = false          // Start/stop continuous note
+    private var noteBuffer: String = ""
+    private var notePauseTimer: Timer?
+    private let notePauseThreshold: TimeInterval = 10.0    // 10 seconds for long note
+    private let notesDirectory: URL = {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let dir = docs.appendingPathComponent("VoiceFlow/Notes", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    // Transcribing mode ("voiceflow start transcribing")
+    @Published var isTranscribing: Bool = false
+    private var transcriptBuffer: String = ""
+    private let transcriptsDirectory: URL = {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let dir = docs.appendingPathComponent("VoiceFlow/Transcripts", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
     var claudeCodeService: ClaudeCodeService?
 
     let focusContextManager = FocusContextManager()
@@ -317,7 +341,14 @@ class AppState: ObservableObject {
         ("are you listening", "Confirm VoiceFlow is active with audio/visual feedback"),
         ("are you there", "Confirm VoiceFlow is active (alternate)"),
         ("voiceflow start recording", "Start recording audio to a WAV file"),
-        ("voiceflow stop recording", "Stop recording and save audio file")
+        ("voiceflow stop recording", "Stop recording and save audio file"),
+        ("take a note [text]", "Capture a single utterance as a note"),
+        ("voiceflow make a note [text]", "Capture a single utterance as a note"),
+        ("voiceflow make a long note", "Start extended note (10s pause to finish)"),
+        ("voiceflow start making a note", "Start continuous note-taking"),
+        ("voiceflow stop making a note", "Stop continuous note-taking and save"),
+        ("voiceflow start transcribing", "Start continuous transcription"),
+        ("voiceflow stop transcribing", "Stop transcription and save")
     ]
 
     /// Special dictation keywords (not commands)
@@ -1467,6 +1498,18 @@ class AppState: ObservableObject {
         // Track utterance in focus context for future formatting decisions
         focusContextManager.addUtterance(trimmedProcessed)
 
+        // Capture for note-taking/transcription modes
+        if isCapturingNote {
+            captureNoteUtterance(trimmedProcessed)
+        } else if isCapturingLongNote {
+            appendToLongNote(trimmedProcessed)
+        } else if isContinuousNote {
+            appendToContinuousNote(trimmedProcessed)
+        }
+        if isTranscribing {
+            appendToTranscript(trimmedProcessed)
+        }
+
         typeText(processedText, appendSpace: true)
         if !trimmedProcessed.isEmpty {
             didTypeDictationThisUtterance = true
@@ -1899,6 +1942,8 @@ class AppState: ObservableObject {
 
             if token == "newline" {
                 keyword = keyword ?? "New line"
+                NSLog("[VoiceFlow] ⏎ Newline keyword detected: token='newline', wordIndex=%d, totalWords=%d, isEndOfUtterance=%@",
+                      index, words.count, index == words.count - 1 ? "YES" : "no")
                 appendNewline()
                 index += 1
                 continue
@@ -1913,6 +1958,8 @@ class AppState: ObservableObject {
                         // Always treat "new line" as a newline command when spoken together
                         // Users can say "say new line" if they want the literal text
                         keyword = keyword ?? "New line"
+                        NSLog("[VoiceFlow] ⏎ Newline keyword detected: token='new line', wordIndex=%d, totalWords=%d, isEndOfUtterance=%@",
+                              index, words.count, index + 1 >= words.count - 1 ? "YES" : "no")
                         logDebug("Keyword \"new line\" detected at word index \(index), appending newline")
                         appendNewline()
                         if index + 2 < words.count, isSkippablePunctuation(words[index + 2].text) {
@@ -2942,6 +2989,96 @@ class AppState: ObservableObject {
             }
         }
 
+        // VoiceFlow Note-Taking Commands
+        // "take a note" / "voiceflow make a note" - capture next utterance as note
+        if lowerTranscript.hasPrefix("take a note") || lowerTranscript.hasPrefix("voiceflow make a note") || lowerTranscript.hasPrefix("voice flow make a note") {
+            if turn.endOfTurn {
+                startCapturingNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // "voiceflow make a long note" - capture until 10s pause
+        if lowerTranscript.hasPrefix("voiceflow make a long note") || lowerTranscript.hasPrefix("voice flow make a long note") {
+            if turn.endOfTurn {
+                startCapturingLongNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_long_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // "voiceflow start making a note" - continuous note until stop
+        if lowerTranscript.hasPrefix("voiceflow start making a note") || lowerTranscript.hasPrefix("voice flow start making a note") {
+            if turn.endOfTurn {
+                startContinuousNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_continuous_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // "voiceflow stop making a note" / "stop making a note"
+        if lowerTranscript.hasPrefix("voiceflow stop making a note") || lowerTranscript.hasPrefix("voice flow stop making a note") || lowerTranscript.hasPrefix("stop making a note") {
+            if turn.endOfTurn {
+                stopContinuousNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_continuous_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // VoiceFlow Transcribing Commands
+        if lowerTranscript.hasPrefix("voiceflow start transcribing") || lowerTranscript.hasPrefix("voice flow start transcribing") {
+            if turn.endOfTurn {
+                startTranscribing()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_transcribing"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        if lowerTranscript.hasPrefix("voiceflow stop transcribing") || lowerTranscript.hasPrefix("voice flow stop transcribing") || lowerTranscript.hasPrefix("stop transcribing") {
+            if turn.endOfTurn {
+                stopTranscribing()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_transcribing"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
         // Claude Code Command Mode - "command [text]" sends to Claude Code
         NSLog("[VoiceFlow] 🔍 Checking command prefix: transcript=\"%@\", hasPrefix=%@, isLiteral=%@", String(lowerTranscript.prefix(40)), lowerTranscript.hasPrefix("command ") ? "true" : "false", currentUtteranceIsLiteral ? "true" : "false")
         if lowerTranscript.hasPrefix("command ") {
@@ -3561,6 +3698,179 @@ class AppState: ObservableObject {
         recordingAudioBuffer.append(data)
     }
 
+    // MARK: - Note Taking ("take a note", "voiceflow make a note")
+
+    /// Start capturing next utterance as a note (single utterance mode)
+    func startCapturingNote() {
+        logDebug("Starting note capture (single utterance)")
+        isCapturingNote = true
+        noteBuffer = ""
+        triggerCommandFlash(name: "Note...")
+        NSSound.beep()
+    }
+
+    /// Called when a complete utterance is received while in note capture mode
+    func captureNoteUtterance(_ text: String) {
+        guard isCapturingNote else { return }
+
+        isCapturingNote = false
+        saveNote(text)
+    }
+
+    /// Start capturing a long note (timeout-based, 10s pause to finish)
+    func startCapturingLongNote() {
+        logDebug("Starting long note capture (10s timeout)")
+        isCapturingLongNote = true
+        noteBuffer = ""
+        triggerCommandFlash(name: "Long Note...")
+        NSSound.beep()
+        resetNotePauseTimer()
+    }
+
+    /// Add text to long note buffer and reset timer
+    func appendToLongNote(_ text: String) {
+        guard isCapturingLongNote else { return }
+
+        if !noteBuffer.isEmpty {
+            noteBuffer += " "
+        }
+        noteBuffer += text
+        resetNotePauseTimer()
+    }
+
+    /// Reset the pause timer for long note
+    private func resetNotePauseTimer() {
+        notePauseTimer?.invalidate()
+        notePauseTimer = Timer.scheduledTimer(withTimeInterval: notePauseThreshold, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.finishLongNote()
+            }
+        }
+    }
+
+    /// Finish and save the long note
+    private func finishLongNote() {
+        guard isCapturingLongNote else { return }
+
+        notePauseTimer?.invalidate()
+        notePauseTimer = nil
+        isCapturingLongNote = false
+
+        if noteBuffer.isEmpty {
+            triggerCommandFlash(name: "Note Empty")
+        } else {
+            saveNote(noteBuffer)
+        }
+        noteBuffer = ""
+    }
+
+    /// Start continuous note mode (until "stop making a note")
+    func startContinuousNote() {
+        logDebug("Starting continuous note")
+        isContinuousNote = true
+        noteBuffer = ""
+        triggerCommandFlash(name: "Note On...")
+        NSSound.beep()
+    }
+
+    /// Add text to continuous note buffer
+    func appendToContinuousNote(_ text: String) {
+        guard isContinuousNote else { return }
+
+        if !noteBuffer.isEmpty {
+            noteBuffer += " "
+        }
+        noteBuffer += text
+    }
+
+    /// Stop continuous note and save
+    func stopContinuousNote() {
+        guard isContinuousNote else {
+            logDebug("Not in continuous note mode")
+            return
+        }
+
+        logDebug("Stopping continuous note")
+        isContinuousNote = false
+
+        if noteBuffer.isEmpty {
+            triggerCommandFlash(name: "Note Empty")
+        } else {
+            saveNote(noteBuffer)
+        }
+        noteBuffer = ""
+    }
+
+    /// Save note to file
+    private func saveNote(_ text: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let filename = "note_\(formatter.string(from: Date())).txt"
+        let fileURL = notesDirectory.appendingPathComponent(filename)
+
+        do {
+            try text.write(to: fileURL, atomically: true, encoding: .utf8)
+            logDebug("Saved note: \(filename)")
+            triggerCommandFlash(name: "Note Saved")
+            NSSound.beep()
+        } catch {
+            logDebug("Failed to save note: \(error)")
+            triggerCommandFlash(name: "Note Failed")
+        }
+    }
+
+    // MARK: - Transcribing ("voiceflow start/stop transcribing")
+
+    /// Start transcribing mode - saves all speech to transcript file
+    func startTranscribing() {
+        logDebug("Starting transcription")
+        isTranscribing = true
+        transcriptBuffer = ""
+        triggerCommandFlash(name: "Transcribing...")
+        NSSound.beep()
+    }
+
+    /// Add text to transcript buffer
+    func appendToTranscript(_ text: String) {
+        guard isTranscribing else { return }
+
+        if !transcriptBuffer.isEmpty {
+            transcriptBuffer += "\n"
+        }
+        transcriptBuffer += text
+    }
+
+    /// Stop transcribing and save
+    func stopTranscribing() {
+        guard isTranscribing else {
+            logDebug("Not transcribing")
+            return
+        }
+
+        logDebug("Stopping transcription")
+        isTranscribing = false
+
+        if transcriptBuffer.isEmpty {
+            triggerCommandFlash(name: "Transcript Empty")
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+            let filename = "transcript_\(formatter.string(from: Date())).txt"
+            let fileURL = transcriptsDirectory.appendingPathComponent(filename)
+
+            do {
+                try transcriptBuffer.write(to: fileURL, atomically: true, encoding: .utf8)
+                logDebug("Saved transcript: \(filename)")
+                triggerCommandFlash(name: "Transcript Saved")
+                NSSound.beep()
+            } catch {
+                logDebug("Failed to save transcript: \(error)")
+                triggerCommandFlash(name: "Save Failed")
+            }
+        }
+        transcriptBuffer = ""
+    }
+
     func showPanelWindow() {
         isPanelVisible = true
         panelVisibilityHandler?(true)
@@ -4056,21 +4366,32 @@ class AppState: ObservableObject {
 
         for char in output {
             if char == "\n" {
-                logDebug("Sending Return key for newline (isTerminal=\(isTerminal))")
+                // Diagnostic logging for newline debugging (VoiceFlow-qs3)
+                let beforeNewline = Date()
+                var actualDelay: TimeInterval = 0
+
                 // Ensure sufficient delay before Return key, even across typeText calls
                 // This fixes inconsistent newline submission at end of utterances
                 // Terminal UIs (like Claude Code) need time to process the keypress as "submit"
                 if let lastTime = lastKeyEventTime {
-                    let elapsed = Date().timeIntervalSince(lastTime)
+                    let elapsed = beforeNewline.timeIntervalSince(lastTime)
                     let neededDelay = max(0, minDelayBeforeReturn - elapsed)
                     if neededDelay > 0 {
                         Thread.sleep(forTimeInterval: neededDelay)
+                        actualDelay = neededDelay
                     }
+                    NSLog("[VoiceFlow] ⏎ Return key: elapsed=%.0fms, needed=%.0fms, actual_delay=%.0fms (isTerminal=%@)",
+                          elapsed * 1000, minDelayBeforeReturn * 1000, actualDelay * 1000, isTerminal ? "true" : "false")
                 } else {
                     // Always delay before Enter, even if this is the first/only keypress
                     // This ensures terminal UIs have time to be ready for the submission
                     Thread.sleep(forTimeInterval: minDelayBeforeReturn)
+                    actualDelay = minDelayBeforeReturn
+                    NSLog("[VoiceFlow] ⏎ Return key: FIRST_KEYPRESS, forced_delay=%.0fms (isTerminal=%@)",
+                          actualDelay * 1000, isTerminal ? "true" : "false")
                 }
+
+                logDebug("Sending Return key for newline (isTerminal=\(isTerminal), delay=\(Int(actualDelay * 1000))ms)")
 
                 // For terminals (especially ink/React apps like Claude Code), we need to ensure
                 // the Return key sends \r (carriage return), not \n (line feed).
