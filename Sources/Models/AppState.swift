@@ -5379,11 +5379,19 @@ class AppState: ObservableObject {
 
     private func flushDictationBuffer(isForceEnd: Bool) {
         logDebug("flushDictationBuffer called: transcript=\"\(currentTranscript.prefix(50))\", mode=\(microphoneMode.rawValue), isForceEnd=\(isForceEnd)")
-        guard !currentTranscript.isEmpty else {
-            logDebug("flushDictationBuffer: skipped - transcript is empty")
+
+        // If buffer is empty but force end requested, send last completed utterance
+        if currentTranscript.isEmpty {
+            if isForceEnd, let lastUtterance = dictationHistory.first(where: { !$0.hasPrefix("[Command]") }) {
+                logDebug("flushDictationBuffer: buffer empty, resending last utterance: \"\(lastUtterance.prefix(50))\"")
+                typeText(lastUtterance, appendSpace: true)
+                return
+            }
+            logDebug("flushDictationBuffer: skipped - transcript is empty and no last utterance")
             return
         }
-        guard microphoneMode == .on else {
+        // Force send works in any mode when explicitly requested
+        guard microphoneMode == .on || isForceEnd else {
             logDebug("flushDictationBuffer: skipped - mode is \(microphoneMode.rawValue), not on")
             return
         }
