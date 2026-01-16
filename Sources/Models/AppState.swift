@@ -2652,7 +2652,12 @@ class AppState: ObservableObject {
                 let commandLower = commandText.lowercased()
                 if commandLower == "open" || commandLower.isEmpty {
                     logDebug("Opening command panel")
-                    openCommandPanel()
+                    if isCommandPanelVisible {
+                        // Panel already open - just focus the input
+                        NotificationCenter.default.post(name: NSNotification.Name("CommandPanelShouldFocusInput"), object: nil)
+                    } else {
+                        openCommandPanel()
+                    }
                     triggerCommandFlash(name: "Command Open")
                 } else if commandLower == "close" {
                     logDebug("Closing command panel")
@@ -3857,6 +3862,7 @@ class AppState: ObservableObject {
 
         let keyName = KeyboardShortcut.keyCodeToString(shortcut.keyCode)
         logDebug("Sending Event: \(flagNames.joined(separator: "+")) + \(keyName) (code: \(shortcut.keyCode))")
+        NSLog("[VoiceFlow] executeKeyboardShortcut: keyCode=%d (0x%02X), flags=%llu", shortcut.keyCode, shortcut.keyCode, flags.rawValue)
 
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: shortcut.keyCode, keyDown: true)
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: shortcut.keyCode, keyDown: false)
@@ -3864,7 +3870,9 @@ class AppState: ObservableObject {
         keyDown?.flags = flags
         keyUp?.flags = flags
 
+        // Post keyDown, wait briefly, then keyUp (more realistic timing)
         keyDown?.post(tap: .cghidEventTap)
+        usleep(10000)  // 10ms delay between keyDown and keyUp
         keyUp?.post(tap: .cghidEventTap)
     }
 

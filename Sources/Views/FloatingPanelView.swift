@@ -68,6 +68,8 @@ struct FloatingPanelView: View {
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // Small padding at edges to allow window resize handles
+        .padding(3)
     }
 
     private var fullPanel: some View {
@@ -245,25 +247,22 @@ struct FloatingPanelView: View {
                             .padding(.vertical, 10)
                             .textSelection(.enabled)
                             .contentShape(Rectangle())
-                        
+
                         // Invisible anchor for scrolling
                         Color.clear.frame(height: 1).id("bottom")
                     }
                     .coordinateSpace(name: "scroll")
                     .frame(minHeight: 100, maxHeight: .infinity)
-                    .onPreferenceChange(ScrollOffsetPreferenceKey.self) { value in
-                        // If we are significantly scrolled up (e.g. > 50px from bottom), disable auto-scroll
-                        // Note: This logic is tricky. If content is smaller than view, min Y is 0.
-                        // If content is larger, min Y becomes negative as we scroll down.
-                        // When at bottom, min Y + height ≈ view height.
-                        // For now, let's just rely on the user clicking the button to re-enable.
-                        // Detecting "scrolled up" is hard without knowing content height.
-                        // So we will assume: if user scrolls, they might disable it.
-                        // But we don't have a reliable way to detect "user scroll" vs "auto scroll".
-                        // So we'll skip complex detection for now and just default to enabled, unless manually disabled.
-                        // WAIT: The user asked for a "Jump to" option if they manually scroll.
-                        // Since detecting "manual" scroll is hard, let's just show the button if they are NOT at the bottom.
-                    }
+                    // Detect user scroll interaction - disable auto-scroll when user drags
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 5)
+                            .onChanged { _ in
+                                // User is actively scrolling - disable auto-scroll
+                                if autoScrollEnabled {
+                                    autoScrollEnabled = false
+                                }
+                            }
+                    )
                     .onChange(of: appState.recentTurns.count) { _ in
                         if autoScrollEnabled {
                             withAnimation {
@@ -332,6 +331,8 @@ struct FloatingPanelView: View {
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        // Small padding at edges to allow window resize handles to be accessible
+        .padding(3)
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
                 if appState.isCommandFlashActive, let commandName = appState.lastCommandName {
