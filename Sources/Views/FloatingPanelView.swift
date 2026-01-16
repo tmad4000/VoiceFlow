@@ -243,7 +243,8 @@ struct FloatingPanelView: View {
                     ScrollView {
                         TranscriptContentView()
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 12)
+                            .padding(.leading, 12)
+                            .padding(.trailing, 36)  // Extra trailing space for copy button
                             .padding(.vertical, 10)
                             .textSelection(.enabled)
                             .contentShape(Rectangle())
@@ -315,8 +316,8 @@ struct FloatingPanelView: View {
                     }
                     .buttonStyle(.plain)
                     .pointerCursor()
-                    .padding(.top, 4)
-                    .padding(.trailing, 4)
+                    .padding(.top, 8)
+                    .padding(.trailing, 8)
                     .help("Copy all visible text to clipboard")
                 }
             }

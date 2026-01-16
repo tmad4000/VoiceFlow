@@ -4579,6 +4579,9 @@ class AppState: ObservableObject {
 
     /// Internal: Actually send a command message (not queued)
     private func sendCommandMessage(_ text: String) {
+        // Clear any previous error when sending new message
+        commandError = nil
+
         // Ensure service is running
         if claudeCodeService == nil {
             claudeCodeService = ClaudeCodeService(
