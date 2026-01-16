@@ -6,6 +6,8 @@ struct FloatingPanelView: View {
     @EnvironmentObject var appState: AppState
     @State private var showingHideToast = false
     @State private var autoScrollEnabled = true
+    @State private var lastScrollOffset: CGFloat = 0
+    @State private var isUserScrolling = false
 
     var body: some View {
         Group {
@@ -170,6 +172,13 @@ struct FloatingPanelView: View {
 
                     // More options menu
                     Menu {
+                        // Version info (non-interactive)
+                        Text("VoiceFlow v\(appVersion) (\(buildNumber))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        Divider()
+
                         Button(action: {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 appState.isPanelMinimal = true
@@ -248,22 +257,29 @@ struct FloatingPanelView: View {
                             .padding(.vertical, 10)
                             .textSelection(.enabled)
                             .contentShape(Rectangle())
+                            .background(
+                                GeometryReader { contentGeo in
+                                    Color.clear.preference(
+                                        key: ScrollContentOffsetKey.self,
+                                        value: contentGeo.frame(in: .named("scrollContainer")).minY
+                                    )
+                                }
+                            )
 
                         // Invisible anchor for scrolling
                         Color.clear.frame(height: 1).id("bottom")
                     }
-                    .coordinateSpace(name: "scroll")
+                    .coordinateSpace(name: "scrollContainer")
                     .frame(minHeight: 100, maxHeight: .infinity)
-                    // Detect user scroll interaction - disable auto-scroll when user drags
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 5)
-                            .onChanged { _ in
-                                // User is actively scrolling - disable auto-scroll
-                                if autoScrollEnabled {
-                                    autoScrollEnabled = false
-                                }
-                            }
-                    )
+                    .onPreferenceChange(ScrollContentOffsetKey.self) { offset in
+                        // Detect user scrolling UP (offset increases = content moves down = scrolled up)
+                        let delta = offset - lastScrollOffset
+                        if delta > 5 && autoScrollEnabled {
+                            // User scrolled up - disable auto-scroll
+                            autoScrollEnabled = false
+                        }
+                        lastScrollOffset = offset
+                    }
                     .onChange(of: appState.recentTurns.count) { _ in
                         if autoScrollEnabled {
                             withAnimation {
@@ -443,6 +459,18 @@ struct FloatingPanelView: View {
             }
         }
     }
+
+    // MARK: - Version Info
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+    }
+
+    private var buildNumber: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+    }
+
+    // MARK: - Actions
 
     private func hidePanel() {
         withAnimation(.easeInOut(duration: 0.2)) {
@@ -1115,6 +1143,20 @@ struct VisualEffectView: NSViewRepresentable {
 }
 
 struct ScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+struct ScrollBottomVisibleKey: PreferenceKey {
+    static var defaultValue: Bool = true
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = nextValue()
+    }
+}
+
+struct ScrollContentOffsetKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()

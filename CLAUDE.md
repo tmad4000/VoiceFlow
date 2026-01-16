@@ -32,12 +32,29 @@ VoiceFlow is a macOS voice-to-text dictation app with:
 - `Sources/Views/FloatingPanelView.swift` - Main UI panel
 - `Sources/Views/CommandPanelView.swift` - Claude Code chat panel
 
+## Version Management
+
+**Increment build number on every code change.** This helps track which build is running.
+
+Version info in `Sources/Info.plist`:
+- `CFBundleShortVersionString` - Semantic version (e.g., "0.2.0") - bump for releases
+- `CFBundleVersion` - Build number (e.g., "42") - **increment on every change**
+
+```bash
+# Quick version bump (increment build number)
+# Edit Sources/Info.plist and increment CFBundleVersion
+```
+
+Version is displayed in the floating panel's "..." menu.
+
 ## Running & Testing
 
 ```bash
-# Build
-xcodebuild -scheme VoiceFlow -configuration Debug -destination "platform=macOS" build
+# Build (SPM)
+swift build
 
-# Run (from DerivedData)
+# Run (from DerivedData or build output)
+.build/debug/VoiceFlow
+# or
 /Users/jacobcole/Library/Developer/Xcode/DerivedData/VoiceFlow-bqgsuxwfbyobzkahaxtmfvunkgwd/Build/Products/Debug/VoiceFlow
 ```
