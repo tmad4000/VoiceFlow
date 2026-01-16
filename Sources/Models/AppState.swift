@@ -4591,6 +4591,12 @@ class AppState: ObservableObject {
             setupClaudeCodeEventHandler()
         }
 
+        // Build conversation history from existing messages (excluding the new user message)
+        // Only include completed messages with actual content
+        let history: [(role: String, content: String)] = commandMessages
+            .filter { $0.isComplete && !$0.content.isEmpty }
+            .map { (role: $0.role.rawValue, content: $0.content) }
+
         // Add user message to history
         commandMessages.append(CommandMessage.user(text))
 
@@ -4600,8 +4606,8 @@ class AppState: ObservableObject {
         inlineCommandResponse = assistantMessage
         showInlineResponse = true
 
-        // Send to Claude
-        claudeCodeService?.send(text)
+        // Send to Claude with conversation context
+        claudeCodeService?.send(text, conversationHistory: history.isEmpty ? nil : history)
     }
 
     /// Process next message in queue if any

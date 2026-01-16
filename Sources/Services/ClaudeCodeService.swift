@@ -232,7 +232,10 @@ class ClaudeCodeService: ObservableObject {
     }
 
     /// Send a message to Claude (spawns a new process for each message in --print mode)
-    func send(_ message: String) {
+    /// - Parameters:
+    ///   - message: The user message to send
+    ///   - conversationHistory: Optional array of (role, content) tuples for context
+    func send(_ message: String, conversationHistory: [(role: String, content: String)]? = nil) {
         debugLog("SEND: \(message.prefix(100))...")
         isProcessing = true
 
@@ -251,12 +254,29 @@ class ClaudeCodeService: ObservableObject {
             return
         }
 
+        // Build the message with conversation context if provided
+        var fullMessage = message
+        if let history = conversationHistory, !history.isEmpty {
+            // Include recent conversation context (limit to last 10 exchanges to avoid token limits)
+            let recentHistory = history.suffix(20)  // Last 20 messages (10 exchanges)
+            var contextLines: [String] = ["<conversation_context>", "Previous conversation:"]
+            for (role, content) in recentHistory {
+                let truncatedContent = content.count > 500 ? String(content.prefix(500)) + "..." : content
+                contextLines.append("\(role.capitalized): \(truncatedContent)")
+            }
+            contextLines.append("</conversation_context>")
+            contextLines.append("")
+            contextLines.append("Current request: \(message)")
+            fullMessage = contextLines.joined(separator: "\n")
+            debugLog("Added \(recentHistory.count) messages of context")
+        }
+
         // Format message as JSON for stream-json input format
         let jsonMessage: [String: Any] = [
             "type": "user",
             "message": [
                 "role": "user",
-                "content": message
+                "content": fullMessage
             ]
         ]
 
