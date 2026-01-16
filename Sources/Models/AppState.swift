@@ -2691,6 +2691,12 @@ class AppState: ObservableObject {
             if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
                 textToType = " " + textToType
             }
+            // Simpler approach: detect trailing newline CHARACTER and convert to buffered Enter
+            if trailingNewlineSendsEnter && textToType.hasSuffix("\n") {
+                textToType = String(textToType.dropLast())
+                bufferedTerminalNewlines += 1
+                NSLog("[VoiceFlow] ⏎ Trailing newline char detected in output, buffering Enter")
+            }
             logDebug("Live typing delta (formatted): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
             if !textToType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -2722,6 +2728,12 @@ class AppState: ObservableObject {
             var textToType = processInlineReplacements(rawText, wordSlice, isLiteral)
             if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
                 textToType = " " + textToType
+            }
+            // Simpler approach: detect trailing newline CHARACTER and convert to buffered Enter
+            if trailingNewlineSendsEnter && textToType.hasSuffix("\n") {
+                textToType = String(textToType.dropLast())
+                bufferedTerminalNewlines += 1
+                NSLog("[VoiceFlow] ⏎ Trailing newline char detected in output, buffering Enter")
             }
             logDebug("Live typing delta (final): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
