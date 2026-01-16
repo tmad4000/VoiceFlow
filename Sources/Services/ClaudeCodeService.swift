@@ -54,22 +54,23 @@ class ClaudeCodeService: ObservableObject {
 
     /// Start the Claude Code process
     func start() {
+        debugLog("start() called")
+
         guard process == nil else {
-            NSLog("[ClaudeCode] Process already running")
+            debugLog("Process already running, skipping")
             return
         }
 
         // Verify working directory exists
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: workingDirectory, isDirectory: &isDir), isDir.boolValue else {
-            let error = "Working directory does not exist: \(workingDirectory)"
-            NSLog("[ClaudeCode] \(error)")
-            lastError = error
-            onEvent?(.error(error))
+            debugLog("ERROR: Working directory does not exist: \(workingDirectory)")
+            lastError = "Working directory does not exist: \(workingDirectory)"
+            onEvent?(.error(lastError!))
             return
         }
 
-        NSLog("[ClaudeCode] Starting claude process in \(workingDirectory)")
+        debugLog("Starting in: \(workingDirectory)")
 
         let process = Process()
         let stdinPipe = Pipe()
@@ -78,6 +79,7 @@ class ClaudeCodeService: ObservableObject {
 
         // Find claude executable
         let claudePath = findClaudeExecutable()
+        debugLog("Found claude at: \(claudePath)")
         guard FileManager.default.fileExists(atPath: claudePath) else {
             let error = "Claude executable not found at \(claudePath)"
             NSLog("[ClaudeCode] \(error)")
@@ -89,6 +91,8 @@ class ClaudeCodeService: ObservableObject {
         process.executableURL = URL(fileURLWithPath: claudePath)
         var args = [
             "--dangerously-skip-permissions",
+            "--print",  // Required for --output-format to work
+            "--input-format", "stream-json",  // Accept JSON input
             "--output-format", "stream-json",
             "--verbose"
         ]
@@ -117,27 +121,50 @@ class ClaudeCodeService: ObservableObject {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        // Handle stdout (streaming JSON)
-        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            if let text = String(data: data, encoding: .utf8) {
-                Task { @MainActor [weak self] in
-                    self?.handleStdout(text)
+        // Use simple background thread reading (most reliable approach)
+        let stdoutHandle = stdoutPipe.fileHandleForReading
+        let stderrHandle = stderrPipe.fileHandleForReading
+
+        NSLog("[ClaudeCode] Starting stdout reader thread")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            NSLog("[ClaudeCode] stdout reader thread started")
+            while true {
+                let data = stdoutHandle.availableData
+                if data.isEmpty {
+                    NSLog("[ClaudeCode] stdout: EOF received")
+                    break
+                }
+                NSLog("[ClaudeCode] stdout: received \(data.count) bytes")
+                if let text = String(data: data, encoding: .utf8) {
+                    NSLog("[ClaudeCode] stdout text: \(text.prefix(300))")
+                    Task { @MainActor [weak self] in
+                        self?.handleStdout(text)
+                    }
                 }
             }
+            NSLog("[ClaudeCode] stdout reader thread ended")
         }
 
-        // Handle stderr
-        stderrPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            if let text = String(data: data, encoding: .utf8) {
-                Task { @MainActor [weak self] in
-                    self?.handleStderr(text)
+        NSLog("[ClaudeCode] Starting stderr reader thread")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            NSLog("[ClaudeCode] stderr reader thread started")
+            while true {
+                let data = stderrHandle.availableData
+                if data.isEmpty {
+                    NSLog("[ClaudeCode] stderr: EOF received")
+                    break
+                }
+                NSLog("[ClaudeCode] stderr: received \(data.count) bytes")
+                if let text = String(data: data, encoding: .utf8) {
+                    NSLog("[ClaudeCode] stderr text: \(text.prefix(300))")
+                    Task { @MainActor [weak self] in
+                        self?.handleStderr(text)
+                    }
                 }
             }
+            NSLog("[ClaudeCode] stderr reader thread ended")
         }
+        NSLog("[ClaudeCode] Background readers started")
 
         // Handle process termination
         process.terminationHandler = { [weak self] proc in
@@ -160,7 +187,7 @@ class ClaudeCodeService: ObservableObject {
             self.isConnected = true
             self.lastError = nil
             onEvent?(.connected)
-            NSLog("[ClaudeCode] Process started successfully")
+            debugLog("Process started: PID \(process.processIdentifier)")
         } catch {
             NSLog("[ClaudeCode] Failed to start process: \(error)")
             lastError = error.localizedDescription
@@ -170,21 +197,25 @@ class ClaudeCodeService: ObservableObject {
 
     /// Stop the Claude Code process
     func stop() {
-        guard let process = process, process.isRunning else {
-            self.process = nil
+        guard let currentProcess = process else {
             return
         }
 
         NSLog("[ClaudeCode] Stopping claude process")
 
-        // Close stdin to signal EOF
-        stdinPipe?.fileHandleForWriting.closeFile()
+        // Clear references first to prevent race conditions
+        let oldStdinPipe = stdinPipe
+        self.process = nil
+        self.stdinPipe = nil
+        self.stdoutPipe = nil
+        self.stderrPipe = nil
 
-        // Give it a moment to exit gracefully
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { [weak process] in
-            if process?.isRunning == true {
-                process?.terminate()
-            }
+        // Close stdin to signal EOF
+        oldStdinPipe?.fileHandleForWriting.closeFile()
+
+        // Terminate if still running
+        if currentProcess.isRunning {
+            currentProcess.terminate()
         }
     }
 
@@ -200,21 +231,51 @@ class ClaudeCodeService: ObservableObject {
         isProcessing = false
     }
 
-    /// Send a message to Claude
+    /// Send a message to Claude (spawns a new process for each message in --print mode)
     func send(_ message: String) {
+        debugLog("SEND: \(message.prefix(100))...")
+        isProcessing = true
+
+        // Stop any existing process first
+        if process?.isRunning == true {
+            stop()
+        }
+
+        // Start a fresh process for this message
+        start()
+
         guard let stdinPipe = stdinPipe, process?.isRunning == true else {
-            NSLog("[ClaudeCode] Cannot send - process not running")
+            debugLog("ERROR: Cannot send - process not running")
             lastError = "Process not running"
+            isProcessing = false
             return
         }
 
-        NSLog("[ClaudeCode] Sending message: \(message.prefix(100))...")
-        isProcessing = true
+        // Format message as JSON for stream-json input format
+        let jsonMessage: [String: Any] = [
+            "type": "user",
+            "message": [
+                "role": "user",
+                "content": message
+            ]
+        ]
 
-        // Write the message followed by newline
-        let messageWithNewline = message + "\n"
-        if let data = messageWithNewline.data(using: .utf8) {
-            stdinPipe.fileHandleForWriting.write(data)
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: jsonMessage)
+            if var jsonString = String(data: jsonData, encoding: .utf8) {
+                jsonString += "\n"
+                if let data = jsonString.data(using: .utf8) {
+                    stdinPipe.fileHandleForWriting.write(data)
+                    debugLog("SENT JSON: \(jsonString.prefix(100))...")
+                    // Close stdin to signal end of input and trigger response
+                    stdinPipe.fileHandleForWriting.closeFile()
+                    debugLog("Closed stdin to trigger response")
+                }
+            }
+        } catch {
+            debugLog("ERROR: Failed to serialize JSON: \(error)")
+            lastError = "Failed to serialize message"
+            isProcessing = false
         }
     }
 

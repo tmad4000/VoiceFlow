@@ -83,13 +83,13 @@ struct CommandPanelView: View {
             .buttonStyle(.plain)
             .help("Toggle debug panel")
 
-            // Connection status
+            // Status indicator (Ready/Processing/Error)
             HStack(spacing: 4) {
                 Circle()
-                    .fill(appState.isClaudeConnected ? Color.green : Color.red)
+                    .fill(statusColor)
                     .frame(width: 6, height: 6)
             }
-            .help(appState.isClaudeConnected ? "Connected" : "Disconnected")
+            .help(statusText)
 
             // Close button
             Button(action: closePanel) {
@@ -198,6 +198,18 @@ struct CommandPanelView: View {
 
     private var inputBar: some View {
         HStack(spacing: 8) {
+            // Queue indicator
+            if !appState.commandMessageQueue.isEmpty {
+                Text("\(appState.commandMessageQueue.count)")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Color.orange)
+                    .clipShape(Capsule())
+                    .help("\(appState.commandMessageQueue.count) message(s) queued")
+            }
+
             TextField("Ask Claude...", text: $inputText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
@@ -205,7 +217,7 @@ struct CommandPanelView: View {
                 .onSubmit {
                     sendMessage()
                 }
-                .disabled(!appState.isClaudeConnected || appState.isClaudeProcessing)
+                // Allow typing even during processing (will queue)
 
             // Stop button (when processing) or Send button
             if appState.isClaudeProcessing {
@@ -216,24 +228,44 @@ struct CommandPanelView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Stop current request")
-            } else {
-                Button(action: sendMessage) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundColor(canSend ? .accentColor : .secondary)
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
             }
+
+            // Send button (always visible, queues if processing)
+            Button(action: sendMessage) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 22))
+                    .foregroundColor(canSend ? .accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+            .help(appState.isClaudeProcessing ? "Queue message" : "Send message")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
 
     private var canSend: Bool {
-        appState.isClaudeConnected &&
-        !appState.isClaudeProcessing &&
         !inputText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var statusColor: Color {
+        if appState.commandError != nil {
+            return .red
+        } else if appState.isClaudeProcessing {
+            return .blue
+        } else {
+            return .green  // Ready
+        }
+    }
+
+    private var statusText: String {
+        if let error = appState.commandError {
+            return "Error: \(error)"
+        } else if appState.isClaudeProcessing {
+            return "Processing..."
+        } else {
+            return "Ready"
+        }
     }
 
     // MARK: - Actions
@@ -249,17 +281,12 @@ struct CommandPanelView: View {
 
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty, appState.isClaudeConnected else { return }
+        guard !text.isEmpty else { return }
 
-        // Add user message
-        appState.commandMessages.append(CommandMessage.user(text))
-        inputText = ""
+        inputText = ""  // Clear input immediately for good UX
 
-        // Send to Claude
-        appState.claudeCodeService?.send(text)
-
-        // Create placeholder assistant message
-        appState.commandMessages.append(CommandMessage.assistant())
+        // Use centralized command handling which supports queuing
+        appState.executeInlineCommand(text)
     }
 
     private func closePanel() {

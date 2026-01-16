@@ -27,6 +27,12 @@ struct FloatingPanelView: View {
                 AudioPulseIndicator(level: appState.audioLevel, mode: appState.microphoneMode)
             }
 
+            // PTT processing indicator (waiting for finalized text)
+            if appState.isPTTProcessing {
+                PTTProcessingWaveView()
+                    .instantTooltip("Processing speech...")
+            }
+
             if appState.isNewerBuildAvailable {
                 Image(systemName: "arrow.clockwise.circle.fill")
                     .font(.system(size: 10))
@@ -123,10 +129,25 @@ struct FloatingPanelView: View {
                         .pointerCursor()
                         .instantTooltip("Force send current dictation")
                     }
+
+                    // PTT processing indicator
+                    if appState.isPTTProcessing {
+                        PTTProcessingWaveView()
+                            .instantTooltip("Processing speech...")
+                    }
                 }
 
                 // Utility buttons
                 HStack(spacing: 10) {
+                    Button(action: { appState.toggleCommandPanel() }) {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(appState.isCommandPanelVisible ? .accentColor : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .instantTooltip("Claude Code")
+
                     Button(action: openHistory) {
                         Image(systemName: "clock.arrow.circlepath")
                             .font(.system(size: 14, weight: .medium))
@@ -179,11 +200,36 @@ struct FloatingPanelView: View {
             .padding(.vertical, 10)
             .background(Color.black.opacity(0.1))
 
-            // Warning Banners
-            VStack(spacing: 0) {
-                ForEach(appState.activeWarnings) { warning in
-                    WarningBanner(warning: warning)
+            // Warning Banners - limited to 2 max to prevent layout issues
+            if !appState.activeWarnings.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(appState.activeWarnings.prefix(2)) { warning in
+                        WarningBanner(warning: warning) {
+                            appState.dismissWarning(id: warning.id)
+                        }
+                    }
+                    // Show overflow indicator if more than 2 warnings
+                    if appState.activeWarnings.count > 2 {
+                        HStack {
+                            Text("+\(appState.activeWarnings.count - 2) more")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("Dismiss all") {
+                                for warning in appState.activeWarnings {
+                                    appState.dismissWarning(id: warning.id)
+                                }
+                            }
+                            .font(.system(size: 10))
+                            .buttonStyle(.plain)
+                            .foregroundColor(.blue)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.gray.opacity(0.1))
+                    }
                 }
+                .frame(maxHeight: 120) // Cap warning section height
             }
 
             Divider()
@@ -307,6 +353,22 @@ struct FloatingPanelView: View {
                         .background(Color.blue.opacity(0.75))
                         .clipShape(Capsule())
                         .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                // Extended command mode indicator
+                if appState.isExtendedCommandMode {
+                    HStack(spacing: 4) {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        Text("Long Command Mode...")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.orange.opacity(0.85))
+                    .clipShape(Capsule())
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
             .padding(.bottom, 20)
@@ -438,20 +500,21 @@ private struct InputDeviceMenu: View {
 
 struct WarningBanner: View {
     let warning: AppWarning
-    
+    let onDismiss: () -> Void
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: warning.severity == .error ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
                 .foregroundColor(warning.severity == .error ? .red : .orange)
                 .font(.system(size: 12))
                 .padding(.top, 2)
-            
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(warning.message)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.primary)
                     .fixedSize(horizontal: false, vertical: true)
-                
+
                 if let actionLabel = warning.actionLabel {
                     Text(actionLabel)
                         .font(.system(size: 10, weight: .bold))
@@ -459,18 +522,29 @@ struct WarningBanner: View {
                         .padding(.top, 2)
                 }
             }
-            
+
             Spacer()
-            
+
+            // Dismiss button
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .padding(4)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+
             Image(systemName: "chevron.right")
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
                 .padding(.top, 3)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8) // Increased vertical padding slightly
+        .padding(.vertical, 8)
         .background(warning.severity == .error ? Color.red.opacity(0.1) : Color.orange.opacity(0.1))
-        .contentShape(Rectangle()) // Ensure entire area is tappable
+        .contentShape(Rectangle())
         .onTapGesture {
             if let action = warning.action {
                 action()
@@ -1019,6 +1093,31 @@ struct ScrollOffsetPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+// MARK: - PTT Processing Indicator
+
+/// Animated waveform indicator shown when waiting for finalized text after PTT release
+struct PTTProcessingWaveView: View {
+    @State private var animate = false
+    let barCount = 4
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<barCount, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Color.orange)
+                    .frame(width: 3, height: animate ? 12 : 4)
+                    .animation(
+                        .easeInOut(duration: 0.4)
+                        .repeatForever(autoreverses: true)
+                        .delay(Double(i) * 0.1),
+                        value: animate
+                    )
+            }
+        }
+        .onAppear { animate = true }
     }
 }
 

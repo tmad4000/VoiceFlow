@@ -236,7 +236,7 @@ struct GeneralSettingsView: View {
     @State private var deepgramTestStatus: TestStatus = .idle
     @State private var anthropicTestStatus: TestStatus = .idle
     
-    @State private var isAssemblyExpanded = true
+    @State private var isAssemblyExpanded = false  // Collapsed by default to reduce clutter
     @State private var isDeepgramExpanded = false
 
     enum TestStatus {

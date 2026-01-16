@@ -224,6 +224,7 @@ class AppState: ObservableObject {
     @Published var isDebugMode: Bool = false
     #endif
     @Published var showCompactError: Bool = false
+    @Published var dismissedWarningIds: Set<String> = []  // Temporarily dismissed warnings
 
     // AI Formatter
     @Published var aiFormatterEnabled: Bool = true
@@ -243,6 +244,13 @@ class AppState: ObservableObject {
     @Published var claudeModel: ClaudeModel = .sonnet
     @Published var claudeDebugLog: [String] = []
     @Published var showClaudeDebugPanel: Bool = false
+
+    // Extended command capture mode ("long command")
+    @Published var isExtendedCommandMode: Bool = false
+    private var extendedCommandBuffer: String = ""
+    private var extendedCommandPauseTimer: Timer?
+    private let extendedCommandPauseThreshold: TimeInterval = 10.0  // 10 seconds of silence
+
     var claudeCodeService: ClaudeCodeService?
 
     let focusContextManager = FocusContextManager()
@@ -277,7 +285,12 @@ class AppState: ObservableObject {
         ("save to idea flow", "Copy last dictation and open Idea Flow"),
         ("command open", "Open the Claude Code command panel"),
         ("command close", "Close the Claude Code command panel"),
-        ("command [text]", "Execute command immediately via Claude Code")
+        ("command [text]", "Execute command immediately via Claude Code"),
+        ("long command [text]", "Start extended voice command (10s pause or 'stop command' to finish)"),
+        ("stop command", "End extended voice command capture"),
+        ("stop listening", "End extended voice command capture (alternate)"),
+        ("are you listening", "Confirm VoiceFlow is active with audio/visual feedback"),
+        ("are you there", "Confirm VoiceFlow is active (alternate)")
     ]
 
     /// Special dictation keywords (not commands)
@@ -376,7 +389,13 @@ class AppState: ObservableObject {
             ))
         }
 
-        return warnings
+        // Filter out temporarily dismissed warnings
+        return warnings.filter { !dismissedWarningIds.contains($0.id) }
+    }
+
+    /// Temporarily dismiss a warning (will reappear on next session or if condition changes)
+    func dismissWarning(id: String) {
+        dismissedWarningIds.insert(id)
     }
 
     private var dictgramIsRequired: Bool {
@@ -433,7 +452,7 @@ class AppState: ObservableObject {
     private var typedFinalWordCount = 0
     private var didTypeDictationThisUtterance = false
     private var hasTypedInSession = false  // Tracks if we've typed anything since going On
-    private var pendingPTTSleep = false  // When true, switch to sleep after receiving endOfTurn
+    @Published var isPTTProcessing = false  // When true, waiting for finalized text before sleep
     private var pttSleepTimeoutTask: Task<Void, Never>?  // Fallback timeout for PTT sleep
     private var forceEndPending = false
     private var forceEndRequestedAt: Date?
@@ -1288,9 +1307,9 @@ class AppState: ObservableObject {
             turnHandledBySpecialCommand = false
 
             // Handle pending PTT sleep - switch to sleep after finalized text is received
-            if pendingPTTSleep {
+            if isPTTProcessing {
                 logDebug("PTT: Received finalized text, switching to sleep")
-                pendingPTTSleep = false
+                isPTTProcessing = false
                 pttSleepTimeoutTask?.cancel()
                 pttSleepTimeoutTask = nil
                 setMode(.sleep)
@@ -2527,6 +2546,59 @@ class AppState: ObservableObject {
             }
         }
 
+        // Extended Command Mode handling - when active, buffer text and check for stop keywords
+        if isExtendedCommandMode {
+            // Check for stop keywords
+            if lowerTranscript.contains("stop command") || lowerTranscript.contains("stop listening") {
+                // Extract text before stop keyword and send
+                let stopIndex = lowerTranscript.range(of: "stop command") ?? lowerTranscript.range(of: "stop listening")
+                if let idx = stopIndex {
+                    let textBeforeStop = String(turn.transcript[..<idx.lowerBound]).trimmingCharacters(in: .whitespaces)
+                    if !textBeforeStop.isEmpty {
+                        extendedCommandBuffer += (extendedCommandBuffer.isEmpty ? "" : " ") + textBeforeStop
+                    }
+                }
+                finishExtendedCommand()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.extended_command"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+
+            // Buffer the text
+            if !turn.transcript.isEmpty {
+                extendedCommandBuffer += (extendedCommandBuffer.isEmpty ? "" : " ") + turn.transcript
+                resetExtendedCommandTimer()
+            }
+
+            // Mark turn as handled to prevent dictation
+            turnHandledBySpecialCommand = true
+            return
+        }
+
+        // Extended Command Mode - "long command [initial text]" starts extended capture
+        if lowerTranscript.hasPrefix("long command") {
+            // Extract initial text after "long command"
+            let initialText = String(turn.transcript.dropFirst(12)).trimmingCharacters(in: .whitespaces)
+
+            if turn.endOfTurn {
+                // Start extended command mode
+                startExtendedCommand(initialText: initialText)
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.extended_command"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
         // Claude Code Command Mode - "command [text]" sends to Claude Code
         if lowerTranscript.hasPrefix("command ") {
             let commandText = String(turn.transcript.dropFirst(8)).trimmingCharacters(in: .whitespaces)
@@ -2575,6 +2647,9 @@ class AppState: ObservableObject {
                 (phrase: "microphone on", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
                 (phrase: "flow on", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
                 (phrase: "speech on", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
+                // Status check
+                (phrase: "are you listening", key: "system.status_check", name: "Status", haltsProcessing: true, action: { [weak self] in self?.confirmListening() } as () -> Void),
+                (phrase: "are you there", key: "system.status_check", name: "Status", haltsProcessing: true, action: { [weak self] in self?.confirmListening() } as () -> Void),
                 // Also allow turning off from sleep mode
                 (phrase: "microphone off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in self?.setMode(.off) } as () -> Void),
                 (phrase: "flow off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in self?.setMode(.off) } as () -> Void),
@@ -2905,10 +2980,85 @@ class AppState: ObservableObject {
     private func triggerKeywordFlash(name: String) {
         lastKeywordName = name
         isKeywordFlashActive = true
-        
+
         DispatchQueue.main.asyncAfter(deadline: .now() + keywordFlashDurationSeconds) { [weak self] in
             self?.isKeywordFlashActive = false
         }
+    }
+
+    /// Provides audio/visual confirmation that VoiceFlow is listening
+    func confirmListening() {
+        // Play system sound for audio feedback
+        NSSound.beep()
+
+        // Show visual flash with current mode status
+        let statusText: String
+        switch microphoneMode {
+        case .on:
+            statusText = "Listening ✓"
+        case .sleep:
+            statusText = "Sleep Mode"
+        case .off:
+            statusText = "Mic Off"
+        }
+        triggerCommandFlash(name: statusText)
+    }
+
+    // MARK: - Extended Command Mode ("long command")
+
+    /// Start extended command capture mode
+    private func startExtendedCommand(initialText: String) {
+        logDebug("Starting extended command mode with initial: \"\(initialText)\"")
+        isExtendedCommandMode = true
+        extendedCommandBuffer = initialText
+        triggerCommandFlash(name: "Long Command...")
+
+        // Start the pause timer
+        resetExtendedCommandTimer()
+    }
+
+    /// Reset the extended command pause timer (called when speech is received)
+    private func resetExtendedCommandTimer() {
+        extendedCommandPauseTimer?.invalidate()
+        extendedCommandPauseTimer = Timer.scheduledTimer(
+            withTimeInterval: extendedCommandPauseThreshold,
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.finishExtendedCommand()
+            }
+        }
+    }
+
+    /// Finish extended command mode and send buffered text to Claude
+    private func finishExtendedCommand() {
+        extendedCommandPauseTimer?.invalidate()
+        extendedCommandPauseTimer = nil
+
+        let commandText = extendedCommandBuffer.trimmingCharacters(in: .whitespaces)
+        logDebug("Finishing extended command: \"\(commandText)\"")
+
+        isExtendedCommandMode = false
+        extendedCommandBuffer = ""
+
+        if !commandText.isEmpty {
+            executeInlineCommand(commandText)
+            triggerCommandFlash(name: "Long Command ✓")
+        } else {
+            triggerCommandFlash(name: "Long Command (empty)")
+        }
+    }
+
+    /// Cancel extended command mode without sending
+    func cancelExtendedCommand() {
+        guard isExtendedCommandMode else { return }
+
+        logDebug("Cancelling extended command mode")
+        extendedCommandPauseTimer?.invalidate()
+        extendedCommandPauseTimer = nil
+        isExtendedCommandMode = false
+        extendedCommandBuffer = ""
+        triggerCommandFlash(name: "Command Cancelled")
     }
 
     func showPanelWindow() {
@@ -4066,7 +4216,7 @@ class AppState: ObservableObject {
         guard microphoneMode == .on else { return }
 
         logDebug("PTT: Requesting graceful sleep, waiting for finalized text")
-        pendingPTTSleep = true
+        isPTTProcessing = true
 
         // Tell the speech service to finalize current utterance
         assemblyAIService?.forceEndUtterance()
@@ -4076,9 +4226,9 @@ class AppState: ObservableObject {
         pttSleepTimeoutTask?.cancel()
         pttSleepTimeoutTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
-            if self.pendingPTTSleep {
+            if self.isPTTProcessing {
                 self.logDebug("PTT: Timeout waiting for finalized text, forcing sleep")
-                self.pendingPTTSleep = false
+                self.isPTTProcessing = false
                 self.setMode(.sleep)
             }
         }
@@ -4086,9 +4236,9 @@ class AppState: ObservableObject {
 
     /// Cancel pending PTT sleep (e.g., if PTT is pressed again)
     func cancelPendingPTTSleep() {
-        if pendingPTTSleep {
+        if isPTTProcessing {
             logDebug("PTT: Cancelling pending sleep")
-            pendingPTTSleep = false
+            isPTTProcessing = false
             pttSleepTimeoutTask?.cancel()
             pttSleepTimeoutTask = nil
         }
@@ -4257,6 +4407,18 @@ class AppState: ObservableObject {
 
     /// Execute an inline command (no panel needed for simple commands)
     func executeInlineCommand(_ text: String) {
+        // Queue message if already processing
+        if isClaudeProcessing {
+            commandMessageQueue.append(text)
+            NSLog("[ClaudeCode] Queued message (queue size: \(commandMessageQueue.count))")
+            return
+        }
+
+        sendCommandMessage(text)
+    }
+
+    /// Internal: Actually send a command message (not queued)
+    private func sendCommandMessage(_ text: String) {
         // Ensure service is running
         if claudeCodeService == nil {
             claudeCodeService = ClaudeCodeService(
@@ -4264,9 +4426,6 @@ class AppState: ObservableObject {
                 model: claudeModel.cliFlag
             )
             setupClaudeCodeEventHandler()
-        }
-        if !isClaudeConnected {
-            claudeCodeService?.start()
         }
 
         // Add user message to history
@@ -4280,6 +4439,14 @@ class AppState: ObservableObject {
 
         // Send to Claude
         claudeCodeService?.send(text)
+    }
+
+    /// Process next message in queue if any
+    private func processCommandQueue() {
+        guard !commandMessageQueue.isEmpty else { return }
+        let nextMessage = commandMessageQueue.removeFirst()
+        NSLog("[ClaudeCode] Processing queued message (remaining: \(commandMessageQueue.count))")
+        sendCommandMessage(nextMessage)
     }
 
     private func setupClaudeCodeEventHandler() {
@@ -4354,10 +4521,14 @@ class AppState: ObservableObject {
                 commandMessages[lastIndex].isStreaming = false
                 commandMessages[lastIndex].isComplete = true
             }
+            // Process any queued messages
+            processCommandQueue()
 
         case .error(let errorMsg):
             commandError = errorMsg
             isClaudeProcessing = false
+            // Process any queued messages even after error
+            processCommandQueue()
         }
     }
 
