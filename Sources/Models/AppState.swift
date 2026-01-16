@@ -271,6 +271,7 @@ class AppState: ObservableObject {
 
     /// Built-in system commands for reference in UI
     static let systemCommandList: [(phrase: String, description: String)] = [
+        ("wake", "Switch to On mode (from Sleep)"),
         ("wake up", "Switch to On mode"),
         ("microphone on", "Switch to On mode"),
         ("flow on", "Switch to On mode"),
@@ -2082,7 +2083,7 @@ class AppState: ObservableObject {
             }
 
             // 3. Strip wake-up phrases that might leak through after mode switch
-            let wakeUpPhrases = ["wake up", "microphone on", "flow on"]
+            let wakeUpPhrases = ["wake", "wake up", "microphone on", "flow on"]
             for phrase in wakeUpPhrases {
                 if processed.lowercased().hasPrefix(phrase) {
                     processed = String(processed.dropFirst(phrase.count))
@@ -2452,6 +2453,7 @@ class AppState: ObservableObject {
             var wakeCommands: [(phrase: String, key: String, name: String, action: () -> Void)] = []
             if microphoneMode == .sleep {
                 wakeCommands = [
+                    (phrase: "wake", key: "system.wake_up", name: "On", action: { [weak self] in self?.setMode(.on) }),
                     (phrase: "wake up", key: "system.wake_up", name: "On", action: { [weak self] in self?.setMode(.on) }),
                     (phrase: "microphone on", key: "system.wake_up", name: "On", action: { [weak self] in self?.setMode(.on) }),
                     (phrase: "flow on", key: "system.wake_up", name: "On", action: { [weak self] in self?.setMode(.on) }),
@@ -2693,6 +2695,7 @@ class AppState: ObservableObject {
         
         if microphoneMode == .sleep {
             systemCommands.append(contentsOf: [
+                (phrase: "wake", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
                 (phrase: "wake up", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
                 (phrase: "microphone on", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
                 (phrase: "flow on", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
@@ -4230,7 +4233,7 @@ class AppState: ObservableObject {
             terms.append(contentsOf: keywordPhrases)
 
             // Wake/sleep phrases
-            terms.append(contentsOf: ["flow on", "flow off", "flow sleep", "wake up", "go to sleep"])
+            terms.append(contentsOf: ["flow on", "flow off", "flow sleep", "wake", "wake up", "go to sleep"])
         }
 
         // Remove duplicates and limit to 100 terms (AssemblyAI limit)
