@@ -2052,15 +2052,15 @@ class AppState: ObservableObject {
                 }
             }
 
-            // "press enter" - sends Enter key (useful for submitting in terminals)
+            // "press enter" / "press return" - sends Enter key (useful for submitting in terminals)
             if token == "press", index + 1 < words.count {
                 let next = words[index + 1]
                 let nextToken = normalizeToken(next.text)
-                if nextToken == "enter", isKeywordGapAcceptable(previous: word, next: next) {
+                if (nextToken == "enter" || nextToken == "return"), isKeywordGapAcceptable(previous: word, next: next) {
                     keyword = keyword ?? "Press enter"
                     NSLog("[VoiceFlow] ⏎ Press enter keyword detected at word index %d", index)
                     triggerKeywordFlash(name: "Press enter")
-                    // "press enter" always sends Enter key (acts as trailing)
+                    // "press enter/return" always sends Enter key (acts as trailing)
                     appendNewline(isTrailing: true)
                     index += 2
                     continue

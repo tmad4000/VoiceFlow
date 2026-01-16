@@ -31,7 +31,8 @@ struct VoiceCommand: Codable, Identifiable, Equatable, Hashable {
         VoiceCommand(phrase: "page up", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_PageUp), modifiers: [])),
         VoiceCommand(phrase: "page down", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_PageDown), modifiers: [])),
         VoiceCommand(phrase: "press escape", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Escape), modifiers: [])),
-        VoiceCommand(phrase: "press enter", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Return), modifiers: [])),
+        // Note: "press enter" removed - handled as keyword in applyKeywordReplacementsFromWords
+        // which uses AppleScript for terminals (more reliable)
     ]
 }
 
