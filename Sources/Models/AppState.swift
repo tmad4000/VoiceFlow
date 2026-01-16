@@ -5418,10 +5418,34 @@ class AppState: ObservableObject {
 
         // If buffer is empty but force end requested, send last completed utterance
         if currentTranscript.isEmpty {
-            if isForceEnd, let lastUtterance = dictationHistory.first(where: { !$0.hasPrefix("[Command]") }) {
-                logDebug("flushDictationBuffer: buffer empty, resending last utterance: \"\(lastUtterance.prefix(50))\"")
-                typeText(lastUtterance, appendSpace: true)
-                return
+            if isForceEnd {
+                // Find the most complete utterance - history may have partials
+                // Look through recent non-command entries and find the longest one
+                // that's part of the same "utterance group" (similar prefix)
+                let recentUtterances = dictationHistory.prefix(20).filter { !$0.hasPrefix("[Command]") }
+
+                if let firstUtterance = recentUtterances.first {
+                    // Find the longest version among similar entries
+                    var longestUtterance = firstUtterance
+                    for utterance in recentUtterances.dropFirst() {
+                        // Stop if we hit something that's clearly a different utterance
+                        // (doesn't share a common prefix with our candidate)
+                        let shorter = min(utterance.count, longestUtterance.count)
+                        let commonPrefix = String(utterance.prefix(shorter / 2))
+                        if !longestUtterance.hasPrefix(commonPrefix) && !utterance.hasPrefix(commonPrefix) {
+                            break
+                        }
+                        // Use the longer one if they seem related
+                        if utterance.count > longestUtterance.count && longestUtterance.hasPrefix(String(utterance.prefix(longestUtterance.count))) {
+                            longestUtterance = utterance
+                        } else if longestUtterance.hasPrefix(String(utterance.prefix(utterance.count / 2))) && utterance.count > longestUtterance.count {
+                            longestUtterance = utterance
+                        }
+                    }
+                    logDebug("flushDictationBuffer: buffer empty, resending utterance: \"\(longestUtterance.prefix(50))\" (found longest among \(recentUtterances.count) recent)")
+                    typeText(longestUtterance, appendSpace: true)
+                    return
+                }
             }
             logDebug("flushDictationBuffer: skipped - transcript is empty and no last utterance")
             return
