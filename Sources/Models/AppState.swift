@@ -3023,7 +3023,10 @@ class AppState: ObservableObject {
     private func triggerCommandFlash(name: String) {
         lastCommandName = name
         isCommandFlashActive = true
-        
+
+        // Log command to debug history
+        logDebug("⚡ Command: \(name)")
+
         // Reset flash after a short delay
         DispatchQueue.main.asyncAfter(deadline: .now() + commandFlashDurationSeconds) { [weak self] in
             self?.isCommandFlashActive = false
@@ -3033,6 +3036,9 @@ class AppState: ObservableObject {
     private func triggerKeywordFlash(name: String) {
         lastKeywordName = name
         isKeywordFlashActive = true
+
+        // Log keyword to debug history
+        logDebug("🎯 Keyword: \(name)")
 
         DispatchQueue.main.asyncAfter(deadline: .now() + keywordFlashDurationSeconds) { [weak self] in
             self?.isKeywordFlashActive = false
