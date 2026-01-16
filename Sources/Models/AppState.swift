@@ -348,7 +348,10 @@ class AppState: ObservableObject {
         ("voiceflow start making a note", "Start continuous note-taking"),
         ("voiceflow stop making a note", "Stop continuous note-taking and save"),
         ("voiceflow start transcribing", "Start continuous transcription"),
-        ("voiceflow stop transcribing", "Stop transcription and save")
+        ("voiceflow stop transcribing", "Stop transcription and save"),
+        ("voiceflow open notes", "Open Notes folder in Finder"),
+        ("voiceflow open recordings", "Open Recordings folder in Finder"),
+        ("voiceflow open transcripts", "Open Transcripts folder in Finder")
     ]
 
     /// Special dictation keywords (not commands)
@@ -2839,6 +2842,54 @@ class AppState: ObservableObject {
             }
             return
         }
+
+        // "voiceflow open notes" / "voice flow open notes" - open notes folder in Finder
+        if lowerTranscript.hasPrefix("voiceflow open notes") || lowerTranscript.hasPrefix("voice flow open notes") || lowerTranscript.hasPrefix("open notes folder") {
+            if turn.endOfTurn {
+                openNotesFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_notes"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow open notes' detected")
+            }
+            return
+        }
+
+        // "voiceflow open recordings" / "voice flow open recordings" - open recordings folder
+        if lowerTranscript.hasPrefix("voiceflow open recordings") || lowerTranscript.hasPrefix("voice flow open recordings") || lowerTranscript.hasPrefix("open recordings folder") {
+            if turn.endOfTurn {
+                openRecordingsFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_recordings"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow open recordings' detected")
+            }
+            return
+        }
+
+        // "voiceflow open transcripts" - open transcripts folder
+        if lowerTranscript.hasPrefix("voiceflow open transcripts") || lowerTranscript.hasPrefix("voice flow open transcripts") || lowerTranscript.hasPrefix("open transcripts folder") {
+            if turn.endOfTurn {
+                openTranscriptsFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_transcripts"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow open transcripts' detected")
+            }
+            return
+        }
     }
 
     private func processVoiceCommands(_ turn: TranscriptTurn) {
@@ -2855,7 +2906,7 @@ class AppState: ObservableObject {
         // Check both transcript AND first token (transcript may not match words accurately)
         let hasSayPrefix = isSayPrefix(transcriptForPrefix)
             || normalizedTokens.first?.token == "say"
-        NSLog("[VoiceFlow] processVoiceCommands: transcript=\"%@\", hasSayPrefix=%d", String(transcriptForPrefix.prefix(60)), hasSayPrefix ? 1 : 0)
+        NSLog("[VoiceFlow] processVoiceCommands: transcript=\"%@\", hasSayPrefix=%d, endOfTurn=%d", String(transcriptForPrefix.prefix(60)), hasSayPrefix ? 1 : 0, turn.endOfTurn ? 1 : 0)
 
         if hasSayPrefix {
             currentUtteranceIsLiteral = true
@@ -3990,6 +4041,30 @@ class AppState: ObservableObject {
             }
         }
         transcriptBuffer = ""
+    }
+
+    // MARK: - Folder Opening Commands
+
+    /// Open the notes folder in Finder
+    func openNotesFolder() {
+        NSWorkspace.shared.open(notesDirectory)
+        triggerCommandFlash(name: "Opening Notes")
+    }
+
+    /// Open the recordings folder in Finder
+    func openRecordingsFolder() {
+        let recordingsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/VoiceFlow/Recordings")
+        // Create if doesn't exist
+        try? FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(recordingsDir)
+        triggerCommandFlash(name: "Opening Recordings")
+    }
+
+    /// Open the transcripts folder in Finder
+    func openTranscriptsFolder() {
+        NSWorkspace.shared.open(transcriptsDirectory)
+        triggerCommandFlash(name: "Opening Transcripts")
     }
 
     func showPanelWindow() {
