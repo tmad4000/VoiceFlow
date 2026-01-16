@@ -351,7 +351,8 @@ class AppState: ObservableObject {
         ("voiceflow stop transcribing", "Stop transcription and save"),
         ("voiceflow open notes", "Open Notes folder in Finder"),
         ("voiceflow open recordings", "Open Recordings folder in Finder"),
-        ("voiceflow open transcripts", "Open Transcripts folder in Finder")
+        ("voiceflow open transcripts", "Open Transcripts folder in Finder"),
+        ("voiceflow send", "Retype/paste the last utterance")
     ]
 
     /// Special dictation keywords (not commands)
@@ -2964,6 +2965,22 @@ class AppState: ObservableObject {
             }
             return
         }
+
+        // "voiceflow send" - retype/paste the last utterance
+        if lowerTranscript.hasPrefix("voiceflow send") || lowerTranscript.hasPrefix("voice flow send") {
+            if turn.endOfTurn {
+                pasteLastUtterance()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_send"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow send' detected")
+            }
+            return
+        }
     }
 
     private func processVoiceCommands(_ turn: TranscriptTurn) {
@@ -3379,6 +3396,20 @@ class AppState: ObservableObject {
                 if !turn.words.isEmpty {
                     let endIndex = max(0, turn.words.count - 1)
                     lastExecutedEndWordIndexByCommand["system.voiceflow_open_transcripts"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        if lowerTranscript.hasPrefix("voiceflow send") || lowerTranscript.hasPrefix("voice flow send") {
+            if turn.endOfTurn {
+                pasteLastUtterance()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_send"] = endIndex
                     currentUtteranceHadCommand = true
                     lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
                 }
