@@ -1,16 +1,16 @@
 # VoiceFlow Project Context
 
-## Known Recurring Issues
+## Recurring Issues Pattern
 
-Check these first when debugging - they've come up multiple times:
+When debugging, first check for known recurring issues:
+```bash
+bd list --label recurring
+```
 
-| Issue | Symptom | Fix/Ticket |
-|-------|---------|------------|
-| **Warning banner pushes content off top** | Error/warning appears and pushes transcription text off visible area | VoiceFlow-3y6k - needs layout redesign |
-| **Trailing newline at end of utterance** | Saying "newline" at end doesn't work reliably in terminals | VoiceFlow-qs3 - timing/delay issue |
-| **AssemblyAI ForceEndpoint** | "Invalid Message Type: ForceEndUtterance" error | Fixed: use `"type": "ForceEndpoint"` not `"ForceEndUtterance"` |
-
-When a bug recurs, add it here with the beads ticket so future sessions know to check.
+When a bug recurs:
+1. If closed, reopen: `bd reopen <id> --reason "recurred: <context>"`
+2. Add label if not already: `bd label add <id> recurring`
+3. Fix the issue, then close normally
 
 ## Issue Tracking
 
