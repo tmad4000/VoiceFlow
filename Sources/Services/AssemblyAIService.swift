@@ -239,7 +239,12 @@ class AssemblyAIService: NSObject, ObservableObject {
 
         case "Error":
             if let error = message["error"] as? String {
-                NSLog("[AssemblyAI] Error received: %@", error)
+                // Log full error details for debugging
+                NSLog("[AssemblyAI] ❌ Error received: %@", error)
+                if let jsonData = try? JSONSerialization.data(withJSONObject: message, options: .prettyPrinted),
+                   let jsonString = String(data: jsonData, encoding: .utf8) {
+                    NSLog("[AssemblyAI] ❌ Full error message: %@", jsonString)
+                }
                 // Check if this is a session expiration error - attempt automatic reconnection
                 let lowerError = error.lowercased()
                 if lowerError.contains("session expired") || lowerError.contains("maximum session duration") {

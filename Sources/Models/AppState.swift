@@ -111,6 +111,14 @@ enum ClaudeModel: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    var shortName: String {
+        switch self {
+        case .opus: return "Opus"
+        case .sonnet: return "Sonnet"
+        case .haiku: return "Haiku"
+        }
+    }
+
     var cliFlag: String? {
         switch self {
         case .opus: return "opus"
@@ -126,15 +134,17 @@ struct AppWarning: Identifiable {
     let severity: Severity
     let action: (() -> Void)?
     let actionLabel: String?
-    
-    init(id: String, message: String, severity: Severity, action: (() -> Void)? = nil, actionLabel: String? = nil) {
+    let details: String?  // Full error details for expandable view
+
+    init(id: String, message: String, severity: Severity, action: (() -> Void)? = nil, actionLabel: String? = nil, details: String? = nil) {
         self.id = id
         self.message = message
         self.severity = severity
         self.action = action
         self.actionLabel = actionLabel
+        self.details = details
     }
-    
+
     enum Severity {
         case warning, error
     }
@@ -338,24 +348,18 @@ class AppState: ObservableObject {
     var activeWarnings: [AppWarning] {
         var warnings: [AppWarning] = []
 
-        // Connection/API errors - show prominently
+        // Connection/API errors - show the actual error, not assumptions
         if let error = errorMessage {
-            let isAuthError = error.lowercased().contains("unauthorized") || error.lowercased().contains("invalid")
-            let message: String
-            if isAuthError {
-                // Determine which service is active to show specific API key name
-                switch dictationProvider {
-                case .deepgram:
-                    message = "Invalid Deepgram API Key - check Settings"
-                case .online, .auto:
-                    message = "Invalid AssemblyAI API Key - check Settings"
-                case .offline:
-                    message = "API Error - check Settings"
-                }
-            } else {
-                message = error
+            // Add service context but show actual error
+            let serviceName: String
+            switch dictationProvider {
+            case .deepgram: serviceName = "Deepgram"
+            case .online, .auto: serviceName = "AssemblyAI"
+            case .offline: serviceName = "Speech"
             }
-            warnings.append(AppWarning(id: "connection_error", message: message, severity: .error))
+            // Show actual error with service prefix for context
+            let message = "[\(serviceName)] \(error)"
+            warnings.append(AppWarning(id: "connection_error", message: message, severity: .error, details: error))
         }
 
         // Key checks
@@ -4915,6 +4919,11 @@ class AppState: ObservableObject {
                 workingDirectory: commandWorkingDirectory,
                 model: claudeModel.cliFlag
             )
+            // Restore last session ID for context continuity
+            if let savedSessionId = UserDefaults.standard.string(forKey: "claude_session_id") {
+                claudeCodeService?.sessionId = savedSessionId
+                NSLog("[VoiceFlow] Restored session ID: \(savedSessionId)")
+            }
             setupClaudeCodeEventHandler()
         }
         claudeCodeService?.start()
@@ -4946,6 +4955,14 @@ class AppState: ObservableObject {
         } else {
             openCommandPanel()
         }
+    }
+
+    /// Clear the current Claude session and start fresh
+    func clearClaudeSession() {
+        claudeCodeService?.clearSession()
+        UserDefaults.standard.removeObject(forKey: "claude_session_id")
+        commandMessages.removeAll()
+        NSLog("[VoiceFlow] Claude session cleared")
     }
 
     /// Create a beads issue in a specific project directory
@@ -5034,14 +5051,13 @@ class AppState: ObservableObject {
                 workingDirectory: commandWorkingDirectory,
                 model: claudeModel.cliFlag
             )
+            // Restore last session ID for context continuity
+            if let savedSessionId = UserDefaults.standard.string(forKey: "claude_session_id") {
+                claudeCodeService?.sessionId = savedSessionId
+                NSLog("[VoiceFlow] Restored session ID: \(savedSessionId)")
+            }
             setupClaudeCodeEventHandler()
         }
-
-        // Build conversation history from existing messages (excluding the new user message)
-        // Only include completed messages with actual content
-        let history: [(role: String, content: String)] = commandMessages
-            .filter { $0.isComplete && !$0.content.isEmpty }
-            .map { (role: $0.role.rawValue, content: $0.content) }
 
         // Add user message to history
         commandMessages.append(CommandMessage.user(text))
@@ -5052,8 +5068,8 @@ class AppState: ObservableObject {
         inlineCommandResponse = assistantMessage
         showInlineResponse = true
 
-        // Send to Claude with conversation context
-        claudeCodeService?.send(text, conversationHistory: history.isEmpty ? nil : history)
+        // Send to Claude (uses --resume for context continuity)
+        claudeCodeService?.send(text)
     }
 
     /// Process next message in queue if any
@@ -5138,6 +5154,11 @@ class AppState: ObservableObject {
             }
             // Process any queued messages
             processCommandQueue()
+
+        case .sessionId(let sessionId):
+            // Persist session ID for resume on restart
+            UserDefaults.standard.set(sessionId, forKey: "claude_session_id")
+            NSLog("[VoiceFlow] Session ID saved: \(sessionId)")
 
         case .error(let errorMsg):
             commandError = errorMsg
