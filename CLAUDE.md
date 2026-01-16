@@ -36,16 +36,15 @@ VoiceFlow is a macOS voice-to-text dictation app with:
 
 **Increment build number on every code change.** This helps track which build is running.
 
-Version info in `Sources/Info.plist`:
-- `CFBundleShortVersionString` - Semantic version (e.g., "0.2.0") - bump for releases
-- `CFBundleVersion` - Build number (e.g., "42") - **increment on every change**
-
-```bash
-# Quick version bump (increment build number)
-# Edit Sources/Info.plist and increment CFBundleVersion
+Version info in `Sources/Version.swift`:
+```swift
+enum AppVersion {
+    static let version = "0.2.0"  // Semantic version - bump for releases
+    static let build = 43          // Build number - increment on every change
+}
 ```
 
-Version is displayed in the floating panel's "..." menu.
+Version is displayed in the floating panel's "..." menu as "VoiceFlow v0.2.0 (43)".
 
 ## Running & Testing
 

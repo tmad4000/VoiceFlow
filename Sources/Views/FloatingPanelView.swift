@@ -173,7 +173,7 @@ struct FloatingPanelView: View {
                     // More options menu
                     Menu {
                         // Version info (non-interactive)
-                        Text("VoiceFlow v\(appVersion) (\(buildNumber))")
+                        Text("VoiceFlow \(AppVersion.displayString)")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
@@ -458,16 +458,6 @@ struct FloatingPanelView: View {
                 .transition(.scale.combined(with: .opacity))
             }
         }
-    }
-
-    // MARK: - Version Info
-
-    private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
-    }
-
-    private var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
     }
 
     // MARK: - Actions
