@@ -32,6 +32,25 @@ VoiceFlow is a macOS voice-to-text dictation app with:
 - `Sources/Views/FloatingPanelView.swift` - Main UI panel
 - `Sources/Views/CommandPanelView.swift` - Claude Code chat panel
 
+## Claude Code CLI Integration
+
+The command panel uses Claude Code CLI for multi-turn conversations. Key pattern:
+
+```bash
+# First message - capture session_id from JSON response
+claude --print --output-format stream-json "message"
+
+# Subsequent messages - use --resume for true context continuity
+claude --resume <session_id> --print --output-format stream-json "followup"
+```
+
+**Why this matters:**
+- `--resume` preserves full conversation context including tool memory
+- Prompt caching kicks in for repeated conversation prefix (cheaper, faster)
+- Don't inject history as text in prompts - defeats caching and truncates
+
+See ticket **VoiceFlow-ta46** for current implementation status.
+
 ## Version Management
 
 **Increment build number on every code change.** This helps track which build is running.
