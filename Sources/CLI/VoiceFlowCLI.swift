@@ -39,6 +39,8 @@ enum VoiceFlowCLI {
         ("custom_confidence_threshold", "Custom end-of-turn confidence (0.0-1.0)", "number"),
         ("custom_silence_threshold_ms", "Custom silence threshold (ms)", "number"),
         ("active_behavior", "Active mode behavior (mixed/dictation/command)", "string"),
+        ("auto_submit_enabled", "Auto-press Enter after utterance + silence (vibe coding)", "bool"),
+        ("auto_submit_delay_seconds", "Seconds of silence before auto-submit (default 2.0)", "number"),
     ]
 
     // MARK: - Distributed Notification Names
@@ -48,6 +50,7 @@ enum VoiceFlowCLI {
     static let statusResponseNotification = "com.jacobcole.voiceflow.statusResponse"
     static let forceSendNotification = "com.jacobcole.voiceflow.forceSend"
     static let restartNotification = "com.jacobcole.voiceflow.restart"
+    static let setAutoSubmitNotification = "com.jacobcole.voiceflow.setAutoSubmit"
 
     // MARK: - Main Entry Point
 
@@ -87,6 +90,10 @@ enum VoiceFlowCLI {
 
         case "restart":
             handleRestart()
+            return true
+
+        case "auto-submit":
+            handleAutoSubmit(Array(args.dropFirst(2)))
             return true
 
         case "help", "-h", "--help":
@@ -348,6 +355,32 @@ enum VoiceFlowCLI {
         print("(VoiceFlow will restart and preserve current mode)")
     }
 
+    // MARK: - Auto-Submit Command
+
+    private static func handleAutoSubmit(_ args: [String]) {
+        guard let arg = args.first?.lowercased() else {
+            print("Usage: VoiceFlow auto-submit <on|off> [delay_seconds]")
+            print("  on    - Enable auto-submit (press Enter after utterance + silence)")
+            print("  off   - Disable auto-submit")
+            print("  delay - Optional: seconds of silence before submit (default 2.0)")
+            exit(1)
+        }
+
+        let enabled = arg == "on" || arg == "true" || arg == "1"
+        let delay = args.dropFirst().first.flatMap { Double($0) } ?? 2.0
+
+        let center = DistributedNotificationCenter.default()
+        center.postNotificationName(
+            NSNotification.Name(setAutoSubmitNotification),
+            object: nil,
+            userInfo: ["enabled": enabled, "delay": delay],
+            deliverImmediately: true
+        )
+
+        print("Auto-submit: \(enabled ? "ON" : "OFF") (delay: \(delay)s)")
+        print("(Sends Enter key after utterance completes + \(delay)s silence)")
+    }
+
     // MARK: - Log Command
 
     private static func handleLog(_ args: [String]) {
@@ -437,6 +470,7 @@ enum VoiceFlowCLI {
             VoiceFlow log [N] [-f]              Show last N log lines (default 50), -f to follow
             VoiceFlow history [N] [-c] [-a]     Show dictation history (default 10), -c=commands, -a=all
             VoiceFlow restart                   Restart app (preserves current mode)
+            VoiceFlow auto-submit <on|off> [s]  Toggle auto-Enter after utterance (vibe coding)
             VoiceFlow help                      Show this help message
 
         CONFIG KEYS:

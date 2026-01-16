@@ -479,6 +479,9 @@ class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var sleepTimer: Timer?
     private var autoOffTimer: Timer?
+    private var autoSubmitTimer: Timer?
+    @Published var autoSubmitEnabled: Bool = false  // Auto-press Enter after utterance + silence
+    @Published var autoSubmitDelaySeconds: Double = 2.0  // Seconds of silence before auto-submit
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
     private var currentUtteranceIsLiteral = false
@@ -1310,7 +1313,9 @@ class AppState: ObservableObject {
         if microphoneMode != .off {
             resetAutoOffTimer()
         }
-        
+        // Cancel auto-submit timer when new speech arrives
+        cancelAutoSubmitTimer()
+
         // Calculate force end status early
         let isForceEndTurn = forceEndPending && turn.endOfTurn
 
@@ -1360,6 +1365,9 @@ class AppState: ObservableObject {
                 }
             }
 
+            // Capture this before reset clears it
+            let shouldAutoSubmit = autoSubmitEnabled && microphoneMode == .on && didTypeDictationThisUtterance
+
             if shouldAddToHistory {
                 // Flush any buffered terminal newlines before resetting state
                 // This ensures newlines are sent after the full utterance is typed
@@ -1369,6 +1377,11 @@ class AppState: ObservableObject {
             currentUtteranceIsLiteral = false
             didTriggerSayKeyword = false
             turnHandledBySpecialCommand = false
+
+            // Auto-submit: start timer after utterance ends (for vibe coding mode)
+            if shouldAutoSubmit {
+                startAutoSubmitTimer()
+            }
 
             // Handle pending PTT sleep - switch to sleep after finalized text is received
             if isPTTProcessing {
@@ -5042,6 +5055,35 @@ class AppState: ObservableObject {
         guard microphoneMode == .on else { return }
         logDebug("Inactivity timeout: Switching to Sleep mode")
         setMode(.sleep)
+    }
+
+    // MARK: - Auto-Submit Timer (Vibe Coding Mode)
+
+    private func startAutoSubmitTimer() {
+        cancelAutoSubmitTimer()
+        logDebug("Auto-submit: Starting \(autoSubmitDelaySeconds)s timer")
+        autoSubmitTimer = Timer.scheduledTimer(withTimeInterval: autoSubmitDelaySeconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleAutoSubmitTimeout()
+            }
+        }
+    }
+
+    private func cancelAutoSubmitTimer() {
+        if autoSubmitTimer != nil {
+            logDebug("Auto-submit: Timer cancelled")
+        }
+        autoSubmitTimer?.invalidate()
+        autoSubmitTimer = nil
+    }
+
+    private func handleAutoSubmitTimeout() {
+        guard autoSubmitEnabled && microphoneMode == .on else {
+            logDebug("Auto-submit: Skipped (mode=\(microphoneMode.rawValue), enabled=\(autoSubmitEnabled))")
+            return
+        }
+        logDebug("Auto-submit: Pressing Enter after silence")
+        typeText("\n", appendSpace: false)
     }
 
     // MARK: - Auto-Off Timer Settings

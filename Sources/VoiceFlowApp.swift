@@ -277,6 +277,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.appState.restartApp()
             }
         }
+
+        // Handle auto-submit toggle from CLI
+        center.addObserver(
+            forName: NSNotification.Name(VoiceFlowCLI.setAutoSubmitNotification),
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                let enabled = notification.userInfo?["enabled"] as? Bool ?? false
+                let delay = notification.userInfo?["delay"] as? Double ?? 2.0
+                self.appState.autoSubmitEnabled = enabled
+                self.appState.autoSubmitDelaySeconds = delay
+                self.appState.logDebug("CLI: Auto-submit \(enabled ? "enabled" : "disabled") (delay: \(delay)s)")
+            }
+        }
     }
 
     func showPanelWindow() {
