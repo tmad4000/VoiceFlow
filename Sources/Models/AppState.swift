@@ -251,6 +251,17 @@ class AppState: ObservableObject {
     private var extendedCommandPauseTimer: Timer?
     private let extendedCommandPauseThreshold: TimeInterval = 10.0  // 10 seconds of silence
 
+    // Audio recording mode ("voiceflow start recording")
+    @Published var isRecordingAudio: Bool = false
+    private var recordingAudioBuffer: [Data] = []
+    private var recordingStartTime: Date?
+    private let recordingsDirectory: URL = {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let dir = docs.appendingPathComponent("VoiceFlow/Recordings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
     var claudeCodeService: ClaudeCodeService?
 
     let focusContextManager = FocusContextManager()
@@ -290,7 +301,9 @@ class AppState: ObservableObject {
         ("stop command", "End extended voice command capture"),
         ("stop listening", "End extended voice command capture (alternate)"),
         ("are you listening", "Confirm VoiceFlow is active with audio/visual feedback"),
-        ("are you there", "Confirm VoiceFlow is active (alternate)")
+        ("are you there", "Confirm VoiceFlow is active (alternate)"),
+        ("voiceflow start recording", "Start recording audio to a WAV file"),
+        ("voiceflow stop recording", "Stop recording and save audio file")
     ]
 
     /// Special dictation keywords (not commands)
@@ -1063,6 +1076,7 @@ class AppState: ObservableObject {
         // Connect audio output to WebSocket
         audioCaptureManager?.onAudioData = { [weak self] data in
             self?.assemblyAIService?.sendAudio(data)
+            self?.bufferAudioForRecording(data)
         }
 
         // Connect audio level for visualization
@@ -1142,6 +1156,7 @@ class AppState: ObservableObject {
         // Connect audio output to WebSocket
         audioCaptureManager?.onAudioData = { [weak self] data in
             self?.deepgramService?.sendAudio(data)
+            self?.bufferAudioForRecording(data)
         }
 
         // Connect audio level for visualization
@@ -1209,6 +1224,7 @@ class AppState: ObservableObject {
         // Connect audio output to Apple Speech Service
         audioCaptureManager?.onAudioData = { [weak self] data in
             self?.appleSpeechService?.sendAudio(data)
+            self?.bufferAudioForRecording(data)
         }
 
         // Connect audio level for visualization
@@ -2599,6 +2615,35 @@ class AppState: ObservableObject {
             }
         }
 
+        // VoiceFlow Recording Commands - "voiceflow start/stop recording"
+        if lowerTranscript.hasPrefix("voiceflow start recording") || lowerTranscript.hasPrefix("voice flow start recording") {
+            if turn.endOfTurn {
+                startAudioRecording()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_recording"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        if lowerTranscript.hasPrefix("voiceflow stop recording") || lowerTranscript.hasPrefix("voice flow stop recording") {
+            if turn.endOfTurn {
+                stopAudioRecording()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_recording"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
         // Claude Code Command Mode - "command [text]" sends to Claude Code
         if lowerTranscript.hasPrefix("command ") {
             let commandText = String(turn.transcript.dropFirst(8)).trimmingCharacters(in: .whitespaces)
@@ -3059,6 +3104,113 @@ class AppState: ObservableObject {
         isExtendedCommandMode = false
         extendedCommandBuffer = ""
         triggerCommandFlash(name: "Command Cancelled")
+    }
+
+    // MARK: - Audio Recording ("voiceflow start/stop recording")
+
+    /// Start recording audio to a file
+    func startAudioRecording() {
+        guard !isRecordingAudio else {
+            logDebug("Already recording audio")
+            return
+        }
+
+        logDebug("Starting audio recording")
+        recordingAudioBuffer.removeAll()
+        recordingStartTime = Date()
+        isRecordingAudio = true
+        triggerCommandFlash(name: "Recording...")
+
+        // Play a sound to indicate recording started
+        NSSound.beep()
+    }
+
+    /// Stop recording and save the audio file
+    func stopAudioRecording() {
+        guard isRecordingAudio else {
+            logDebug("Not currently recording audio")
+            return
+        }
+
+        logDebug("Stopping audio recording")
+        isRecordingAudio = false
+
+        guard !recordingAudioBuffer.isEmpty else {
+            logDebug("No audio data captured")
+            triggerCommandFlash(name: "Recording Empty")
+            recordingStartTime = nil
+            return
+        }
+
+        // Combine all audio data
+        var combinedData = Data()
+        for chunk in recordingAudioBuffer {
+            combinedData.append(chunk)
+        }
+        recordingAudioBuffer.removeAll()
+
+        // Create filename with timestamp
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let filename = "recording_\(formatter.string(from: recordingStartTime ?? Date())).wav"
+        let fileURL = recordingsDirectory.appendingPathComponent(filename)
+
+        // Create WAV file with header
+        // Format: 16-bit PCM mono at 16kHz (same as AudioCaptureManager)
+        let wavData = createWAVFile(from: combinedData, sampleRate: 16000, channels: 1, bitsPerSample: 16)
+
+        do {
+            try wavData.write(to: fileURL)
+            let durationSec = Double(combinedData.count) / (16000.0 * 2.0)  // 16kHz * 2 bytes per sample
+            logDebug("Saved recording: \(filename) (\(String(format: "%.1f", durationSec))s)")
+            triggerCommandFlash(name: "Recording Saved")
+
+            // Play a sound to indicate recording saved
+            NSSound.beep()
+        } catch {
+            logDebug("Failed to save recording: \(error)")
+            triggerCommandFlash(name: "Save Failed")
+        }
+
+        recordingStartTime = nil
+    }
+
+    /// Create a WAV file with proper header from raw PCM data
+    private func createWAVFile(from pcmData: Data, sampleRate: Int, channels: Int, bitsPerSample: Int) -> Data {
+        var wavData = Data()
+
+        let byteRate = sampleRate * channels * bitsPerSample / 8
+        let blockAlign = channels * bitsPerSample / 8
+        let dataSize = pcmData.count
+        let fileSize = 36 + dataSize  // 44 bytes header - 8 for RIFF header itself + data
+
+        // RIFF header
+        wavData.append(contentsOf: "RIFF".utf8)
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt32(fileSize).littleEndian) { Array($0) })
+        wavData.append(contentsOf: "WAVE".utf8)
+
+        // fmt subchunk
+        wavData.append(contentsOf: "fmt ".utf8)
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })  // Subchunk1Size (16 for PCM)
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian) { Array($0) })   // AudioFormat (1 = PCM)
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt16(channels).littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt32(sampleRate).littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt32(byteRate).littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt16(blockAlign).littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt16(bitsPerSample).littleEndian) { Array($0) })
+
+        // data subchunk
+        wavData.append(contentsOf: "data".utf8)
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt32(dataSize).littleEndian) { Array($0) })
+        wavData.append(pcmData)
+
+        return wavData
+    }
+
+    /// Buffer audio data for recording (called from onAudioData callbacks)
+    func bufferAudioForRecording(_ data: Data) {
+        guard isRecordingAudio else { return }
+        recordingAudioBuffer.append(data)
     }
 
     func showPanelWindow() {

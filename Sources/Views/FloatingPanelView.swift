@@ -370,6 +370,29 @@ struct FloatingPanelView: View {
                     .clipShape(Capsule())
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
+                // Audio recording indicator
+                if appState.isRecordingAudio {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 8, height: 8)
+                            .overlay(
+                                Circle()
+                                    .fill(Color.white)
+                                    .frame(width: 8, height: 8)
+                                    .scaleEffect(1.5)
+                                    .opacity(0.5)
+                            )
+                        Text("Recording Audio...")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.red.opacity(0.85))
+                    .clipShape(Capsule())
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
             .padding(.bottom, 20)
         }
