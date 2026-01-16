@@ -346,7 +346,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if visible {
             positionPanelWindow(panelWindow)
-            panelWindow.makeKeyAndOrderFront(nil)
+            panelWindow.orderFront(nil)  // Don't steal focus from user's text fields
         } else {
             panelWindow.orderOut(nil)
         }

@@ -2,11 +2,11 @@ import AppKit
 
 final class FloatingPanelWindow: NSPanel {
     override var canBecomeKey: Bool {
-        true
+        false  // Don't steal focus from user's text fields
     }
 
     override var canBecomeMain: Bool {
-        true
+        false  // Utility panel, not main window
     }
 }
 
