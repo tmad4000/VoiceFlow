@@ -152,13 +152,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(openSettings),
+            selector: #selector(openHistoryTab),
             name: Notification.Name("openHistory"),
             object: nil
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(openSettings),
+            selector: #selector(openCommandsTab),
             name: Notification.Name("openCommands"),
             object: nil
         )
@@ -440,6 +440,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             appState.setMode(.sleep)
         }
+    }
+
+    @objc func openCommandsTab() {
+        print("[VoiceFlow] openCommandsTab called")
+        // Set the tab BEFORE creating/showing the window so SettingsView picks it up
+        UserDefaults.standard.set(1, forKey: "settings_selected_tab")
+        openSettings()
+    }
+
+    @objc func openHistoryTab() {
+        print("[VoiceFlow] openHistoryTab called")
+        // Set the tab BEFORE creating/showing the window so SettingsView picks it up
+        UserDefaults.standard.set(2, forKey: "settings_selected_tab")
+        openSettings()
     }
 
     @objc func openSettings() {
