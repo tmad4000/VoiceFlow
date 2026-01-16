@@ -3162,10 +3162,29 @@ class AppState: ObservableObject {
         }
 
         // VoiceFlow Note-Taking Commands
-        // "take a note" / "voiceflow make a note" - capture next utterance as note
+        // "take a note" / "voiceflow make a note" - capture this utterance as note
         if lowerTranscript.hasPrefix("take a note") || lowerTranscript.hasPrefix("voiceflow make a note") || lowerTranscript.hasPrefix("voice flow make a note") {
             if turn.endOfTurn {
-                startCapturingNote()
+                // Extract note content (everything after the command)
+                var noteContent = lowerTranscript
+                if noteContent.hasPrefix("take a note") {
+                    noteContent = String(noteContent.dropFirst("take a note".count))
+                } else if noteContent.hasPrefix("voiceflow make a note") {
+                    noteContent = String(noteContent.dropFirst("voiceflow make a note".count))
+                } else if noteContent.hasPrefix("voice flow make a note") {
+                    noteContent = String(noteContent.dropFirst("voice flow make a note".count))
+                }
+                noteContent = noteContent.trimmingCharacters(in: .whitespaces)
+
+                if !noteContent.isEmpty {
+                    // Save the note content directly
+                    saveNote(noteContent)
+                    triggerCommandFlash(name: "Note Saved")
+                } else {
+                    // No content after command - start capture mode for next utterance
+                    startCapturingNote()
+                }
+
                 if !turn.words.isEmpty {
                     let endIndex = max(0, turn.words.count - 1)
                     lastExecutedEndWordIndexByCommand["system.voiceflow_note"] = endIndex
