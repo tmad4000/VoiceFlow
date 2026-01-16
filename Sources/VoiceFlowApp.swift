@@ -246,6 +246,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+
+        // Handle force-send from CLI
+        center.addObserver(
+            forName: NSNotification.Name(VoiceFlowCLI.forceSendNotification),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                self.appState.logDebug("CLI: Force send triggered")
+                self.appState.forceEndUtterance(contactServices: false)
+            }
+        }
     }
 
     func showPanelWindow() {

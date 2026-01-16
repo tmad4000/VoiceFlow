@@ -46,6 +46,7 @@ enum VoiceFlowCLI {
     static let setModeNotification = "com.jacobcole.voiceflow.setMode"
     static let getStatusNotification = "com.jacobcole.voiceflow.getStatus"
     static let statusResponseNotification = "com.jacobcole.voiceflow.statusResponse"
+    static let forceSendNotification = "com.jacobcole.voiceflow.forceSend"
 
     // MARK: - Main Entry Point
 
@@ -69,6 +70,18 @@ enum VoiceFlowCLI {
 
         case "status":
             handleStatus()
+            return true
+
+        case "force-send", "send":
+            handleForceSend()
+            return true
+
+        case "log":
+            handleLog(Array(args.dropFirst(2)))
+            return true
+
+        case "history":
+            handleHistory(Array(args.dropFirst(2)))
             return true
 
         case "help", "-h", "--help":
@@ -291,6 +304,93 @@ enum VoiceFlowCLI {
         center.removeObserver(observer)
     }
 
+    // MARK: - Force Send Command
+
+    private static func handleForceSend() {
+        let center = DistributedNotificationCenter.default()
+        center.postNotificationName(
+            NSNotification.Name(forceSendNotification),
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
+
+        print("Sent force-send command")
+        print("(Types partial text or resends last utterance if buffer empty)")
+    }
+
+    // MARK: - Log Command
+
+    private static func handleLog(_ args: [String]) {
+        let logPath = NSHomeDirectory() + "/Library/Logs/VoiceFlow/voiceflow.log"
+        let fileManager = FileManager.default
+
+        guard fileManager.fileExists(atPath: logPath) else {
+            print("Log file not found at: \(logPath)")
+            print("(VoiceFlow needs to run first to create the log)")
+            exit(1)
+        }
+
+        let lines = args.first.flatMap { Int($0) } ?? 50
+
+        if args.contains("-f") || args.contains("--follow") {
+            // Follow mode - exec tail -f
+            print("Following log file (Ctrl+C to stop)...")
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/tail")
+            task.arguments = ["-f", "-n", String(lines), logPath]
+            task.standardOutput = FileHandle.standardOutput
+            task.standardError = FileHandle.standardError
+            do {
+                try task.run()
+                task.waitUntilExit()
+            } catch {
+                print("Error running tail: \(error)")
+            }
+        } else {
+            // Show last N lines
+            do {
+                let content = try String(contentsOfFile: logPath, encoding: .utf8)
+                let allLines = content.components(separatedBy: "\n")
+                let lastLines = allLines.suffix(lines)
+                print(lastLines.joined(separator: "\n"))
+            } catch {
+                print("Error reading log: \(error)")
+            }
+        }
+    }
+
+    // MARK: - History Command
+
+    private static func handleHistory(_ args: [String]) {
+        let defaults = UserDefaults.standard
+        let history = defaults.stringArray(forKey: "dictation_history") ?? []
+
+        if history.isEmpty {
+            print("No dictation history.")
+            return
+        }
+
+        let count = args.first.flatMap { Int($0) } ?? 10
+        let showAll = args.contains("--all") || args.contains("-a")
+        let showCommands = args.contains("--commands") || args.contains("-c")
+
+        var filteredHistory = history
+        if !showCommands {
+            filteredHistory = history.filter { !$0.hasPrefix("[Command]") }
+        }
+
+        let itemsToShow = showAll ? filteredHistory : Array(filteredHistory.prefix(count))
+
+        print("Dictation History (\(itemsToShow.count) of \(filteredHistory.count) entries):")
+        print(String(repeating: "-", count: 50))
+
+        for (index, entry) in itemsToShow.enumerated() {
+            let truncated = entry.count > 80 ? String(entry.prefix(77)) + "..." : entry
+            print("\(index + 1). \(truncated)")
+        }
+    }
+
     // MARK: - Help
 
     private static func printHelp() {
@@ -304,6 +404,9 @@ enum VoiceFlowCLI {
             VoiceFlow config set <key> <value>  Set a setting value
             VoiceFlow mode <on|off|sleep>       Set mode (controls running app)
             VoiceFlow status                    Get status from running app
+            VoiceFlow force-send                Force send partial text or last utterance
+            VoiceFlow log [N] [-f]              Show last N log lines (default 50), -f to follow
+            VoiceFlow history [N] [-c] [-a]     Show dictation history (default 10), -c=commands, -a=all
             VoiceFlow help                      Show this help message
 
         CONFIG KEYS:

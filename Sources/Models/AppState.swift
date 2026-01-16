@@ -4046,7 +4046,6 @@ class AppState: ObservableObject {
             try text.write(to: fileURL, atomically: true, encoding: .utf8)
             logDebug("Saved note: \(filename)")
             triggerCommandFlash(name: "Note Saved")
-            NSSound.beep()
         } catch {
             logDebug("Failed to save note: \(error)")
             triggerCommandFlash(name: "Note Failed")

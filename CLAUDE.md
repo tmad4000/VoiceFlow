@@ -89,6 +89,31 @@ swift build
 /Users/jacobcole/Library/Developer/Xcode/DerivedData/VoiceFlow-bqgsuxwfbyobzkahaxtmfvunkgwd/Build/Products/Debug/VoiceFlow
 ```
 
+## CLI Commands for Testing/Debugging
+
+VoiceFlow has a CLI interface for testing and debugging. **Proactively add CLI commands for any functionality that would benefit from automated testing or debugging.**
+
+```bash
+VoiceFlow status              # Get current mode, connection status, transcript
+VoiceFlow mode on|off|sleep   # Change mode remotely
+VoiceFlow force-send          # Trigger force send (types partial or resends last)
+VoiceFlow log 50              # Show last 50 log lines
+VoiceFlow log -f              # Follow log in real-time
+VoiceFlow history 10          # Show last 10 dictation entries
+VoiceFlow history -c          # Include command entries
+VoiceFlow config list         # Show all settings
+```
+
+### When to Add CLI Commands
+
+Add CLI commands proactively when:
+- A feature needs testing without manual UI interaction
+- Debugging requires triggering specific actions programmatically
+- Integration with other tools/scripts would be useful
+- The action could be part of an automated test workflow
+
+The CLI uses distributed notifications to communicate with the running app (see `VoiceFlowCLI.swift` and `VoiceFlowApp.swift`).
+
 ## Related Projects & Prior Art
 
 VoiceFlow draws inspiration from established voice control software:
