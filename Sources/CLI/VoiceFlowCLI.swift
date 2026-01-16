@@ -269,8 +269,17 @@ enum VoiceFlowCLI {
                 if let provider = userInfo["provider"] as? String {
                     print("Provider: \(provider)")
                 }
+                if let build = userInfo["build"] as? Int {
+                    print("Build: \(build)")
+                }
                 if let newerBuild = userInfo["newerBuild"] as? Bool {
                     print("Newer build available: \(newerBuild ? "YES (Restart required)" : "no")")
+                }
+                if let isPanelMinimal = userInfo["isPanelMinimal"] as? Bool {
+                    print("Panel mode: \(isPanelMinimal ? "minimal" : "full")")
+                }
+                if let isPanelVisible = userInfo["isPanelVisible"] as? Bool {
+                    print("Panel visible: \(isPanelVisible)")
                 }
                 if let audioLevel = userInfo["audioLevel"] as? Double {
                     print("Audio Level: \(String(format: "%.4f", audioLevel))")

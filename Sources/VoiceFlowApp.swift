@@ -233,7 +233,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     "connected": self.appState.isConnected,
                     "provider": self.appState.dictationProvider.rawValue,
                     "transcript": self.appState.currentTranscript,
-                    "newerBuild": self.appState.isNewerBuildAvailable
+                    "newerBuild": self.appState.isNewerBuildAvailable,
+                    "isPanelMinimal": self.appState.isPanelMinimal,
+                    "isPanelVisible": self.panelWindow?.isVisible ?? false,
+                    "build": AppVersion.build
                 ]
                 
                 self.appState.logDebug("CLI Status Check: Level=\(self.appState.audioLevel)")
