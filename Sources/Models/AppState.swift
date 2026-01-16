@@ -2843,8 +2843,8 @@ class AppState: ObservableObject {
             return
         }
 
-        // "voiceflow open notes" / "voice flow open notes" - open notes folder in Finder
-        if lowerTranscript.hasPrefix("voiceflow open notes") || lowerTranscript.hasPrefix("voice flow open notes") || lowerTranscript.hasPrefix("open notes folder") {
+        // "voiceflow open notes" / "voice flow open note(s)" - open notes folder in Finder
+        if lowerTranscript.hasPrefix("voiceflow open note") || lowerTranscript.hasPrefix("voice flow open note") || lowerTranscript.hasPrefix("open note") {
             if turn.endOfTurn {
                 openNotesFolder()
                 if !turn.words.isEmpty {
@@ -2859,8 +2859,8 @@ class AppState: ObservableObject {
             return
         }
 
-        // "voiceflow open recordings" / "voice flow open recordings" - open recordings folder
-        if lowerTranscript.hasPrefix("voiceflow open recordings") || lowerTranscript.hasPrefix("voice flow open recordings") || lowerTranscript.hasPrefix("open recordings folder") {
+        // "voiceflow open recordings" / "voice flow open recording(s)" - open recordings folder
+        if lowerTranscript.hasPrefix("voiceflow open recording") || lowerTranscript.hasPrefix("voice flow open recording") || lowerTranscript.hasPrefix("open recording") {
             if turn.endOfTurn {
                 openRecordingsFolder()
                 if !turn.words.isEmpty {
@@ -2876,7 +2876,7 @@ class AppState: ObservableObject {
         }
 
         // "voiceflow open transcripts" - open transcripts folder
-        if lowerTranscript.hasPrefix("voiceflow open transcripts") || lowerTranscript.hasPrefix("voice flow open transcripts") || lowerTranscript.hasPrefix("open transcripts folder") {
+        if lowerTranscript.hasPrefix("voiceflow open transcript") || lowerTranscript.hasPrefix("voice flow open transcript") || lowerTranscript.hasPrefix("open transcript") {
             if turn.endOfTurn {
                 openTranscriptsFolder()
                 if !turn.words.isEmpty {
@@ -3243,6 +3243,49 @@ class AppState: ObservableObject {
                 if !turn.words.isEmpty {
                     let endIndex = max(0, turn.words.count - 1)
                     lastExecutedEndWordIndexByCommand["system.voiceflow_transcribing"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // VoiceFlow Open Folder Commands
+        if lowerTranscript.hasPrefix("voiceflow open note") || lowerTranscript.hasPrefix("voice flow open note") || lowerTranscript.hasPrefix("open note") {
+            if turn.endOfTurn {
+                openNotesFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_notes"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        if lowerTranscript.hasPrefix("voiceflow open recording") || lowerTranscript.hasPrefix("voice flow open recording") || lowerTranscript.hasPrefix("open recording") {
+            if turn.endOfTurn {
+                openRecordingsFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_recordings"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        if lowerTranscript.hasPrefix("voiceflow open transcript") || lowerTranscript.hasPrefix("voice flow open transcript") || lowerTranscript.hasPrefix("open transcript") {
+            if turn.endOfTurn {
+                openTranscriptsFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_transcripts"] = endIndex
                     currentUtteranceHadCommand = true
                     lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
                 }
