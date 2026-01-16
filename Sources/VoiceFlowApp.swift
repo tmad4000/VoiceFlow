@@ -747,16 +747,11 @@ func pttEventTapCallback(
     event: CGEvent,
     refcon: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
-    // Handle special tap events
+    // Handle special tap events (tap disabled, etc.)
     guard type == .keyDown || type == .keyUp || type == .flagsChanged else {
-        // For tap disabled events, re-enable the tap
+        // For tap disabled events, just log - the tap will be re-created on next setup
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let refcon = refcon {
-                let tapRef = Unmanaged<AnyObject>.fromOpaque(refcon).takeUnretainedValue()
-                if let machPort = tapRef as? NSMachPort {
-                    CGEvent.tapEnable(tap: machPort.machPort, enable: true)
-                }
-            }
+            NSLog("[VoiceFlow] PTT EventTap was disabled - may need to restart app")
         }
         return Unmanaged.passRetained(event)
     }

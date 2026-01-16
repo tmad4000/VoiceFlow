@@ -2262,29 +2262,32 @@ struct ShortcutRecorder: View {
     @State private var isPressed = false
     @State private var monitor: Any?
     @State private var activityMonitor: Any?
-    
+    @State private var previousShortcut: KeyboardShortcut?  // For cancel support
+
     var body: some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 13))
-            Spacer()
-            Button(action: {
-                if isRecording {
-                    stopRecording()
-                } else {
-                    startRecording()
+        VStack(alignment: .trailing, spacing: 2) {
+            HStack {
+                Text(label)
+                    .font(.system(size: 13))
+                Spacer()
+                Button(action: {
+                    if isRecording {
+                        cancelRecording()
+                    } else {
+                        startRecording()
+                    }
+                }) {
+                    Text(isRecording ? "Type shortcut... (Esc to cancel)" : shortcut.description)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(isRecording ? Color.accentColor : (isPressed ? Color.green : Color.secondary.opacity(0.1)))
+                        .foregroundColor(isRecording || isPressed ? .white : .primary)
+                        .cornerRadius(4)
+                        .animation(.easeInOut(duration: 0.1), value: isPressed)
                 }
-            }) {
-                Text(isRecording ? "Type shortcut..." : shortcut.description)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(isRecording ? Color.accentColor : (isPressed ? Color.green : Color.secondary.opacity(0.1)))
-                    .foregroundColor(isRecording || isPressed ? .white : .primary)
-                    .cornerRadius(4)
-                    .animation(.easeInOut(duration: 0.1), value: isPressed)
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .onAppear {
             startActivityMonitoring()
@@ -2333,43 +2336,69 @@ struct ShortcutRecorder: View {
     private func startRecording() {
         // Stop monitoring while recording to avoid confusion
         stopActivityMonitoring()
-        
+
+        // Save current shortcut for cancel
+        previousShortcut = shortcut
+
         isRecording = true
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
             let keyCode = event.keyCode
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            
+
+            // Handle Escape key - cancel and restore previous shortcut
+            if event.type == .keyDown && keyCode == 53 {  // 53 = Escape key
+                cancelRecording()
+                return nil
+            }
+
             // Handle pure modifier release (Stop recording)
             if event.type == .flagsChanged && flags.isEmpty {
                 stopRecording()
                 return nil
             }
-            
+
             // Map modifiers
             var modifiers: KeyboardModifiers = []
             if flags.contains(.control) { modifiers.insert(.control) }
             if flags.contains(.option) { modifiers.insert(.option) }
             if flags.contains(.shift) { modifiers.insert(.shift) }
             if flags.contains(.command) { modifiers.insert(.command) }
-            
+
             let newShortcut = KeyboardShortcut(keyCode: keyCode, modifiers: modifiers)
-            
+
             // Only update shortcut if it's a KeyDown OR if it's a modifier press (flags not empty)
             if event.type == .keyDown || !flags.isEmpty {
                 shortcut = newShortcut
                 onChange?(newShortcut)
             }
-            
+
             if event.type == .keyDown {
                 stopRecording()
             }
-            
+
             return nil // Consume event
         }
     }
-    
+
     private func stopRecording() {
         isRecording = false
+        previousShortcut = nil  // Clear saved shortcut on successful recording
+        if let monitor = monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
+        // Resume monitoring
+        startActivityMonitoring()
+    }
+
+    private func cancelRecording() {
+        // Restore previous shortcut if we have one
+        if let previous = previousShortcut {
+            shortcut = previous
+            onChange?(previous)
+        }
+        isRecording = false
+        previousShortcut = nil
         if let monitor = monitor {
             NSEvent.removeMonitor(monitor)
             self.monitor = nil
