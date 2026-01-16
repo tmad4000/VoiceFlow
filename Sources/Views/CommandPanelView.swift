@@ -1,6 +1,81 @@
 import SwiftUI
 import AppKit
 
+// MARK: - Multiline Input Field
+
+/// A multiline text input that sends on Enter and adds newlines on Shift+Enter
+struct MultilineInputField: NSViewRepresentable {
+    @Binding var text: String
+    var font: NSFont = .systemFont(ofSize: 13)
+    var onSubmit: () -> Void
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        let textView = scrollView.documentView as! NSTextView
+
+        textView.delegate = context.coordinator
+        textView.font = font
+        textView.backgroundColor = .clear
+        textView.textColor = .labelColor
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.textContainerInset = NSSize(width: 4, height: 4)
+
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.borderType = .noBorder
+        scrollView.backgroundColor = .clear
+        scrollView.drawsBackground = false
+
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        let textView = scrollView.documentView as! NSTextView
+
+        // Only update text if it differs (prevents cursor jump)
+        if textView.string != text {
+            textView.string = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: MultilineInputField
+
+        init(_ parent: MultilineInputField) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                // Check for Shift modifier
+                if NSEvent.modifierFlags.contains(.shift) {
+                    // Shift+Enter: insert newline
+                    textView.insertNewlineIgnoringFieldEditor(nil)
+                    return true
+                } else {
+                    // Enter: submit
+                    parent.onSubmit()
+                    return true
+                }
+            }
+            return false
+        }
+    }
+}
+
 /// Chat interface for Claude Code commands
 struct CommandPanelView: View {
     @EnvironmentObject var appState: AppState
@@ -210,14 +285,27 @@ struct CommandPanelView: View {
                     .help("\(appState.commandMessageQueue.count) message(s) queued")
             }
 
-            TextField("Ask Claude...", text: $inputText)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .focused($isInputFocused)
-                .onSubmit {
-                    sendMessage()
+            // Multiline input with dynamic height and placeholder
+            ZStack(alignment: .topLeading) {
+                if inputText.isEmpty {
+                    Text("Ask Claude... (Shift+Enter for newline)")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 13))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .allowsHitTesting(false)
                 }
-                // Allow typing even during processing (will queue)
+
+                MultilineInputField(
+                    text: $inputText,
+                    font: .systemFont(ofSize: 13),
+                    onSubmit: sendMessage
+                )
+            }
+            .frame(height: calculatedInputHeight)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+            .cornerRadius(6)
+            // Allow typing even during processing (will queue)
 
             // Stop button (when processing) or Send button
             if appState.isClaudeProcessing {
@@ -246,6 +334,18 @@ struct CommandPanelView: View {
 
     private var canSend: Bool {
         !inputText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Dynamic height based on content (1-5 lines)
+    private var calculatedInputHeight: CGFloat {
+        let lineHeight: CGFloat = 18
+        let padding: CGFloat = 10
+        let minLines: CGFloat = 1
+        let maxLines: CGFloat = 5
+
+        let lineCount = CGFloat(max(1, inputText.components(separatedBy: "\n").count))
+        let clampedLines = min(max(lineCount, minLines), maxLines)
+        return (clampedLines * lineHeight) + padding
     }
 
     private var statusColor: Color {

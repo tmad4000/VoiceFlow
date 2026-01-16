@@ -2682,8 +2682,12 @@ class AppState: ObservableObject {
         let tokenStrings = normalizedTokens.map { $0.token }
 
         var matches: [PendingCommandMatch] = []
-        
+
         if microphoneMode == .on {
+            // Log tokens for press command debugging (VoiceFlow-3o0)
+            if tokenStrings.contains("press") {
+                NSLog("[VoiceFlow] 🔍 Pre-pressCommandMatches: detected 'press' in tokens [%@]", tokenStrings.joined(separator: ", "))
+            }
             matches.append(contentsOf: pressCommandMatches(from: normalizedTokens, turn: turn))
         }
 
@@ -3473,10 +3477,18 @@ class AppState: ObservableObject {
 
             let keyToken = normalizedTokens[cursor].token
             let nextToken = (cursor + 1 < normalizedTokens.count) ? normalizedTokens[cursor + 1].token : nil
+
+            // Diagnostic logging for cmd+k bug (VoiceFlow-3o0)
+            let tokenSequence = normalizedTokens[index...min(cursor, normalizedTokens.count - 1)].map { $0.token }.joined(separator: " ")
+            NSLog("[VoiceFlow] 🔍 pressCommandMatches: parsing tokens [%@], keyToken='%@', modifiers=%@", tokenSequence, keyToken, String(describing: modifiers))
+
             guard let keyInfo = keyCodeForToken(keyToken, nextToken: nextToken) else {
+                NSLog("[VoiceFlow] 🔍 pressCommandMatches: keyToken '%@' not recognized by keyCodeForToken", keyToken)
                 index += 1
                 continue
             }
+
+            NSLog("[VoiceFlow] 🔍 pressCommandMatches: keyCodeForToken returned keyCode=%d (0x%02X) for '%@'", keyInfo.keyCode, keyInfo.keyCode, keyToken)
 
             if modifiers.isEmpty && (keyToken == "escape" || keyToken == "esc" || keyToken == "enter" || keyToken == "return") {
                 index += 1
@@ -3496,6 +3508,7 @@ class AppState: ObservableObject {
             let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
             let shortcut = KeyboardShortcut(keyCode: keyInfo.keyCode, modifiers: modifiers)
             let label = "Press \(shortcutDisplayName(shortcut))"
+            NSLog("[VoiceFlow] 🔍 pressCommandMatches: creating match for '%@' with keyCode=%d (0x%02X), isStable=%@", label, shortcut.keyCode, shortcut.keyCode, isStable ? "true" : "false")
 
             matches.append(PendingCommandMatch(
                 key: "system.press",
