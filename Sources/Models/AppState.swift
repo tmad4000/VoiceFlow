@@ -1975,12 +1975,19 @@ class AppState: ObservableObject {
 
             if token == "newline" {
                 keyword = keyword ?? "New line"
-                let isTrailing = index == words.count - 1
+                // Check if trailing: at end OR followed only by punctuation at end
+                let isTrailing = index == words.count - 1 ||
+                    (index + 1 < words.count && isSkippablePunctuation(words[index + 1].text) && index + 1 == words.count - 1)
                 NSLog("[VoiceFlow] ⏎ Newline keyword detected: token='newline', wordIndex=%d, totalWords=%d, isEndOfUtterance=%@",
                       index, words.count, isTrailing ? "YES" : "no")
                 triggerKeywordFlash(name: "New line")
                 appendNewline(isTrailing: isTrailing)
-                index += 1
+                // Skip trailing punctuation if present
+                if index + 1 < words.count && isSkippablePunctuation(words[index + 1].text) {
+                    index += 2
+                } else {
+                    index += 1
+                }
                 continue
             }
 
@@ -2062,7 +2069,12 @@ class AppState: ObservableObject {
                     triggerKeywordFlash(name: "Press enter")
                     // "press enter/return" always sends Enter key (acts as trailing)
                     appendNewline(isTrailing: true)
-                    index += 2
+                    // Skip trailing punctuation if present
+                    if index + 2 < words.count && isSkippablePunctuation(words[index + 2].text) {
+                        index += 3
+                    } else {
+                        index += 2
+                    }
                     continue
                 }
             }
