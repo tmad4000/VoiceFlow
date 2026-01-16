@@ -1,5 +1,17 @@
 # VoiceFlow Project Context
 
+## Known Recurring Issues
+
+Check these first when debugging - they've come up multiple times:
+
+| Issue | Symptom | Fix/Ticket |
+|-------|---------|------------|
+| **Warning banner pushes content off top** | Error/warning appears and pushes transcription text off visible area | VoiceFlow-3y6k - needs layout redesign |
+| **Trailing newline at end of utterance** | Saying "newline" at end doesn't work reliably in terminals | VoiceFlow-qs3 - timing/delay issue |
+| **AssemblyAI ForceEndpoint** | "Invalid Message Type: ForceEndUtterance" error | Fixed: use `"type": "ForceEndpoint"` not `"ForceEndUtterance"` |
+
+When a bug recurs, add it here with the beads ticket so future sessions know to check.
+
 ## Issue Tracking
 
 This project uses **beads** for issue tracking with prefix `VoiceFlow-`.

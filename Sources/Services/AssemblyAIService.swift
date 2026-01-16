@@ -114,16 +114,18 @@ class AssemblyAIService: NSObject, ObservableObject {
     }
 
     /// Force end of current utterance immediately
+    /// AssemblyAI API uses "ForceEndpoint" message type
     func forceEndUtterance() {
         guard isConnected, let socket = socket else {
-            print("ForceEndUtterance skipped: not connected")
+            print("ForceEndpoint skipped: not connected")
             return
         }
-        let message: [String: Any] = ["type": "ForceEndUtterance"]
+        // Note: AssemblyAI API expects "ForceEndpoint", not "ForceEndUtterance"
+        let message: [String: Any] = ["type": "ForceEndpoint"]
         if let data = try? JSONSerialization.data(withJSONObject: message),
            let jsonString = String(data: data, encoding: .utf8) {
             socket.write(string: jsonString)
-            print("Sent ForceEndUtterance message")
+            print("Sent ForceEndpoint message to AssemblyAI")
         }
     }
 
