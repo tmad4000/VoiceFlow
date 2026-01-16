@@ -437,6 +437,25 @@ struct GeneralSettingsView: View {
                     .padding(4)
                 }
 
+                // Appearance Section
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Appearance")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        SliderRow(
+                            "Command Panel Font Size",
+                            subtitle: "Text size for Claude Code panel messages.",
+                            value: commandPanelFontSizeBinding,
+                            range: 10...20,
+                            step: 1,
+                            unit: "pt",
+                            formatAsInt: true
+                        )
+                    }
+                    .padding(4)
+                }
+
                 // Permissions Section
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
@@ -1135,6 +1154,13 @@ struct GeneralSettingsView: View {
         Binding(
             get: { Double(appState.customSilenceThresholdMs) },
             set: { appState.saveCustomSilenceThreshold(Int($0)) }
+        )
+    }
+
+    private var commandPanelFontSizeBinding: Binding<Double> {
+        Binding(
+            get: { appState.commandPanelFontSize },
+            set: { appState.saveCommandPanelFontSize($0) }
         )
     }
 

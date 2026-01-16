@@ -290,7 +290,7 @@ struct CommandPanelView: View {
                 if inputText.isEmpty {
                     Text("Ask Claude... (Shift+Enter for newline)")
                         .foregroundColor(.secondary)
-                        .font(.system(size: 13))
+                        .font(.system(size: CGFloat(appState.commandPanelFontSize)))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 6)
                         .allowsHitTesting(false)
@@ -298,7 +298,7 @@ struct CommandPanelView: View {
 
                 MultilineInputField(
                     text: $inputText,
-                    font: .systemFont(ofSize: 13),
+                    font: .systemFont(ofSize: CGFloat(appState.commandPanelFontSize)),
                     onSubmit: sendMessage
                 )
             }
@@ -401,6 +401,7 @@ struct CommandPanelView: View {
 // MARK: - Message Bubble
 
 struct MessageBubbleView: View {
+    @EnvironmentObject var appState: AppState
     let message: CommandMessage
     @State private var expandedToolIds: Set<UUID> = []
 
@@ -414,7 +415,7 @@ struct MessageBubbleView: View {
                 // Main content
                 if !message.content.isEmpty {
                     Text(message.content)
-                        .font(.system(size: 13))
+                        .font(.system(size: CGFloat(appState.commandPanelFontSize)))
                         .foregroundColor(message.role == .user ? .white : .primary)
                         .textSelection(.enabled)
                         .padding(.horizontal, 12)

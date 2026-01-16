@@ -344,7 +344,7 @@ struct FloatingPanelView: View {
                 }
             }
         }
-        .frame(minWidth: 280, maxWidth: 1000, minHeight: 100, maxHeight: 800)
+        .frame(minWidth: 360, maxWidth: 1000, minHeight: 100, maxHeight: 800)
         .background(
             VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
                 .overlay(
@@ -760,7 +760,7 @@ private struct SpeakerFilterPill: View {
             HStack(spacing: 4) {
                 Image(systemName: "person.wave.2.fill")
                     .font(.system(size: 9))
-                Text("S\(speakerId) only")
+                Text("Speaker \(speakerId) only")
                     .font(.system(size: 9, weight: .medium))
                 Image(systemName: "xmark")
                     .font(.system(size: 7, weight: .bold))
@@ -1086,9 +1086,9 @@ private struct TranscriptTurnView: View {
     
     private func helpText(for speaker: Int) -> String {
         if let isolated = appState.isolatedSpeakerId {
-            return isolated == speaker ? "Click to unlock (listen to all)" : "Click to switch lock to S\(speaker)"
+            return isolated == speaker ? "Click to unlock (listen to all)" : "Click to switch to Speaker \(speaker)"
         }
-        return "Click to only listen to S\(speaker)"
+        return "Click to only listen to Speaker \(speaker)"
     }
 }
 

@@ -244,6 +244,7 @@ class AppState: ObservableObject {
     @Published var claudeModel: ClaudeModel = .sonnet
     @Published var claudeDebugLog: [String] = []
     @Published var showClaudeDebugPanel: Bool = false
+    @Published var commandPanelFontSize: Double = 14.0  // Default font size for command panel text
 
     // Extended command capture mode ("long command")
     @Published var isExtendedCommandMode: Bool = false
@@ -517,6 +518,7 @@ class AppState: ObservableObject {
         loadSleepTimerSettings()
         loadAutoOffSettings()
         loadAIFormatterSettings()
+        loadCommandPanelSettings()
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
         checkSpeechPermission()
@@ -2003,6 +2005,295 @@ class AppState: ObservableObject {
                 }
             }
 
+            // === SPOKEN PUNCTUATION KEYWORDS ===
+            // These allow users to insert punctuation by saying the punctuation name
+
+            // Period / dot / full stop
+            if token == "period" || token == "dot" {
+                keyword = keyword ?? "Period"
+                appendToken(".")
+                index += 1
+                continue
+            }
+            if token == "full", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "stop", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Full stop"
+                    appendToken(".")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Comma
+            if token == "comma" {
+                keyword = keyword ?? "Comma"
+                appendToken(",")
+                index += 1
+                continue
+            }
+
+            // Colon
+            if token == "colon" {
+                keyword = keyword ?? "Colon"
+                appendToken(":")
+                index += 1
+                continue
+            }
+
+            // Semicolon / semi colon
+            if token == "semicolon" {
+                keyword = keyword ?? "Semicolon"
+                appendToken(";")
+                index += 1
+                continue
+            }
+            if token == "semi", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "colon", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Semicolon"
+                    appendToken(";")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Question mark
+            if token == "question", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "mark", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Question mark"
+                    appendToken("?")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Exclamation point / exclamation mark
+            if token == "exclamation", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if (nextToken == "point" || nextToken == "mark"), isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Exclamation point"
+                    appendToken("!")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Dash / hyphen
+            if token == "dash" || token == "hyphen" {
+                keyword = keyword ?? "Dash"
+                appendToken("-")
+                index += 1
+                continue
+            }
+
+            // Quote / double quote
+            if token == "quote" {
+                keyword = keyword ?? "Quote"
+                appendToken("\"")
+                index += 1
+                continue
+            }
+            if token == "double", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "quote", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Double quote"
+                    appendToken("\"")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Single quote / apostrophe
+            if token == "apostrophe" {
+                keyword = keyword ?? "Apostrophe"
+                appendToken("'")
+                index += 1
+                continue
+            }
+            if token == "single", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "quote", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Single quote"
+                    appendToken("'")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Ellipsis
+            if token == "ellipsis" {
+                keyword = keyword ?? "Ellipsis"
+                appendToken("...")
+                index += 1
+                continue
+            }
+
+            // Underscore
+            if token == "underscore" {
+                keyword = keyword ?? "Underscore"
+                appendToken("_")
+                index += 1
+                continue
+            }
+
+            // Asterisk / star
+            if token == "asterisk" || token == "star" {
+                keyword = keyword ?? "Asterisk"
+                appendToken("*")
+                index += 1
+                continue
+            }
+
+            // Ampersand
+            if token == "ampersand" {
+                keyword = keyword ?? "Ampersand"
+                appendToken("&")
+                index += 1
+                continue
+            }
+
+            // Percent / percent sign
+            if token == "percent" {
+                keyword = keyword ?? "Percent"
+                appendToken("%")
+                index += 1
+                continue
+            }
+
+            // Dollar / dollar sign
+            if token == "dollar" {
+                keyword = keyword ?? "Dollar"
+                appendToken("$")
+                index += 1
+                continue
+            }
+
+            // Slash / forward slash
+            if token == "slash" {
+                keyword = keyword ?? "Slash"
+                appendToken("/")
+                index += 1
+                continue
+            }
+            if token == "forward", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "slash", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Forward slash"
+                    appendToken("/")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Backslash / back slash
+            if token == "backslash" {
+                keyword = keyword ?? "Backslash"
+                appendToken("\\")
+                index += 1
+                continue
+            }
+            if token == "back", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "slash", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Backslash"
+                    appendToken("\\")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Pipe / vertical bar
+            if token == "pipe" {
+                keyword = keyword ?? "Pipe"
+                appendToken("|")
+                index += 1
+                continue
+            }
+
+            // Tilde
+            if token == "tilde" {
+                keyword = keyword ?? "Tilde"
+                appendToken("~")
+                index += 1
+                continue
+            }
+
+            // Caret
+            if token == "caret" {
+                keyword = keyword ?? "Caret"
+                appendToken("^")
+                index += 1
+                continue
+            }
+
+            // Backtick / back tick
+            if token == "backtick" {
+                keyword = keyword ?? "Backtick"
+                appendToken("`")
+                index += 1
+                continue
+            }
+            if token == "back", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "tick", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Backtick"
+                    appendToken("`")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Plus / plus sign
+            if token == "plus" {
+                keyword = keyword ?? "Plus"
+                appendToken("+")
+                index += 1
+                continue
+            }
+
+            // Equals / equal sign
+            if token == "equals" || token == "equal" {
+                keyword = keyword ?? "Equals"
+                appendToken("=")
+                index += 1
+                continue
+            }
+
+            // Less than / left angle
+            if token == "less", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "than", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Less than"
+                    appendToken("<")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Greater than / right angle
+            if token == "greater", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "than", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Greater than"
+                    appendToken(">")
+                    index += 2
+                    continue
+                }
+            }
+
             appendProcessedToken(word.text)
             index += 1
         }
@@ -2663,6 +2954,32 @@ class AppState: ObservableObject {
                     logDebug("Closing command panel")
                     closeCommandPanel()
                     triggerCommandFlash(name: "Command Close")
+                } else if commandLower.hasPrefix("make an issue for voiceflow") ||
+                          commandLower.hasPrefix("create an issue for voiceflow") ||
+                          commandLower.hasPrefix("make issue for voiceflow") ||
+                          commandLower.hasPrefix("create issue for voiceflow") ||
+                          commandLower.hasPrefix("new issue for voiceflow") {
+                    // Special handler: Create beads issue for VoiceFlow project
+                    let patterns = [
+                        "make an issue for voiceflow",
+                        "create an issue for voiceflow",
+                        "make issue for voiceflow",
+                        "create issue for voiceflow",
+                        "new issue for voiceflow"
+                    ]
+                    var issueDescription = commandLower
+                    for pattern in patterns {
+                        if commandLower.hasPrefix(pattern) {
+                            issueDescription = String(commandText.dropFirst(pattern.count)).trimmingCharacters(in: .whitespaces)
+                            break
+                        }
+                    }
+                    if issueDescription.isEmpty {
+                        issueDescription = "New issue from voice command"
+                    }
+                    logDebug("Creating VoiceFlow issue: \"\(issueDescription)\"")
+                    createBeadsIssue(title: issueDescription, projectPath: "~/code/VoiceFlow")
+                    triggerCommandFlash(name: "VoiceFlow Issue")
                 } else {
                     // Execute inline command
                     logDebug("Executing command: \"\(commandText)\"")
@@ -2758,7 +3075,14 @@ class AppState: ObservableObject {
                     self?.executeKeyboardShortcut(KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Grave), modifiers: [.command, .shift]))
                 } as () -> Void),
                 (phrase: "save to idea flow", key: "system.save_ideaflow", name: "Idea Flow", haltsProcessing: true, action: { [weak self] in self?.saveToIdeaFlow() } as () -> Void),
-                
+
+                // VoiceFlow Issue Creation - sends to Claude Code to create beads issue
+                (phrase: "voiceflow issue", key: "system.voiceflow_issue", name: "VF Issue", haltsProcessing: true, action: { [weak self] in self?.createVoiceFlowIssue() } as () -> Void),
+                (phrase: "voice flow issue", key: "system.voiceflow_issue", name: "VF Issue", haltsProcessing: true, action: { [weak self] in self?.createVoiceFlowIssue() } as () -> Void),
+                (phrase: "make an issue for voiceflow", key: "system.voiceflow_issue", name: "VF Issue", haltsProcessing: true, action: { [weak self] in self?.createVoiceFlowIssue() } as () -> Void),
+                (phrase: "make an issue for voice flow", key: "system.voiceflow_issue", name: "VF Issue", haltsProcessing: true, action: { [weak self] in self?.createVoiceFlowIssue() } as () -> Void),
+                (phrase: "create voiceflow issue", key: "system.voiceflow_issue", name: "VF Issue", haltsProcessing: true, action: { [weak self] in self?.createVoiceFlowIssue() } as () -> Void),
+
                 // Dictation Provider Switching
                 (phrase: "use online model", key: "system.provider_online", name: "Online Model", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.online) } as () -> Void),
                 (phrase: "use offline model", key: "system.provider_offline", name: "Offline Model", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.offline) } as () -> Void),
@@ -4191,6 +4515,18 @@ class AppState: ObservableObject {
         aiFormatterService.config.apiKey = value
     }
 
+    // MARK: - Command Panel Settings
+
+    private func loadCommandPanelSettings() {
+        let storedSize = UserDefaults.standard.double(forKey: "command_panel_font_size")
+        commandPanelFontSize = storedSize > 0 ? storedSize : 14.0  // Default to 14 if not set
+    }
+
+    func saveCommandPanelFontSize(_ value: Double) {
+        commandPanelFontSize = value
+        UserDefaults.standard.set(value, forKey: "command_panel_font_size")
+    }
+
     private func loadDictationHistory() {
         if let history = UserDefaults.standard.stringArray(forKey: "dictation_history") {
             dictationHistory = history
@@ -4539,6 +4875,33 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Create a VoiceFlow issue from recent dictation using beads
+    func createVoiceFlowIssue() {
+        // Find the latest non-command dictation to use as issue context
+        let latestDictation = dictationHistory.first(where: { !$0.hasPrefix("[Command]") })
+
+        logDebug("VoiceFlow Issue: Creating issue from dictation")
+
+        // Build the command to send to Claude Code
+        let basePrompt = "Create a beads issue for VoiceFlow. Run: cd /Users/jacobcole/code/VoiceFlow && bd create"
+        let fullPrompt: String
+        if let dictation = latestDictation, !dictation.isEmpty {
+            fullPrompt = "\(basePrompt) with title based on this context: \"\(dictation)\". Infer the type (bug, feature, task) from context."
+        } else {
+            fullPrompt = "\(basePrompt) - ask me what the issue should be about."
+        }
+
+        // Open command panel and send the request
+        if !isCommandPanelVisible {
+            openCommandPanel()
+        }
+
+        // Small delay to ensure panel is ready
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.sendCommandMessage(fullPrompt)
+        }
+    }
+
     // MARK: - Command Panel (Claude Code)
 
     /// Open the command panel and start Claude Code service
@@ -4582,6 +4945,69 @@ class AppState: ObservableObject {
             closeCommandPanel()
         } else {
             openCommandPanel()
+        }
+    }
+
+    /// Create a beads issue in a specific project directory
+    /// - Parameters:
+    ///   - title: The issue title/description
+    ///   - projectPath: Path to the project (e.g., "~/code/VoiceFlow")
+    ///   - type: Issue type (default: "task")
+    ///   - priority: Priority 0-4 (default: 2)
+    func createBeadsIssue(title: String, projectPath: String, type: String = "task", priority: Int = 2) {
+        let expandedPath = (projectPath as NSString).expandingTildeInPath
+
+        // Build the bd create command
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/bd")
+        process.arguments = ["create", "--title=\(title)", "--type=\(type)", "--priority=\(priority)"]
+        process.currentDirectoryURL = URL(fileURLWithPath: expandedPath)
+
+        // Inherit environment for PATH
+        var env = ProcessInfo.processInfo.environment
+        let homeDir = NSHomeDirectory()
+        let additionalPaths = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "\(homeDir)/.local/bin"
+        ]
+        if let existingPath = env["PATH"] {
+            env["PATH"] = additionalPaths.joined(separator: ":") + ":" + existingPath
+        }
+        process.environment = env
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+            let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+
+            if process.terminationStatus == 0 {
+                NSLog("[VoiceFlow] Beads issue created: %@", stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+                // Add to command messages for visibility
+                let successMsg = "✅ Created issue: \(title)\n\(stdout)"
+                DispatchQueue.main.async { [weak self] in
+                    self?.commandMessages.append(CommandMessage(role: .assistant, content: successMsg, isComplete: true))
+                }
+            } else {
+                NSLog("[VoiceFlow] Beads error: %@", stderr)
+                DispatchQueue.main.async { [weak self] in
+                    self?.commandError = "Failed to create issue: \(stderr)"
+                }
+            }
+        } catch {
+            NSLog("[VoiceFlow] Failed to run bd: %@", error.localizedDescription)
+            DispatchQueue.main.async { [weak self] in
+                self?.commandError = "Failed to run bd: \(error.localizedDescription)"
+            }
         }
     }
 

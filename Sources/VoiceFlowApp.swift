@@ -302,7 +302,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
         
         // Set size constraints
-        panel.minSize = NSSize(width: 280, height: 100)
+        panel.minSize = NSSize(width: 360, height: 100)
         panel.maxSize = NSSize(width: 1000, height: 800)
 
         panelWindow = panel
