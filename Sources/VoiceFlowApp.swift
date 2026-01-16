@@ -263,6 +263,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.appState.forceEndUtterance(contactServices: false)
             }
         }
+
+        // Handle restart from CLI
+        center.addObserver(
+            forName: NSNotification.Name(VoiceFlowCLI.restartNotification),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                self.appState.logDebug("CLI: Restart triggered")
+                self.appState.restartApp()
+            }
+        }
     }
 
     func showPanelWindow() {

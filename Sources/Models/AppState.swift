@@ -930,6 +930,10 @@ class AppState: ObservableObject {
     }
 
     func restartApp() {
+        // Save current mode to restore after restart
+        UserDefaults.standard.set(microphoneMode.rawValue, forKey: "resume_mode")
+        UserDefaults.standard.synchronize()
+
         let executablePath = Bundle.main.executablePath!
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
@@ -5211,6 +5215,24 @@ class AppState: ObservableObject {
     }
 
     private func loadLaunchMode() {
+        // Check for resume_mode first (set during restart to preserve state)
+        if let resumeMode = UserDefaults.standard.string(forKey: "resume_mode") {
+            // Clear it immediately so it's only used once
+            UserDefaults.standard.removeObject(forKey: "resume_mode")
+            UserDefaults.standard.synchronize()
+
+            let normalized = resumeMode.lowercased()
+            switch normalized {
+            case "on": launchMode = .on
+            case "off": launchMode = .off
+            case "sleep": launchMode = .sleep
+            default: break // Fall through to normal launch_mode
+            }
+            logDebug("Resuming from restart with mode: \(launchMode.rawValue)")
+            return
+        }
+
+        // Normal launch - use configured launch_mode
         if let modeString = UserDefaults.standard.string(forKey: "launch_mode") {
             // Case-insensitive matching
             let normalized = modeString.lowercased()

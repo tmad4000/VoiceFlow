@@ -47,6 +47,7 @@ enum VoiceFlowCLI {
     static let getStatusNotification = "com.jacobcole.voiceflow.getStatus"
     static let statusResponseNotification = "com.jacobcole.voiceflow.statusResponse"
     static let forceSendNotification = "com.jacobcole.voiceflow.forceSend"
+    static let restartNotification = "com.jacobcole.voiceflow.restart"
 
     // MARK: - Main Entry Point
 
@@ -82,6 +83,10 @@ enum VoiceFlowCLI {
 
         case "history":
             handleHistory(Array(args.dropFirst(2)))
+            return true
+
+        case "restart":
+            handleRestart()
             return true
 
         case "help", "-h", "--help":
@@ -328,6 +333,21 @@ enum VoiceFlowCLI {
         print("(Types partial text or resends last utterance if buffer empty)")
     }
 
+    // MARK: - Restart Command
+
+    private static func handleRestart() {
+        let center = DistributedNotificationCenter.default()
+        center.postNotificationName(
+            NSNotification.Name(restartNotification),
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
+
+        print("Sent restart command")
+        print("(VoiceFlow will restart and preserve current mode)")
+    }
+
     // MARK: - Log Command
 
     private static func handleLog(_ args: [String]) {
@@ -416,6 +436,7 @@ enum VoiceFlowCLI {
             VoiceFlow force-send                Force send partial text or last utterance
             VoiceFlow log [N] [-f]              Show last N log lines (default 50), -f to follow
             VoiceFlow history [N] [-c] [-a]     Show dictation history (default 10), -c=commands, -a=all
+            VoiceFlow restart                   Restart app (preserves current mode)
             VoiceFlow help                      Show this help message
 
         CONFIG KEYS:
