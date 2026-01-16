@@ -4892,24 +4892,18 @@ class AppState: ObservableObject {
 
         logDebug("VoiceFlow Issue: Creating issue from dictation")
 
-        // Build the command to send to Claude Code
-        let basePrompt = "Create a beads issue for VoiceFlow. Run: cd /Users/jacobcole/code/VoiceFlow && bd create"
-        let fullPrompt: String
+        // Use latest dictation as title, or generic title
+        let title: String
         if let dictation = latestDictation, !dictation.isEmpty {
-            fullPrompt = "\(basePrompt) with title based on this context: \"\(dictation)\". Infer the type (bug, feature, task) from context."
+            // Truncate to reasonable length for title
+            title = String(dictation.prefix(100))
         } else {
-            fullPrompt = "\(basePrompt) - ask me what the issue should be about."
+            title = "New issue from voice command"
         }
 
-        // Open command panel and send the request
-        if !isCommandPanelVisible {
-            openCommandPanel()
-        }
-
-        // Small delay to ensure panel is ready
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.sendCommandMessage(fullPrompt)
-        }
+        // Create issue directly (faster, more reliable than via Claude)
+        createBeadsIssue(title: title, projectPath: "~/code/VoiceFlow")
+        triggerCommandFlash(name: "VoiceFlow Issue")
     }
 
     // MARK: - Command Panel (Claude Code)
