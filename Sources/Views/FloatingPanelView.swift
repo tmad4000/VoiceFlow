@@ -179,6 +179,12 @@ struct FloatingPanelView: View {
 
                         Divider()
 
+                        Button(action: openCommands) {
+                            Label("Voice Commands", systemImage: "command")
+                        }
+
+                        Divider()
+
                         Button(action: {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 appState.isPanelMinimal = true
@@ -480,6 +486,10 @@ struct FloatingPanelView: View {
         NotificationCenter.default.post(name: .openHistory, object: nil)
     }
 
+    private func openCommands() {
+        NotificationCenter.default.post(name: .openCommands, object: nil)
+    }
+
     private func quitApp() {
         NSApp.terminate(nil)
     }
@@ -601,6 +611,7 @@ struct WarningBanner: View {
 extension Notification.Name {
     static let openSettings = Notification.Name("openSettings")
     static let openHistory = Notification.Name("openHistory")
+    static let openCommands = Notification.Name("openCommands")
 }
 
 private struct ModeSelectionView: View {

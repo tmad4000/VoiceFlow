@@ -45,6 +45,9 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openHistory)) { _ in
             selectedTab = 2
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openCommands)) { _ in
+            selectedTab = 1  // Commands tab
+        }
     }
 }
 

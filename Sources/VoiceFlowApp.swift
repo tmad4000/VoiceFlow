@@ -156,6 +156,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: Notification.Name("openHistory"),
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(openSettings),
+            name: Notification.Name("openCommands"),
+            object: nil
+        )
 
         // Listen for command panel notifications
         NotificationCenter.default.addObserver(
