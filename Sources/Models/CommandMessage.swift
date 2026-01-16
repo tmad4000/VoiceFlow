@@ -73,3 +73,53 @@ struct CommandPanelState {
     /// Whether to show the inline response overlay
     var showInlineResponse: Bool = false
 }
+
+/// A Claude Code session with metadata and chat history
+struct ClaudeSession: Codable, Identifiable {
+    let id: String                    // Session ID from Claude
+    var name: String                  // Auto-generated from first message
+    let createdAt: Date
+    var lastUsedAt: Date
+    var chatHistory: [CommandMessage] // Local message history
+
+    /// Create a new session
+    static func create(id: String, firstMessage: String) -> ClaudeSession {
+        let name = Self.generateName(from: firstMessage)
+        return ClaudeSession(
+            id: id,
+            name: name,
+            createdAt: Date(),
+            lastUsedAt: Date(),
+            chatHistory: []
+        )
+    }
+
+    /// Generate a display name from the first message
+    static func generateName(from message: String) -> String {
+        let cleaned = message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+        if cleaned.count <= 35 {
+            return cleaned
+        }
+        return String(cleaned.prefix(32)) + "..."
+    }
+
+    /// Relative time string (e.g., "2h ago", "yesterday")
+    var relativeTime: String {
+        let interval = Date().timeIntervalSince(lastUsedAt)
+        let minutes = Int(interval / 60)
+        let hours = Int(interval / 3600)
+        let days = Int(interval / 86400)
+
+        if minutes < 1 { return "just now" }
+        if minutes < 60 { return "\(minutes)m ago" }
+        if hours < 24 { return "\(hours)h ago" }
+        if days == 1 { return "yesterday" }
+        if days < 7 { return "\(days)d ago" }
+
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        return formatter.string(from: lastUsedAt)
+    }
+}

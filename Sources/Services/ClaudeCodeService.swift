@@ -16,6 +16,7 @@ class ClaudeCodeService: ObservableObject {
         case toolUseStart(id: String, name: String, input: String?)
         case toolUseEnd(id: String, output: String?)
         case messageComplete
+        case sessionId(String)  // Session ID from Claude Code for --resume
         case error(String)
     }
 
@@ -33,6 +34,7 @@ class ClaudeCodeService: ObservableObject {
 
     let workingDirectory: String
     var model: String?  // e.g., "opus", "haiku", or nil for default (sonnet)
+    var sessionId: String?  // Current session ID for --resume
     var onEvent: ((ClaudeEvent) -> Void)?
     var onDebugLog: ((String) -> Void)?  // For debug panel
 
@@ -96,6 +98,11 @@ class ClaudeCodeService: ObservableObject {
             "--output-format", "stream-json",
             "--verbose"
         ]
+        // Add --resume if we have a session ID (enables multi-turn with full context)
+        if let sessionId = sessionId {
+            args.append(contentsOf: ["--resume", sessionId])
+            debugLog("Resuming session: \(sessionId)")
+        }
         // Add model flag if specified
         if let model = model {
             args.append(contentsOf: ["--model", model])
@@ -232,10 +239,9 @@ class ClaudeCodeService: ObservableObject {
     }
 
     /// Send a message to Claude (spawns a new process for each message in --print mode)
-    /// - Parameters:
-    ///   - message: The user message to send
-    ///   - conversationHistory: Optional array of (role, content) tuples for context
-    func send(_ message: String, conversationHistory: [(role: String, content: String)]? = nil) {
+    /// Uses --resume with sessionId for multi-turn conversations with full context
+    /// - Parameter message: The user message to send
+    func send(_ message: String) {
         debugLog("SEND: \(message.prefix(100))...")
         isProcessing = true
 
@@ -244,7 +250,7 @@ class ClaudeCodeService: ObservableObject {
             stop()
         }
 
-        // Start a fresh process for this message
+        // Start a fresh process for this message (with --resume if we have sessionId)
         start()
 
         guard let stdinPipe = stdinPipe, process?.isRunning == true else {
@@ -254,29 +260,13 @@ class ClaudeCodeService: ObservableObject {
             return
         }
 
-        // Build the message with conversation context if provided
-        var fullMessage = message
-        if let history = conversationHistory, !history.isEmpty {
-            // Include recent conversation context (limit to last 10 exchanges to avoid token limits)
-            let recentHistory = history.suffix(20)  // Last 20 messages (10 exchanges)
-            var contextLines: [String] = ["<conversation_context>", "Previous conversation:"]
-            for (role, content) in recentHistory {
-                let truncatedContent = content.count > 500 ? String(content.prefix(500)) + "..." : content
-                contextLines.append("\(role.capitalized): \(truncatedContent)")
-            }
-            contextLines.append("</conversation_context>")
-            contextLines.append("")
-            contextLines.append("Current request: \(message)")
-            fullMessage = contextLines.joined(separator: "\n")
-            debugLog("Added \(recentHistory.count) messages of context")
-        }
-
         // Format message as JSON for stream-json input format
+        // No need to inject conversation history - --resume handles that
         let jsonMessage: [String: Any] = [
             "type": "user",
             "message": [
                 "role": "user",
-                "content": fullMessage
+                "content": message
             ]
         ]
 
@@ -297,6 +287,11 @@ class ClaudeCodeService: ObservableObject {
             lastError = "Failed to serialize message"
             isProcessing = false
         }
+    }
+
+    /// Clear the current session (start fresh on next message)
+    func clearSession() {
+        sessionId = nil
     }
 
     // MARK: - Output Parsing
@@ -395,6 +390,12 @@ class ClaudeCodeService: ObservableObject {
             // Final result with full text
             if let result = json["result"] as? String {
                 onEvent?(.textComplete(result))
+            }
+            // Capture session_id for --resume support
+            if let newSessionId = json["session_id"] as? String {
+                self.sessionId = newSessionId
+                debugLog("Captured session_id: \(newSessionId)")
+                onEvent?(.sessionId(newSessionId))
             }
             isProcessing = false
             onEvent?(.messageComplete)

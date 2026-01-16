@@ -256,6 +256,10 @@ class AppState: ObservableObject {
     @Published var showClaudeDebugPanel: Bool = false
     @Published var commandPanelFontSize: Double = 14.0  // Default font size for command panel text
 
+    // Session management
+    @Published var claudeSessions: [ClaudeSession] = []
+    @Published var currentSessionId: String?
+
     // Extended command capture mode ("long command")
     @Published var isExtendedCommandMode: Bool = false
     private var extendedCommandBuffer: String = ""
@@ -4524,6 +4528,8 @@ class AppState: ObservableObject {
     private func loadCommandPanelSettings() {
         let storedSize = UserDefaults.standard.double(forKey: "command_panel_font_size")
         commandPanelFontSize = storedSize > 0 ? storedSize : 14.0  // Default to 14 if not set
+        // Load session history
+        loadSessions()
     }
 
     func saveCommandPanelFontSize(_ value: Double) {
@@ -4957,12 +4963,89 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Clear the current Claude session and start fresh
-    func clearClaudeSession() {
+    // MARK: - Session Management
+
+    /// Start a new Claude session
+    func startNewClaudeSession() {
+        // Save current session before starting new one
+        saveCurrentSession()
+
+        // Clear for new session
         claudeCodeService?.clearSession()
-        UserDefaults.standard.removeObject(forKey: "claude_session_id")
-        commandMessages.removeAll()
-        NSLog("[VoiceFlow] Claude session cleared")
+        currentSessionId = nil
+        commandMessages = []
+        NSLog("[VoiceFlow] New Claude session started")
+    }
+
+    /// Switch to a different session
+    func switchToSession(_ session: ClaudeSession) {
+        // Save current session first
+        saveCurrentSession()
+
+        // Load the selected session
+        currentSessionId = session.id
+        claudeCodeService?.sessionId = session.id
+        commandMessages = session.chatHistory
+
+        // Update last used time
+        if let index = claudeSessions.firstIndex(where: { $0.id == session.id }) {
+            claudeSessions[index].lastUsedAt = Date()
+            saveSessions()
+        }
+
+        NSLog("[VoiceFlow] Switched to session: \(session.name)")
+    }
+
+    /// Save the current session state
+    func saveCurrentSession() {
+        guard let sessionId = currentSessionId ?? claudeCodeService?.sessionId,
+              !commandMessages.isEmpty else { return }
+
+        if let index = claudeSessions.firstIndex(where: { $0.id == sessionId }) {
+            // Update existing session
+            claudeSessions[index].chatHistory = commandMessages
+            claudeSessions[index].lastUsedAt = Date()
+        } else {
+            // Create new session entry
+            let firstUserMessage = commandMessages.first(where: { $0.role == .user })?.content ?? "New conversation"
+            var newSession = ClaudeSession.create(id: sessionId, firstMessage: firstUserMessage)
+            newSession.chatHistory = commandMessages
+            claudeSessions.insert(newSession, at: 0)  // Most recent first
+        }
+
+        currentSessionId = sessionId
+        saveSessions()
+    }
+
+    /// Save sessions to UserDefaults
+    private func saveSessions() {
+        if let data = try? JSONEncoder().encode(claudeSessions) {
+            UserDefaults.standard.set(data, forKey: "claude_sessions")
+        }
+    }
+
+    /// Load sessions from UserDefaults
+    func loadSessions() {
+        if let data = UserDefaults.standard.data(forKey: "claude_sessions"),
+           let sessions = try? JSONDecoder().decode([ClaudeSession].self, from: data) {
+            claudeSessions = sessions
+            NSLog("[VoiceFlow] Loaded \(sessions.count) sessions")
+        }
+
+        // Also restore current session ID
+        if let savedId = UserDefaults.standard.string(forKey: "claude_session_id") {
+            currentSessionId = savedId
+            // Load chat history for current session
+            if let session = claudeSessions.first(where: { $0.id == savedId }) {
+                commandMessages = session.chatHistory
+            }
+        }
+    }
+
+    /// Get the current session (if any)
+    var currentSession: ClaudeSession? {
+        guard let id = currentSessionId else { return nil }
+        return claudeSessions.first(where: { $0.id == id })
     }
 
     /// Create a beads issue in a specific project directory
@@ -5156,8 +5239,11 @@ class AppState: ObservableObject {
             processCommandQueue()
 
         case .sessionId(let sessionId):
-            // Persist session ID for resume on restart
+            // Update current session and persist
+            currentSessionId = sessionId
             UserDefaults.standard.set(sessionId, forKey: "claude_session_id")
+            // Save session with chat history
+            saveCurrentSession()
             NSLog("[VoiceFlow] Session ID saved: \(sessionId)")
 
         case .error(let errorMsg):

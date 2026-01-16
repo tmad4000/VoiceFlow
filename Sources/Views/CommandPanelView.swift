@@ -140,14 +140,53 @@ struct CommandPanelView: View {
             // Model picker
             Picker("", selection: $appState.claudeModel) {
                 ForEach(ClaudeModel.allCases) { model in
-                    Text(model.displayName).tag(model)
+                    Text(model.shortName).tag(model)
                 }
             }
             .pickerStyle(.menu)
-            .frame(width: 130)
+            .frame(width: 80)
             .onChange(of: appState.claudeModel) {
                 restartServiceWithNewModel()
             }
+
+            // Session picker dropdown
+            Menu {
+                // List existing sessions
+                ForEach(appState.claudeSessions.prefix(10)) { session in
+                    Button(action: { appState.switchToSession(session) }) {
+                        HStack {
+                            if session.id == appState.currentSessionId {
+                                Image(systemName: "checkmark")
+                            }
+                            Text(session.name)
+                            Spacer()
+                            Text(session.relativeTime)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                if !appState.claudeSessions.isEmpty {
+                    Divider()
+                }
+
+                Button(action: { appState.startNewClaudeSession() }) {
+                    Label("New Session", systemImage: "plus")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 10))
+                    Text(appState.currentSession?.name ?? "New Session")
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .frame(maxWidth: 150)
+            .help("Switch sessions")
 
             // Debug toggle
             Button(action: { appState.showClaudeDebugPanel.toggle() }) {
