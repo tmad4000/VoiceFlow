@@ -25,13 +25,11 @@ struct VoiceCommand: Codable, Identifiable, Equatable, Hashable {
         VoiceCommand(phrase: "paste that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_V), modifiers: [.command])),
         VoiceCommand(phrase: "cut that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_X), modifiers: [.command])),
         VoiceCommand(phrase: "select all", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command])),
-        VoiceCommand(phrase: "save that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_S), modifiers: [.command])),
-        VoiceCommand(phrase: "go back", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_LeftArrow), modifiers: [.command])),
-        VoiceCommand(phrase: "go forward", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_RightArrow), modifiers: [.command])),
+        // "save that", "go back", "go forward", "scroll up", "scroll down" removed - see docs/REMOVED_COMMANDS.md
+        VoiceCommand(phrase: "navigate back", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_LeftArrow), modifiers: [.command])),
+        VoiceCommand(phrase: "navigate forward", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_RightArrow), modifiers: [.command])),
         VoiceCommand(phrase: "page up", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_PageUp), modifiers: [])),
         VoiceCommand(phrase: "page down", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_PageDown), modifiers: [])),
-        VoiceCommand(phrase: "scroll up", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_UpArrow), modifiers: [])),
-        VoiceCommand(phrase: "scroll down", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_DownArrow), modifiers: [])),
         VoiceCommand(phrase: "press escape", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Escape), modifiers: [])),
         VoiceCommand(phrase: "press enter", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Return), modifiers: [])),
     ]

@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AVFoundation
 import Combine
+import Carbon.HIToolbox
 
 /// Main entry point - handles CLI or launches GUI
 @main
@@ -47,6 +48,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var pttMonitor: Any?
     private var pttActivatedOnMode: Bool = false  // Track if On mode was activated via PTT
+
+    // CGEventTap for consuming PTT key events (prevents them from reaching apps)
+    private var pttEventTap: CFMachPort?
+    private var pttRunLoopSource: CFRunLoopSource?
+    // Shared state for PTT event tap callback (must be non-MainActor accessible)
+    nonisolated(unsafe) static var sharedPTTState: PTTEventTapState?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -523,17 +530,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupGlobalShortcuts() {
-        // Remove existing monitor if any (though we only call this once usually)
+        // Remove existing monitors/taps if any
         if let monitor = pttMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        teardownPTTEventTap()
 
+        // Set up PTT event tap (CGEventTap) to CONSUME PTT key events
+        setupPTTEventTap()
+
+        // Set up NSEvent monitor for other shortcuts (mode toggle, etc.)
+        // Note: PTT is handled by CGEventTap above, not here
         pttMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
             guard let self = self else { return }
 
             let currentModifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let keyCode = UInt16(event.keyCode)
-            
+
             // DEBUG LOGGING
             if self.appState.isDebugMode {
                 // Log non-standard keys or modifiers for debugging
@@ -543,76 +556,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             }
-            
+
             // Helper to check precise match (for toggles/commands)
             func matches(_ shortcut: KeyboardShortcut) -> Bool {
                 let requiredFlags = self.mapModifiers(shortcut.modifiers)
                 return currentModifiers == requiredFlags && keyCode == shortcut.keyCode
             }
 
-            // PTT Logic (Special handling for Hold)
-            if keyCode == self.appState.pttShortcut.keyCode {
-                let shortcut = self.appState.pttShortcut
-                let requiredFlags = self.mapModifiers(shortcut.modifiers)
-                
-                var isPTTPressed = false
-                let isModifierKey = (54...63).contains(keyCode)
-                
-                if isModifierKey {
-                    // For modifier PTT (e.g. Ctrl), check if the specific flag is present
-                    // Note: If shortcut is just "Ctrl", requiredFlags is [.control].
-                    // If user presses "Ctrl+Opt", flags are [.control, .option]. 
-                    // Strict equality (current == required) fails if other keys held.
-                    // For PTT, strict is safer to avoid accidental triggers, but lenient is often expected.
-                    // Let's use strict equality for PTT to avoid conflicts.
-                    isPTTPressed = (event.type == .flagsChanged) && (currentModifiers == requiredFlags)
-                } else {
-                    // Standard key: Must be KeyDown and modifiers match
-                    isPTTPressed = (event.type == .keyDown) && (currentModifiers == requiredFlags)
-                }
-                
-                // Determine Release
-                var isPTTReleased = false
-                if isModifierKey {
-                    // Released if flagsChanged AND flags NO LONGER match required
-                    // (Usually flags are empty or missing the bit)
-                    isPTTReleased = (event.type == .flagsChanged) && (currentModifiers != requiredFlags)
-                } else {
-                    isPTTReleased = (event.type == .keyUp)
-                    // Note: We don't check modifiers on KeyUp because users might release modifiers before key
-                }
+            // Skip PTT key - it's handled by CGEventTap
+            // (PTT events are consumed and won't reach here anyway for the PTT key)
 
-                Task { @MainActor in
-                    if isPTTPressed {
-                        // Cancel any pending sleep from previous PTT release
-                        self.appState.cancelPendingPTTSleep()
-                        if self.appState.microphoneMode != .on {
-                            self.appState.setMode(.on)
-                            self.pttActivatedOnMode = true  // Mark that PTT activated On mode
-                            self.appState.logDebug("PTT: ON")
-                        }
-                    } else if isPTTReleased {
-                        // Only trigger sleep if PTT was actually used to enter On mode
-                        if self.appState.microphoneMode == .on && self.pttActivatedOnMode {
-                            self.pttActivatedOnMode = false  // Reset flag
-                            // Wait for finalized text before switching to sleep
-                            self.appState.requestGracefulSleep()
-                        }
-                    }
-                }
-                // Don't return here, allow other checks? No, PTT consumes the logic for this key.
-                // But wait, if PTT is same as Toggle? Conflict. PTT wins.
-            }
-            
             // Mode Switching (Trigger on KeyDown or relevant FlagsChanged)
-            let isModifierKey = (54...63).contains(keyCode)
-            let isDown = event.type == .keyDown || (event.type == .flagsChanged && currentModifiers.contains(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 0)).union(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 1))).union(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 2))).union(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 3)))))
-            
-            // Re-evaluating isDown for modifiers is hard without knowing which bit changed.
-            // But matches() already checks if the flags match the requirement.
-            // If matches() is true AND it's a keyDown -> Always a press.
-            // If matches() is true AND it's a flagsChanged -> It's a press (since flags now match).
-            
             if event.type == .keyDown || event.type == .flagsChanged {
                 if matches(self.appState.modeToggleShortcut) {
                     Task { @MainActor in
@@ -647,6 +601,90 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+    private func setupPTTEventTap() {
+        // Create shared state for the event tap callback
+        let state = PTTEventTapState()
+        state.pttKeyCode = appState.pttShortcut.keyCode
+        state.pttModifiers = PTTEventTapState.mapModifiersToCGEventFlags(appState.pttShortcut.modifiers)
+
+        // Set up callbacks that dispatch to main actor
+        state.onPTTPressed = { [weak self] in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.appState.cancelPendingPTTSleep()
+                if self.appState.microphoneMode != .on {
+                    self.appState.setMode(.on)
+                    self.pttActivatedOnMode = true
+                    self.appState.logDebug("PTT: ON (key consumed)")
+                }
+            }
+        }
+
+        state.onPTTReleased = { [weak self] in
+            Task { @MainActor in
+                guard let self = self else { return }
+                if self.appState.microphoneMode == .on && self.pttActivatedOnMode {
+                    self.pttActivatedOnMode = false
+                    self.appState.requestGracefulSleep()
+                }
+            }
+        }
+
+        AppDelegate.sharedPTTState = state
+
+        // Create CGEventTap
+        let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue) |
+                                      (1 << CGEventType.keyUp.rawValue) |
+                                      (1 << CGEventType.flagsChanged.rawValue)
+
+        guard let eventTap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: eventMask,
+            callback: pttEventTapCallback,
+            userInfo: nil
+        ) else {
+            NSLog("[VoiceFlow] Failed to create CGEventTap for PTT - accessibility permissions may be needed")
+            appState.logDebug("PTT EventTap failed - check accessibility permissions")
+            return
+        }
+
+        pttEventTap = eventTap
+
+        // Create run loop source and add to current run loop
+        let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
+        pttRunLoopSource = runLoopSource
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+
+        // Enable the tap
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+
+        NSLog("[VoiceFlow] PTT CGEventTap created successfully - PTT key will be consumed")
+        appState.logDebug("PTT EventTap active - key: \(appState.pttShortcut.keyCode)")
+    }
+
+    private func teardownPTTEventTap() {
+        if let runLoopSource = pttRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+            pttRunLoopSource = nil
+        }
+        if let eventTap = pttEventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
+            pttEventTap = nil
+        }
+        AppDelegate.sharedPTTState = nil
+    }
+
+    /// Call this when PTT shortcut changes to update the event tap
+    func updatePTTShortcut() {
+        AppDelegate.sharedPTTState?.updateShortcut(
+            keyCode: appState.pttShortcut.keyCode,
+            modifiers: appState.pttShortcut.modifiers
+        )
+        appState.logDebug("PTT shortcut updated: keyCode=\(appState.pttShortcut.keyCode)")
+    }
     
     nonisolated private func mapModifiers(_ modifiers: KeyboardModifiers) -> NSEvent.ModifierFlags {
         var flags: NSEvent.ModifierFlags = []
@@ -672,4 +710,106 @@ extension AppDelegate: NSMenuDelegate, NSWindowDelegate {
             NSApp.setActivationPolicy(.accessory)
         }
     }
+}
+
+// MARK: - PTT Event Tap State
+
+/// Shared state for CGEventTap callback (must be accessible from non-MainActor context)
+final class PTTEventTapState: @unchecked Sendable {
+    var pttKeyCode: UInt16 = UInt16(kVK_Space)
+    var pttModifiers: CGEventFlags = [.maskControl, .maskAlternate]
+    var consumePTTKey: Bool = true  // Whether to consume the PTT key event
+
+    // Callback to notify main actor of PTT events
+    var onPTTPressed: (() -> Void)?
+    var onPTTReleased: (() -> Void)?
+
+    func updateShortcut(keyCode: UInt16, modifiers: KeyboardModifiers) {
+        pttKeyCode = keyCode
+        pttModifiers = PTTEventTapState.mapModifiersToCGEventFlags(modifiers)
+    }
+
+    static func mapModifiersToCGEventFlags(_ modifiers: KeyboardModifiers) -> CGEventFlags {
+        var flags: CGEventFlags = []
+        if modifiers.contains(.command) { flags.insert(.maskCommand) }
+        if modifiers.contains(.option) { flags.insert(.maskAlternate) }
+        if modifiers.contains(.control) { flags.insert(.maskControl) }
+        if modifiers.contains(.shift) { flags.insert(.maskShift) }
+        return flags
+    }
+}
+
+/// CGEventTap callback function for consuming PTT key events
+/// Returns nil to consume the event, or the event to pass it through
+func pttEventTapCallback(
+    proxy: CGEventTapProxy,
+    type: CGEventType,
+    event: CGEvent,
+    refcon: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    // Handle special tap events
+    guard type == .keyDown || type == .keyUp || type == .flagsChanged else {
+        // For tap disabled events, re-enable the tap
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let refcon = refcon {
+                let tapRef = Unmanaged<AnyObject>.fromOpaque(refcon).takeUnretainedValue()
+                if let machPort = tapRef as? NSMachPort {
+                    CGEvent.tapEnable(tap: machPort.machPort, enable: true)
+                }
+            }
+        }
+        return Unmanaged.passRetained(event)
+    }
+
+    guard let state = AppDelegate.sharedPTTState else {
+        return Unmanaged.passRetained(event)
+    }
+
+    let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+    let eventFlags = event.flags
+
+    // Check if this is the PTT key
+    guard keyCode == state.pttKeyCode else {
+        return Unmanaged.passRetained(event)
+    }
+
+    // Check if this is a modifier-only key (keycodes 54-63 are modifier keys)
+    let isModifierKey = (54...63).contains(keyCode)
+
+    // Get required flags without the key's own flag for comparison
+    let requiredFlags = state.pttModifiers
+    // Mask out non-modifier bits for comparison
+    let relevantFlags = eventFlags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift])
+
+    var shouldConsume = false
+
+    if isModifierKey {
+        // For modifier keys, check flagsChanged events
+        if type == .flagsChanged {
+            // PTT pressed if flags now match required
+            if relevantFlags == requiredFlags {
+                state.onPTTPressed?()
+                shouldConsume = state.consumePTTKey
+            } else {
+                // PTT released if flags no longer match
+                state.onPTTReleased?()
+                shouldConsume = state.consumePTTKey
+            }
+        }
+    } else {
+        // For regular keys, check keyDown/keyUp
+        if type == .keyDown && relevantFlags == requiredFlags {
+            state.onPTTPressed?()
+            shouldConsume = state.consumePTTKey
+        } else if type == .keyUp {
+            state.onPTTReleased?()
+            shouldConsume = state.consumePTTKey
+        }
+    }
+
+    if shouldConsume {
+        return nil  // Consume the event - don't pass to apps
+    }
+
+    return Unmanaged.passRetained(event)
 }
