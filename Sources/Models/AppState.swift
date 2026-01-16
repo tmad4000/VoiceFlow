@@ -4588,9 +4588,24 @@ class AppState: ObservableObject {
         if let frontApp = NSWorkspace.shared.frontmostApplication {
             let appName = frontApp.localizedName ?? "Unknown"
             let bundleId = frontApp.bundleIdentifier ?? "?"
-            logDebug("Target app: \(appName) (\(bundleId))")
+            let isActive = frontApp.isActive
+            logDebug("Target app: \(appName) (\(bundleId)) active=\(isActive)")
         } else {
             logDebug("Target app: Unknown (no frontmost app)")
+        }
+
+        // Check if we can get focused element info (for debugging clunk sounds)
+        if let systemWide = AXUIElementCreateSystemWide() as AXUIElement? {
+            var focusedElement: AnyObject?
+            let result = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedElement)
+            if result == .success, let element = focusedElement {
+                var roleValue: AnyObject?
+                AXUIElementCopyAttributeValue(element as! AXUIElement, kAXRoleAttribute as CFString, &roleValue)
+                let role = roleValue as? String ?? "unknown"
+                logDebug("Focused element role: \(role)")
+            } else {
+                logDebug("Focused element: none (may cause clunk)")
+            }
         }
 
         // Don't append space after newlines - it looks wrong
