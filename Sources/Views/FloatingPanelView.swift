@@ -185,12 +185,42 @@ struct FloatingPanelView: View {
 
                         Divider()
 
-                        // Auto-submit toggle (experiment)
-                        Toggle(isOn: Binding(
-                            get: { appState.autoSubmitEnabled },
-                            set: { appState.autoSubmitEnabled = $0 }
-                        )) {
-                            Label("Auto-Submit (\(String(format: "%.1f", appState.autoSubmitDelaySeconds))s)", systemImage: "return")
+                        // Vibe coding section
+                        Section("Vibe Coding") {
+                            // Auto-submit toggle
+                            Toggle(isOn: Binding(
+                                get: { appState.autoSubmitEnabled },
+                                set: { appState.autoSubmitEnabled = $0 }
+                            )) {
+                                Label("Auto-Submit", systemImage: "return")
+                            }
+
+                            // Delay picker (only show when auto-submit enabled)
+                            if appState.autoSubmitEnabled {
+                                Menu {
+                                    ForEach([1.0, 2.0, 3.0, 4.0, 5.0], id: \.self) { delay in
+                                        Button {
+                                            appState.autoSubmitDelaySeconds = delay
+                                        } label: {
+                                            if appState.autoSubmitDelaySeconds == delay {
+                                                Label("\(Int(delay))s", systemImage: "checkmark")
+                                            } else {
+                                                Text("\(Int(delay))s")
+                                            }
+                                        }
+                                    }
+                                } label: {
+                                    Label("Delay: \(Int(appState.autoSubmitDelaySeconds))s", systemImage: "timer")
+                                }
+                            }
+
+                            // Trailing newline sends Enter
+                            Toggle(isOn: Binding(
+                                get: { appState.trailingNewlineSendsEnter },
+                                set: { appState.trailingNewlineSendsEnter = $0 }
+                            )) {
+                                Label("Newline→Enter", systemImage: "arrow.turn.down.left")
+                            }
                         }
 
                         Divider()

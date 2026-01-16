@@ -481,7 +481,8 @@ class AppState: ObservableObject {
     private var autoOffTimer: Timer?
     private var autoSubmitTimer: Timer?
     @Published var autoSubmitEnabled: Bool = false  // Auto-press Enter after utterance + silence
-    @Published var autoSubmitDelaySeconds: Double = 2.0  // Seconds of silence before auto-submit
+    @Published var autoSubmitDelaySeconds: Double = 3.0  // Seconds of silence before auto-submit
+    @Published var trailingNewlineSendsEnter: Bool = true  // "newline" at end of utterance sends Enter key
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
     private var currentUtteranceIsLiteral = false
@@ -1774,16 +1775,16 @@ class AppState: ObservableObject {
             pendingCrossUtteranceTime = nil
         }
 
-        func appendNewline() {
+        func appendNewline(isTrailing: Bool = false) {
             while output.last == " " {
                 output.removeLast()
             }
-            // In terminal mode, buffer the newline to send at end of utterance
-            // This ensures Enter is sent AFTER all text is typed, which is required
-            // for terminal UIs like Claude Code to register it as a submit
-            if focusContextManager.isCurrentAppTerminal() {
+            // In terminal mode OR when trailing newline sends Enter is enabled,
+            // buffer the newline to send at end of utterance as an Enter key press
+            // This ensures Enter is sent AFTER all text is typed
+            if focusContextManager.isCurrentAppTerminal() || (isTrailing && trailingNewlineSendsEnter) {
                 bufferedTerminalNewlines += 1
-                logDebug("Buffering newline for terminal (total buffered: \(bufferedTerminalNewlines))")
+                logDebug("Buffering newline (terminal=\(focusContextManager.isCurrentAppTerminal()), trailing=\(isTrailing), total buffered: \(bufferedTerminalNewlines))")
             } else if output.last != "\n" {
                 output.append("\n")
             }
@@ -1974,9 +1975,11 @@ class AppState: ObservableObject {
 
             if token == "newline" {
                 keyword = keyword ?? "New line"
+                let isTrailing = index == words.count - 1
                 NSLog("[VoiceFlow] ⏎ Newline keyword detected: token='newline', wordIndex=%d, totalWords=%d, isEndOfUtterance=%@",
-                      index, words.count, index == words.count - 1 ? "YES" : "no")
-                appendNewline()
+                      index, words.count, isTrailing ? "YES" : "no")
+                triggerKeywordFlash(name: "New line")
+                appendNewline(isTrailing: isTrailing)
                 index += 1
                 continue
             }
@@ -1990,10 +1993,14 @@ class AppState: ObservableObject {
                         // Always treat "new line" as a newline command when spoken together
                         // Users can say "say new line" if they want the literal text
                         keyword = keyword ?? "New line"
+                        // Check if this is trailing - "new line" at end, or followed only by punctuation
+                        let isTrailing = index + 1 >= words.count - 1 ||
+                            (index + 2 < words.count && isSkippablePunctuation(words[index + 2].text) && index + 2 == words.count - 1)
                         NSLog("[VoiceFlow] ⏎ Newline keyword detected: token='new line', wordIndex=%d, totalWords=%d, isEndOfUtterance=%@",
-                              index, words.count, index + 1 >= words.count - 1 ? "YES" : "no")
+                              index, words.count, isTrailing ? "YES" : "no")
                         logDebug("Keyword \"new line\" detected at word index \(index), appending newline")
-                        appendNewline()
+                        triggerKeywordFlash(name: "New line")
+                        appendNewline(isTrailing: isTrailing)
                         if index + 2 < words.count, isSkippablePunctuation(words[index + 2].text) {
                             index += 3
                         } else {
@@ -2053,7 +2060,8 @@ class AppState: ObservableObject {
                     keyword = keyword ?? "Press enter"
                     NSLog("[VoiceFlow] ⏎ Press enter keyword detected at word index %d", index)
                     triggerKeywordFlash(name: "Press enter")
-                    appendNewline()
+                    // "press enter" always sends Enter key (acts as trailing)
+                    appendNewline(isTrailing: true)
                     index += 2
                     continue
                 }
