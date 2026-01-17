@@ -5982,13 +5982,31 @@ class AppState: ObservableObject {
         }
     }
 
+    // DIAGNOSTIC VoiceFlow-ab1z: Track event handling for CPU spin debugging
+    private var claudeEventCount: Int = 0
+    private var lastClaudeEventTime: Date?
+
     private func handleClaudeEvent(_ event: ClaudeCodeService.ClaudeEvent) {
+        // DIAGNOSTIC: Track event frequency (investigating CPU spin VoiceFlow-ab1z)
+        claudeEventCount += 1
+        let now = Date()
+        if let lastTime = lastClaudeEventTime {
+            let interval = now.timeIntervalSince(lastTime)
+            // Log if events are coming extremely fast (potential spin indicator)
+            if interval < 0.001 {
+                NSLog("[VoiceFlow] ⚠️ RAPID EVENTS: %d events, interval %.4fs - potential spin!", claudeEventCount, interval)
+            }
+        }
+        lastClaudeEventTime = now
+
         switch event {
         case .connected:
+            NSLog("[VoiceFlow] 🔌 Claude connected")
             isClaudeConnected = true
             commandError = nil
 
         case .disconnected(let error):
+            NSLog("[VoiceFlow] 🔌 Claude disconnected (error: \(error?.localizedDescription ?? "none"))")
             isClaudeConnected = false
             if let error = error {
                 commandError = error.localizedDescription
@@ -6005,6 +6023,7 @@ class AppState: ObservableObject {
             }
 
         case .textComplete(let text):
+            NSLog("[VoiceFlow] ✅ textComplete: %d chars", text.count)
             // Set the complete text on the last assistant message
             if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
                 commandMessages[lastIndex].content = text
@@ -6013,6 +6032,7 @@ class AppState: ObservableObject {
             }
 
         case .toolUseStart(_, let name, let input):
+            NSLog("[VoiceFlow] 🔧 Tool start: \(name)")
             // Add tool use to the last assistant message
             if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
                 let toolUse = CommandToolUse(toolName: name, input: input)
@@ -6020,6 +6040,7 @@ class AppState: ObservableObject {
             }
 
         case .toolUseEnd(_, let output):
+            NSLog("[VoiceFlow] 🔧 Tool end")
             // Update tool use with output
             if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
                 if var lastToolUse = commandMessages[lastIndex].toolUses.last {
@@ -6031,6 +6052,7 @@ class AppState: ObservableObject {
             }
 
         case .messageComplete:
+            NSLog("[VoiceFlow] ✅ messageComplete - setting isClaudeProcessing=false")
             isClaudeProcessing = false
             // Mark the last assistant message as complete
             if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
@@ -6038,7 +6060,9 @@ class AppState: ObservableObject {
                 commandMessages[lastIndex].isComplete = true
             }
             // Process any queued messages
+            NSLog("[VoiceFlow] ✅ Calling processCommandQueue...")
             processCommandQueue()
+            NSLog("[VoiceFlow] ✅ processCommandQueue returned")
 
         case .sessionId(let sessionId):
             // Update current session and persist
@@ -6049,11 +6073,13 @@ class AppState: ObservableObject {
             NSLog("[VoiceFlow] Session ID saved: \(sessionId)")
 
         case .error(let errorMsg):
+            NSLog("[VoiceFlow] ❌ Claude error: \(errorMsg)")
             commandError = errorMsg
             isClaudeProcessing = false
             // Process any queued messages even after error
             processCommandQueue()
         }
+        NSLog("[VoiceFlow] 📊 Event handled (count: \(claudeEventCount))")
     }
 
     private func startBuildCheckTimer() {
