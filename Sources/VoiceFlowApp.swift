@@ -42,6 +42,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var onMenuItem: NSMenuItem?
     var sleepMenuItem: NSMenuItem?
     var showHideMenuItem: NSMenuItem?
+    var commandPanelMenuItem: NSMenuItem?
     private var settingsWindow: NSWindow?
     private var panelWindow: FloatingPanelWindow?
     private var commandPanelWindow: CommandPanelWindow?
@@ -111,6 +112,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showHideMenuItem = NSMenuItem(title: "Hide Panel", action: #selector(togglePanel), keyEquivalent: "")
         showHideMenuItem?.target = self
         menu.addItem(showHideMenuItem!)
+
+        commandPanelMenuItem = NSMenuItem(title: "Claude Code Panel", action: #selector(toggleCommandPanel), keyEquivalent: "")
+        commandPanelMenuItem?.target = self
+        menu.addItem(commandPanelMenuItem!)
+
+        menu.addItem(NSMenuItem.separator())
 
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
@@ -408,6 +415,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         appState.isCommandPanelVisible = false
     }
 
+    @objc func toggleCommandPanel() {
+        if appState.isCommandPanelVisible {
+            hideCommandPanel()
+        } else {
+            showCommandPanel()
+        }
+    }
+
     private func configureCommandPanelWindow() {
         let panel = CommandPanelWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 600),
@@ -594,6 +609,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             offMenuItem?.state = mode == .off ? .on : .off
             onMenuItem?.state = mode == .on ? .on : .off
             sleepMenuItem?.state = mode == .sleep ? .on : .off
+            // Update panel menu items
+            commandPanelMenuItem?.title = appState.isCommandPanelVisible ? "Hide Claude Code Panel" : "Show Claude Code Panel"
         }
     }
 
