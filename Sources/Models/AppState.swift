@@ -1095,8 +1095,15 @@ class AppState: ObservableObject {
         assemblyAIService?.$isConnected
             .receive(on: DispatchQueue.main)
             .sink { [weak self] connected in
-                self?.isConnected = connected
-                self?.logDebug(connected ? "Connected to AssemblyAI" : "Disconnected from AssemblyAI")
+                guard let self = self else { return }
+                let wasConnected = self.isConnected
+                self.isConnected = connected
+                self.logDebug(connected ? "Connected to AssemblyAI" : "Disconnected from AssemblyAI")
+
+                // DIAGNOSTIC: Track reconnect cycles (investigating clunk sounds during quiet periods)
+                if !wasConnected && connected {
+                    NSLog("[VoiceFlow] 🔄 RECONNECT CYCLE: AssemblyAI reconnected (mode=\(self.microphoneMode.rawValue))")
+                }
             }
             .store(in: &cancellables)
 
@@ -3858,6 +3865,7 @@ class AppState: ObservableObject {
     /// Provides audio/visual confirmation that VoiceFlow is listening
     func confirmListening() {
         // Play system sound for audio feedback
+        NSLog("[VoiceFlow] 🔔 BEEP: confirmListening() - user asked 'are you listening'")
         NSSound.beep()
 
         // Show visual flash with current mode status
@@ -3946,6 +3954,7 @@ class AppState: ObservableObject {
         triggerCommandFlash(name: "Recording...")
 
         // Play a sound to indicate recording started
+        NSLog("[VoiceFlow] 🔔 BEEP: startAudioRecording() - voice command 'voiceflow start recording'")
         NSSound.beep()
     }
 
@@ -3990,6 +3999,7 @@ class AppState: ObservableObject {
             triggerCommandFlash(name: "Recording Saved")
 
             // Play a sound to indicate recording saved
+            NSLog("[VoiceFlow] 🔔 BEEP: stopAudioRecording() - recording saved to \(filename)")
             NSSound.beep()
         } catch {
             logDebug("Failed to save recording: \(error)")
@@ -4045,6 +4055,7 @@ class AppState: ObservableObject {
         isCapturingNote = true
         noteBuffer = ""
         triggerCommandFlash(name: "Note...")
+        NSLog("[VoiceFlow] 🔔 BEEP: startCapturingNote() - 'take a note' command")
         NSSound.beep()
     }
 
@@ -4062,6 +4073,7 @@ class AppState: ObservableObject {
         isCapturingLongNote = true
         noteBuffer = ""
         triggerCommandFlash(name: "Long Note...")
+        NSLog("[VoiceFlow] 🔔 BEEP: startCapturingLongNote() - 'voiceflow make a long note' command")
         NSSound.beep()
         resetNotePauseTimer()
     }
@@ -4109,6 +4121,7 @@ class AppState: ObservableObject {
         isContinuousNote = true
         noteBuffer = ""
         triggerCommandFlash(name: "Note On...")
+        NSLog("[VoiceFlow] 🔔 BEEP: startContinuousNote() - 'voiceflow start making a note' command")
         NSSound.beep()
     }
 
@@ -4165,6 +4178,7 @@ class AppState: ObservableObject {
         isTranscribing = true
         transcriptBuffer = ""
         triggerCommandFlash(name: "Transcribing...")
+        NSLog("[VoiceFlow] 🔔 BEEP: startTranscribing() - 'voiceflow start transcribing' command")
         NSSound.beep()
     }
 
@@ -4200,6 +4214,7 @@ class AppState: ObservableObject {
                 try transcriptBuffer.write(to: fileURL, atomically: true, encoding: .utf8)
                 logDebug("Saved transcript: \(filename)")
                 triggerCommandFlash(name: "Transcript Saved")
+                NSLog("[VoiceFlow] 🔔 BEEP: stopTranscribing() - transcript saved to \(filename)")
                 NSSound.beep()
             } catch {
                 logDebug("Failed to save transcript: \(error)")
@@ -4677,6 +4692,11 @@ class AppState: ObservableObject {
     }
 
     private func typeText(_ text: String, appendSpace: Bool) {
+        // DIAGNOSTIC: Log if typing during Sleep/Off mode (shouldn't happen - investigating clunk sounds)
+        if microphoneMode != .on {
+            NSLog("[VoiceFlow] ⚠️ DIAGNOSTIC: typeText called during \(microphoneMode.rawValue) mode! text=\"\(text.prefix(50))...\"")
+        }
+
         // Check accessibility first
         guard AXIsProcessTrusted() else {
             let msg = "Cannot type - Accessibility permission NOT granted"
