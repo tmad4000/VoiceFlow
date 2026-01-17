@@ -911,6 +911,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 guard let self = self else { return }
                 self.appState.cancelPendingPTTSleep()
+                // Record PTT press timestamp for filtering pre-press background speech
+                self.appState.recordPTTPress()
                 if self.appState.microphoneMode != .on {
                     self.appState.setMode(.on)
                     self.pttActivatedOnMode = true
@@ -922,6 +924,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         state.onPTTReleased = { [weak self] in
             Task { @MainActor in
                 guard let self = self else { return }
+                // Record PTT release timestamp for filtering post-release speech
+                self.appState.recordPTTRelease()
                 if self.appState.microphoneMode == .on && self.pttActivatedOnMode {
                     self.pttActivatedOnMode = false
                     self.appState.requestGracefulSleep()

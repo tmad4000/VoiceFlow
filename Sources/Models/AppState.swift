@@ -518,6 +518,12 @@ class AppState: ObservableObject {
     private var hasTypedInSession = false  // Tracks if we've typed anything since going On
     @Published var isPTTProcessing = false  // When true, waiting for finalized text before sleep
     private var pttSleepTimeoutTask: Task<Void, Never>?  // Fallback timeout for PTT sleep
+
+    // PTT timestamp tracking - filters words to only include those within PTT time window
+    private var streamStartTime: Date?  // When audio stream started (for calculating stream-relative times)
+    private var pttPressStreamTime: Double?  // Stream-relative timestamp when PTT was pressed
+    private var pttReleaseStreamTime: Double?  // Stream-relative timestamp when PTT was released
+    private var isPTTActive = false  // True while PTT key is held down
     private var forceEndPending = false
     private var forceEndRequestedAt: Date?
     private let forceEndTimeoutSeconds: TimeInterval = 2.0
@@ -1154,6 +1160,10 @@ class AppState: ObservableObject {
         logDebug("Vocabulary: \(effectiveVocabularyPrompt.prefix(100))...")
         assemblyAIService?.connect()
         audioCaptureManager?.startCapture()
+
+        // Record stream start time for PTT timestamp tracking
+        streamStartTime = Date()
+        resetPTTTimestamps()
     }
 
     private func startDeepgram(transcribeMode: Bool) {
@@ -1233,6 +1243,10 @@ class AppState: ObservableObject {
         deepgramService?.setVocabularyPrompt(effectiveVocabularyPrompt)
         deepgramService?.connect()
         audioCaptureManager?.startCapture()
+
+        // Record stream start time for PTT timestamp tracking
+        streamStartTime = Date()
+        resetPTTTimestamps()
     }
 
     private func startAppleSpeech(transcribeMode: Bool) {
@@ -1299,6 +1313,10 @@ class AppState: ObservableObject {
         appleSpeechService?.startRecognition(addsPunctuation: !liveDictationEnabled)
         audioCaptureManager?.startCapture()
         updateLatency(nil)
+
+        // Record stream start time for PTT timestamp tracking
+        streamStartTime = Date()
+        resetPTTTimestamps()
     }
 
     private func stopListening() {
@@ -1332,17 +1350,31 @@ class AppState: ObservableObject {
         // Calculate force end status early
         let isForceEndTurn = forceEndPending && turn.endOfTurn
 
+        // Apply PTT timestamp filter to exclude words outside the PTT time window
+        let filteredWords = filterWordsForPTT(turn.words)
+
         let fallbackTranscript = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
-        if !turn.words.isEmpty {
-            currentWords = turn.words
+        if !filteredWords.isEmpty {
+            currentWords = filteredWords
             if !fallbackTranscript.isEmpty {
-                currentTranscript = fallbackTranscript
+                // Rebuild transcript from filtered words if we removed any
+                if filteredWords.count != turn.words.count {
+                    currentTranscript = assembleDisplayText(from: filteredWords)
+                } else {
+                    currentTranscript = fallbackTranscript
+                }
             } else {
-                currentTranscript = assembleDisplayText(from: turn.words)
+                currentTranscript = assembleDisplayText(from: filteredWords)
             }
-        } else if !fallbackTranscript.isEmpty {
+        } else if !fallbackTranscript.isEmpty && turn.words.isEmpty {
+            // Only use fallback if original turn had no words (not filtered out)
             currentWords = []
             currentTranscript = fallbackTranscript
+        } else if filteredWords.isEmpty && !turn.words.isEmpty {
+            // All words were filtered out by PTT - ignore this turn's content
+            // but still process for timing/state updates
+            currentWords = []
+            currentTranscript = ""
         }
 
         let initialMode = microphoneMode
@@ -5611,6 +5643,69 @@ class AppState: ObservableObject {
             pttSleepTimeoutTask?.cancel()
             pttSleepTimeoutTask = nil
         }
+    }
+
+    /// Called when PTT key is pressed - records the stream-relative timestamp
+    func recordPTTPress() {
+        isPTTActive = true
+        if let startTime = streamStartTime {
+            pttPressStreamTime = Date().timeIntervalSince(startTime)
+            pttReleaseStreamTime = nil  // Clear release time from previous PTT
+            logDebug("PTT: Press recorded at stream time \(String(format: "%.2f", pttPressStreamTime!))s")
+        } else {
+            logDebug("PTT: Press recorded (no stream start time yet)")
+            pttPressStreamTime = nil
+        }
+    }
+
+    /// Called when PTT key is released - records the stream-relative timestamp
+    func recordPTTRelease() {
+        isPTTActive = false
+        if let startTime = streamStartTime {
+            pttReleaseStreamTime = Date().timeIntervalSince(startTime)
+            logDebug("PTT: Release recorded at stream time \(String(format: "%.2f", pttReleaseStreamTime!))s")
+        } else {
+            logDebug("PTT: Release recorded (no stream start time)")
+        }
+    }
+
+    /// Filter words to only include those within the PTT time window
+    /// Words with startTime < pttPressStreamTime are ignored (pre-press background speech)
+    /// Words with endTime > pttReleaseStreamTime are ignored (post-release speech)
+    private func filterWordsForPTT(_ words: [TranscriptWord]) -> [TranscriptWord] {
+        // Only filter if PTT is/was active and we have timestamps
+        guard pttPressStreamTime != nil || pttReleaseStreamTime != nil else {
+            return words
+        }
+
+        return words.filter { word in
+            // If word has no timing info, include it (can't filter)
+            guard let wordStart = word.startTime else { return true }
+
+            // Filter out words that started before PTT was pressed
+            if let pressTime = pttPressStreamTime {
+                if wordStart < pressTime {
+                    return false
+                }
+            }
+
+            // Filter out words that ended after PTT was released (if we have release time)
+            if let releaseTime = pttReleaseStreamTime, let wordEnd = word.endTime {
+                // Allow a small grace period (500ms) after release for words in progress
+                if wordEnd > releaseTime + 0.5 {
+                    return false
+                }
+            }
+
+            return true
+        }
+    }
+
+    /// Reset PTT timestamps (called when stream restarts or mode changes)
+    private func resetPTTTimestamps() {
+        pttPressStreamTime = nil
+        pttReleaseStreamTime = nil
+        isPTTActive = false
     }
 
     func saveModeToggleShortcut(_ shortcut: KeyboardShortcut) {
