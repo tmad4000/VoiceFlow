@@ -150,7 +150,7 @@ struct FloatingPanelView: View {
                     }
                     .buttonStyle(.plain)
                     .pointerCursor()
-                    .instantTooltip("Claude Code")
+                    .instantTooltip("Claude Code (⌃⌥C)")
 
                     Button(action: openHistory) {
                         Image(systemName: "clock.arrow.circlepath")
@@ -168,7 +168,7 @@ struct FloatingPanelView: View {
                     }
                     .buttonStyle(.plain)
                     .pointerCursor()
-                    .instantTooltip("Open settings")
+                    .instantTooltip("Open settings (⌘,)")
 
                     // More options menu
                     Menu {
@@ -188,7 +188,17 @@ struct FloatingPanelView: View {
                         // Panels section
                         Section("Panels") {
                             Button(action: { appState.toggleCommandPanel() }) {
-                                Label(appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code", systemImage: "terminal")
+                                Label {
+                                    HStack {
+                                        Text(appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code")
+                                        Spacer()
+                                        Text("⌃⌥C")
+                                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                            .foregroundColor(.secondary)
+                                    }
+                                } icon: {
+                                    Image(systemName: "terminal")
+                                }
                             }
                             Button(action: { appState.openNotesPanel() }) {
                                 Label("Notes", systemImage: "note.text")
@@ -736,9 +746,9 @@ private struct UnifiedModeButton: View {
                                 HStack {
                                     Text(m.rawValue)
                                     Spacer()
-                                    Text(m.voiceCommandHint)
+                                    Text(m.keyboardShortcut)
+                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
                                         .foregroundColor(.secondary)
-                                        .font(.caption)
                                 }
                             } icon: {
                                 Image(systemName: m.icon)
@@ -796,9 +806,9 @@ private struct UnifiedModeButton: View {
 
     private var toggleHelpText: String {
         switch mode {
-        case .off: return "Click to turn On"
-        case .on: return "Click to Sleep"
-        case .sleep: return "Click to turn On"
+        case .off: return "Click to turn On (⌃⌥⌘1)"
+        case .on: return "Click to Sleep (⌃⌥⌘2)"
+        case .sleep: return "Click to turn On (⌃⌥⌘1)"
         }
     }
 }
@@ -933,7 +943,7 @@ private struct CompactModeButtons: View {
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
-                .help(mode.rawValue.capitalized)
+                .help("\(mode.rawValue.capitalized) (\(mode.keyboardShortcut))")
             }
         }
     }

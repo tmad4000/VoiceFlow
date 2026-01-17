@@ -117,7 +117,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showHideMenuItem?.target = self
         menu.addItem(showHideMenuItem!)
 
-        commandPanelMenuItem = NSMenuItem(title: "Claude Code Panel", action: #selector(toggleCommandPanel), keyEquivalent: "")
+        commandPanelMenuItem = NSMenuItem(title: "Claude Code Panel", action: #selector(toggleCommandPanel), keyEquivalent: "c")
+        commandPanelMenuItem?.keyEquivalentModifierMask = [.control, .option]
         commandPanelMenuItem?.target = self
         menu.addItem(commandPanelMenuItem!)
 
