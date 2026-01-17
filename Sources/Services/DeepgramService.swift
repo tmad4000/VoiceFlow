@@ -13,6 +13,31 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     @Published var errorMessage: String?
     @Published var lastPingLatencyMs: Int?
 
+    /// Check if an error is a network-related error that should be silently handled (not shown to user)
+    /// These typically occur during sleep/wake cycles or network changes
+    private func isNetworkRelatedError(_ error: Error?) -> Bool {
+        guard let error = error else { return false }
+        let nsError = error as NSError
+
+        // POSIX errors that indicate network issues (sleep/wake, connection lost, etc.)
+        if nsError.domain == NSPOSIXErrorDomain {
+            let networkErrorCodes = [54, 57, 60, 32, 53, 61]  // Common network error codes
+            if networkErrorCodes.contains(nsError.code) {
+                NSLog("[Deepgram] Suppressing network error (code %d): %@", nsError.code, error.localizedDescription)
+                return true
+            }
+        }
+
+        // Also check for "connection reset" in the description (catches wrapped errors)
+        let desc = error.localizedDescription.lowercased()
+        if desc.contains("connection reset") || desc.contains("network") || desc.contains("timed out") {
+            NSLog("[Deepgram] Suppressing network-related error: %@", error.localizedDescription)
+            return true
+        }
+
+        return false
+    }
+
     private var transcribeMode = true
     private var formatTurns = true
     private var vocabularyPrompt: String?
@@ -239,9 +264,11 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         let reasonStr = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "unknown"
         NSLog("[Deepgram] WebSocket closed: code=%d, reason=%@", closeCode.rawValue, reasonStr)
+        // Suppress error for normal close codes (1000 = normal, 1001 = going away)
+        let suppressDisconnect = closeCode == .normalClosure || closeCode == .goingAway
         DispatchQueue.main.async { [weak self] in
             self?.isConnected = false
-            if self?.errorMessage == nil {
+            if !suppressDisconnect && self?.errorMessage == nil {
                 self?.errorMessage = "Disconnected: \(reasonStr)"
             }
         }
@@ -260,8 +287,12 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
                 NSLog("[Deepgram]   HTTP Status: %d", httpResponse.statusCode)
                 NSLog("[Deepgram]   Headers: %@", httpResponse.allHeaderFields.description)
             }
+            // Only show error if it's not a network-related error (sleep/wake, etc.)
+            let suppressError = isNetworkRelatedError(error)
             DispatchQueue.main.async { [weak self] in
-                self?.errorMessage = error.localizedDescription
+                if !suppressError {
+                    self?.errorMessage = error.localizedDescription
+                }
                 self?.isConnected = false
             }
             stopPingTimer()
@@ -298,7 +329,10 @@ private extension DeepgramService {
         task.sendPing { [weak self] error in
             DispatchQueue.main.async {
                 if let error = error {
-                    self?.errorMessage = error.localizedDescription
+                    // Only show error if it's not a network-related error
+                    if self?.isNetworkRelatedError(error) != true {
+                        self?.errorMessage = error.localizedDescription
+                    }
                     self?.isConnected = false
                     self?.stopPingTimer()
                 } else if let self = self {

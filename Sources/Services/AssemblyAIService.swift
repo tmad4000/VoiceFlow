@@ -21,6 +21,36 @@ class AssemblyAIService: NSObject, ObservableObject {
     @Published var errorMessage: String?
     @Published var lastPingLatencyMs: Int?
 
+    /// Check if an error is a network-related error that should be silently handled (not shown to user)
+    /// These typically occur during sleep/wake cycles or network changes
+    private func isNetworkRelatedError(_ error: Error?) -> Bool {
+        guard let error = error else { return false }
+        let nsError = error as NSError
+
+        // POSIX errors that indicate network issues (sleep/wake, connection lost, etc.)
+        // Domain: NSPOSIXErrorDomain
+        // - 54: ECONNRESET (Connection reset by peer)
+        // - 57: ENOTCONN (Socket is not connected)
+        // - 60: ETIMEDOUT (Operation timed out)
+        // - 32: EPIPE (Broken pipe)
+        if nsError.domain == NSPOSIXErrorDomain {
+            let networkErrorCodes = [54, 57, 60, 32, 53, 61]  // Common network error codes
+            if networkErrorCodes.contains(nsError.code) {
+                NSLog("[AssemblyAI] Suppressing network error (code %d): %@", nsError.code, error.localizedDescription)
+                return true
+            }
+        }
+
+        // Also check for "connection reset" in the description (catches wrapped errors)
+        let desc = error.localizedDescription.lowercased()
+        if desc.contains("connection reset") || desc.contains("network") || desc.contains("timed out") {
+            NSLog("[AssemblyAI] Suppressing network-related error: %@", error.localizedDescription)
+            return true
+        }
+
+        return false
+    }
+
     private var transcribeMode = true
     private var formatTurns = true
     private var vocabularyPrompt: String?
@@ -284,9 +314,14 @@ extension AssemblyAIService: WebSocketDelegate {
 
         case .disconnected(let reason, let code):
             print("WebSocket disconnected: \(reason) (code: \(code))")
+            // Suppress error message for expected disconnections (normal close, going away, etc.)
+            // These are not errors the user needs to see - the app will reconnect when needed
+            let suppressDisconnect = reason.isEmpty || code == 1000 || code == 1001
             DispatchQueue.main.async { [weak self] in
                 self?.isConnected = false
-                self?.errorMessage = "Disconnected: \(reason)"
+                if !suppressDisconnect {
+                    self?.errorMessage = "Disconnected: \(reason)"
+                }
             }
             stopPingTimer()
             stopExpirationTimer()
@@ -305,8 +340,12 @@ extension AssemblyAIService: WebSocketDelegate {
             print("Received binary data: \(data.count) bytes")
 
         case .error(let error):
+            // Only show error to user if it's NOT a network-related error (sleep/wake, etc.)
+            let suppressError = isNetworkRelatedError(error)
             DispatchQueue.main.async { [weak self] in
-                self?.errorMessage = error?.localizedDescription ?? "WebSocket error"
+                if !suppressError {
+                    self?.errorMessage = error?.localizedDescription ?? "WebSocket error"
+                }
                 self?.isConnected = false
             }
             print("WebSocket error: \(String(describing: error))")
