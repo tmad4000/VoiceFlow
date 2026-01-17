@@ -1412,6 +1412,26 @@ struct ShortcutHelpRow: View {
     }
 }
 
+/// Quick reference row for common commands
+struct CommandQuickRef: View {
+    let phrase: String
+    let description: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("\"\(phrase)\"")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundColor(.primary)
+            Text("→")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+            Text(description)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+        }
+    }
+}
+
 // MARK: - Permission Row
 
 struct PermissionRow: View {
@@ -1494,6 +1514,105 @@ struct VoiceCommandsSettingsView: View {
         return AppState.specialKeywordList.filter {
             $0.phrase.localizedCaseInsensitiveContains(searchText) ||
             $0.description.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    // MARK: - Quick Reference Section
+
+    private var quickReferenceSection: some View {
+        Section(header: HStack {
+            Image(systemName: "star.fill")
+                .font(.system(size: 9))
+                .foregroundColor(.yellow)
+            Text("Quick Reference")
+        }) {
+            // Keyboard Shortcuts
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 12))
+                        .foregroundColor(.accentColor)
+                    Text("Keyboard Shortcuts")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .padding(.bottom, 4)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    ShortcutHelpRow(keys: "⌃⌥Space", description: "Push-to-Talk (Hold)")
+                    ShortcutHelpRow(keys: "⌃⌥⌘0/1/2", description: "Mode: Off/On/Sleep")
+                    ShortcutHelpRow(keys: "⌃⌘V", description: "Paste last utterance")
+                }
+            }
+            .padding(.vertical, 6)
+
+            // Available Panels
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "rectangle.on.rectangle")
+                        .font(.system(size: 12))
+                        .foregroundColor(.purple)
+                    Text("Open Panels (say these)")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .padding(.bottom, 4)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\"voiceflow open notes panel\"")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    Text("\"voiceflow open transcripts panel\"")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    Text("\"command panel\"")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                }
+                .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 6)
+
+            // Common Commands
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.orange)
+                    Text("Most Used Commands")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .padding(.bottom, 4)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    CommandQuickRef(phrase: "speech off", description: "Pause dictation")
+                    CommandQuickRef(phrase: "wake up", description: "Resume dictation")
+                    CommandQuickRef(phrase: "new line", description: "Insert line break")
+                    CommandQuickRef(phrase: "command [text]", description: "Send to Claude Code")
+                    CommandQuickRef(phrase: "say [text]", description: "Dictate literally")
+                }
+            }
+            .padding(.vertical, 6)
+
+            // Syntax Tips
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "lightbulb.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.green)
+                    Text("Tips")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .padding(.bottom, 4)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("• Most commands work anywhere in your speech")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    Text("• Mode commands must be at the **start** of utterance")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    Text("• \"say\" disables command detection for that phrase")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.vertical, 6)
         }
     }
 
@@ -1584,6 +1703,11 @@ struct VoiceCommandsSettingsView: View {
 
             // Command list
             List {
+                // Quick Reference section (always visible at top)
+                if sectionFilter == .all {
+                    quickReferenceSection
+                }
+
                 // System Commands at top (pinned)
                 if sectionFilter == .all || sectionFilter == .system {
                     Section(header: HStack {

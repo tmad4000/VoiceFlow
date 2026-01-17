@@ -44,10 +44,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var showHideMenuItem: NSMenuItem?
     var commandPanelMenuItem: NSMenuItem?
     var notesPanelMenuItem: NSMenuItem?
+    var transcriptsPanelMenuItem: NSMenuItem?
     private var settingsWindow: NSWindow?
     private var panelWindow: FloatingPanelWindow?
     private var commandPanelWindow: CommandPanelWindow?
     private var notesPanelWindow: NotesPanelWindow?
+    private var transcriptsPanelWindow: TranscriptsPanelWindow?
     private var cancellables = Set<AnyCancellable>()
     private var pttMonitor: Any?
     private var pttActivatedOnMode: Bool = false  // Track if On mode was activated via PTT
@@ -122,6 +124,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         notesPanelMenuItem = NSMenuItem(title: "Notes Panel", action: #selector(toggleNotesPanel), keyEquivalent: "")
         notesPanelMenuItem?.target = self
         menu.addItem(notesPanelMenuItem!)
+
+        transcriptsPanelMenuItem = NSMenuItem(title: "Transcripts Panel", action: #selector(toggleTranscriptsPanel), keyEquivalent: "")
+        transcriptsPanelMenuItem?.target = self
+        menu.addItem(transcriptsPanelMenuItem!)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -205,6 +211,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(showNotesPanel),
             name: Notification.Name("VoiceFlowShowNotesPanel"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideTranscriptsPanel),
+            name: Notification.Name("TranscriptsPanelDidClose"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showTranscriptsPanel),
+            name: Notification.Name("VoiceFlowShowTranscriptsPanel"),
             object: nil
         )
 
@@ -589,6 +607,93 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
+    // MARK: - Transcripts Panel
+
+    @objc func showTranscriptsPanel() {
+        if transcriptsPanelWindow == nil {
+            configureTranscriptsPanelWindow()
+        }
+        guard let transcriptsPanelWindow else { return }
+        positionTranscriptsPanelWindow(transcriptsPanelWindow)
+
+        NSApp.activate(ignoringOtherApps: true)
+        transcriptsPanelWindow.makeKeyAndOrderFront(nil)
+        appState.isTranscriptsPanelVisible = true
+    }
+
+    @objc func hideTranscriptsPanel() {
+        transcriptsPanelWindow?.orderOut(nil)
+        appState.isTranscriptsPanelVisible = false
+    }
+
+    @objc func toggleTranscriptsPanel() {
+        if appState.isTranscriptsPanelVisible {
+            hideTranscriptsPanel()
+        } else {
+            showTranscriptsPanel()
+        }
+    }
+
+    private func configureTranscriptsPanelWindow() {
+        let panel = TranscriptsPanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 500),
+            styleMask: [.titled, .resizable, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingController = NSHostingController(
+            rootView: TranscriptsPanelView()
+                .environmentObject(appState)
+        )
+
+        let containerView = FirstMouseContainerView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(hostingController.view)
+
+        NSLayoutConstraint.activate([
+            hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor)
+        ])
+
+        panel.contentView = containerView
+
+        panel.identifier = NSUserInterfaceItemIdentifier("voiceflow.transcriptspanel")
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.isFloatingPanel = true
+        panel.title = "Transcripts"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+
+        panel.minSize = NSSize(width: 300, height: 300)
+        panel.maxSize = NSSize(width: 600, height: 800)
+
+        transcriptsPanelWindow = panel
+    }
+
+    private func positionTranscriptsPanelWindow(_ window: NSWindow) {
+        guard let screen = NSScreen.main else { return }
+        let panelWidth = window.frame.width
+        let panelHeight = window.frame.height
+        // Position to the left of center, below Notes panel position
+        let x = (screen.frame.width - panelWidth) / 2 - 200 + screen.frame.origin.x
+        let y = screen.frame.maxY - panelHeight - 150
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
     @objc func setModeOff() {
         print("[VoiceFlow] Setting mode: Off")
         Task { @MainActor in
@@ -717,6 +822,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Update panel menu items
             commandPanelMenuItem?.title = appState.isCommandPanelVisible ? "Hide Claude Code Panel" : "Show Claude Code Panel"
             notesPanelMenuItem?.title = appState.isNotesPanelVisible ? "Hide Notes Panel" : "Show Notes Panel"
+            transcriptsPanelMenuItem?.title = appState.isTranscriptsPanelVisible ? "Hide Transcripts Panel" : "Show Transcripts Panel"
         }
     }
 

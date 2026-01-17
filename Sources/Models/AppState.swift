@@ -243,6 +243,7 @@ class AppState: ObservableObject {
     // MARK: - Command Panel (Claude Code Integration)
     @Published var isCommandPanelVisible: Bool = false
     @Published var isNotesPanelVisible: Bool = false
+    @Published var isTranscriptsPanelVisible: Bool = false
     @Published var commandMessages: [CommandMessage] = []
     @Published var commandInput: String = ""
     @Published var commandMessageQueue: [String] = []
@@ -352,6 +353,7 @@ class AppState: ObservableObject {
         ("voiceflow stop transcribing", "Stop transcription and save"),
         ("voiceflow open notes", "Open Notes folder in Finder"),
         ("voiceflow open notes panel", "Open the Notes panel"),
+        ("voiceflow open transcripts panel", "Open the Transcripts panel"),
         ("voiceflow open recordings", "Open Recordings folder in Finder"),
         ("voiceflow open transcripts", "Open Transcripts folder in Finder"),
         ("voiceflow send", "Retype/paste the last utterance")
@@ -2975,6 +2977,22 @@ class AppState: ObservableObject {
             return
         }
 
+        // "voiceflow open transcripts panel" - open the transcripts panel (check BEFORE open transcripts folder)
+        if lowerTranscript.hasPrefix("voiceflow open transcripts panel") || lowerTranscript.hasPrefix("voice flow open transcripts panel") {
+            if turn.endOfTurn {
+                openTranscriptsPanel()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_transcripts_panel"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow open transcripts panel' detected")
+            }
+            return
+        }
+
         // "voiceflow open transcripts" - open transcripts folder
         if lowerTranscript.hasPrefix("voiceflow open transcript") || lowerTranscript.hasPrefix("voice flow open transcript") || lowerTranscript.hasPrefix("open transcript") {
             if turn.endOfTurn {
@@ -4271,6 +4289,16 @@ class AppState: ObservableObject {
         triggerCommandFlash(name: "Notes Panel")
     }
 
+    /// Open the Transcripts panel
+    func openTranscriptsPanel() {
+        // Post notification to VoiceFlowApp to show the panel
+        NotificationCenter.default.post(
+            name: NSNotification.Name("VoiceFlowShowTranscriptsPanel"),
+            object: nil
+        )
+        triggerCommandFlash(name: "Transcripts Panel")
+    }
+
     /// Open the recordings folder in Finder
     func openRecordingsFolder() {
         let recordingsDir = FileManager.default.homeDirectoryForCurrentUser
@@ -5331,6 +5359,17 @@ class AppState: ObservableObject {
 
     func saveDictationHistory() {
         UserDefaults.standard.set(dictationHistory, forKey: "dictation_history")
+    }
+
+    /// Clear dictation history
+    func clearDictationHistory() {
+        dictationHistory.removeAll()
+        saveDictationHistory()
+    }
+
+    /// Retype/paste text (public interface for panels)
+    func retypeText(_ text: String) {
+        typeText(text, appendSpace: false)
     }
 
     private func loadVocabularyPrompt() {
