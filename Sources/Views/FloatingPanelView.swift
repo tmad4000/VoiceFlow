@@ -185,6 +185,21 @@ struct FloatingPanelView: View {
 
                         Divider()
 
+                        // Panels section
+                        Section("Panels") {
+                            Button(action: { appState.toggleCommandPanel() }) {
+                                Label(appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code", systemImage: "terminal")
+                            }
+                            Button(action: { appState.openNotesPanel() }) {
+                                Label("Notes", systemImage: "note.text")
+                            }
+                            Button(action: { appState.openTranscriptsPanel() }) {
+                                Label("Transcripts", systemImage: "text.quote")
+                            }
+                        }
+
+                        Divider()
+
                         // Vibe coding section
                         Section("Vibe Coding") {
                             // Auto-submit toggle
