@@ -3583,6 +3583,9 @@ class AppState: ObservableObject {
             ])
         }
 
+        // Mode-changing commands that must appear at START of utterance only (prevents "oddly enough, speech off" from triggering)
+        let modeCommandKeys: Set<String> = ["system.wake_up", "system.go_to_sleep", "system.microphone_off"]
+
         for systemCommand in systemCommands {
             let phraseTokens = tokenizePhrase(systemCommand.phrase)
             for range in findMatches(phraseTokens: phraseTokens, in: tokenStrings) {
@@ -3590,6 +3593,14 @@ class AppState: ObservableObject {
                 let endTokenIndex = range.upperBound - 1
                 let startWordIndex = normalizedTokens[startTokenIndex].wordIndex
                 let endWordIndex = normalizedTokens[endTokenIndex].wordIndex
+
+                // FIX VoiceFlow-7n8p: Mode commands must be at START of utterance (word index 0)
+                // This prevents natural speech like "Oddly enough, speech off." from triggering mode changes
+                if modeCommandKeys.contains(systemCommand.key) && startWordIndex != 0 {
+                    NSLog("[VoiceFlow] 🚫 Ignoring mode command '%@' at word index %d (must be at start)", systemCommand.phrase, startWordIndex)
+                    continue
+                }
+
                 let isPrefixed = startTokenIndex > 0 && normalizedTokens[startTokenIndex - 1].token == commandPrefixToken
                 let wordIndices = normalizedTokens[range].map { $0.wordIndex }
                 let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
