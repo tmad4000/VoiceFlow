@@ -8,6 +8,8 @@ struct NotesPanelView: View {
     @State private var selectedNote: NoteFile?
     @State private var searchText: String = ""
     @State private var isLoading: Bool = true
+    @State private var isCreatingNote: Bool = false
+    @State private var newNoteText: String = ""
 
     private let notesDirectory: URL = {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -53,6 +55,42 @@ struct NotesPanelView: View {
         .onAppear {
             loadNotes()
         }
+        .sheet(isPresented: $isCreatingNote) {
+            newNoteSheet
+        }
+    }
+
+    // MARK: - New Note Sheet
+
+    private var newNoteSheet: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("New Note")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Button("Cancel") {
+                    isCreatingNote = false
+                    newNoteText = ""
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+
+                Button("Save") {
+                    saveNewNote()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(newNoteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            TextEditor(text: $newNoteText)
+                .font(.system(size: 13))
+                .frame(minHeight: 150)
+                .scrollContentBackground(.hidden)
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.3))
+                .cornerRadius(8)
+        }
+        .padding()
+        .frame(width: 350, height: 250)
     }
 
     // MARK: - Header
@@ -68,6 +106,14 @@ struct NotesPanelView: View {
             Text("\(filteredNotes.count) notes")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
+
+            Button(action: { startCreatingNote() }) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Create new note (⌘N)")
 
             Button(action: { loadNotes() }) {
                 Image(systemName: "arrow.clockwise")
@@ -163,8 +209,14 @@ struct NotesPanelView: View {
                 .foregroundColor(.secondary.opacity(0.8))
                 .multilineTextAlignment(.center)
 
+            Button(action: { startCreatingNote() }) {
+                Label("Create Note", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.top, 8)
+
             VStack(alignment: .leading, spacing: 4) {
-                Text("Voice commands:")
+                Text("Or use voice commands:")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.secondary)
                 Text("\"take a note [text]\"")
@@ -180,6 +232,37 @@ struct NotesPanelView: View {
     }
 
     // MARK: - Actions
+
+    private func startCreatingNote() {
+        newNoteText = ""
+        isCreatingNote = true
+    }
+
+    private func saveNewNote() {
+        let trimmedText = newNoteText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return }
+
+        // Create notes directory if needed
+        if !FileManager.default.fileExists(atPath: notesDirectory.path) {
+            try? FileManager.default.createDirectory(at: notesDirectory, withIntermediateDirectories: true)
+        }
+
+        // Generate filename with timestamp
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let filename = "Note_\(formatter.string(from: Date())).txt"
+        let fileURL = notesDirectory.appendingPathComponent(filename)
+
+        do {
+            try trimmedText.write(to: fileURL, atomically: true, encoding: .utf8)
+            NSLog("[VoiceFlow] Created new note: \(filename)")
+            isCreatingNote = false
+            newNoteText = ""
+            loadNotes() // Refresh the list
+        } catch {
+            NSLog("[VoiceFlow] Error saving note: \(error)")
+        }
+    }
 
     private func loadNotes() {
         isLoading = true
