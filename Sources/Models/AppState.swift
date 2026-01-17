@@ -242,6 +242,7 @@ class AppState: ObservableObject {
 
     // MARK: - Command Panel (Claude Code Integration)
     @Published var isCommandPanelVisible: Bool = false
+    @Published var isNotesPanelVisible: Bool = false
     @Published var commandMessages: [CommandMessage] = []
     @Published var commandInput: String = ""
     @Published var commandMessageQueue: [String] = []
@@ -350,6 +351,7 @@ class AppState: ObservableObject {
         ("voiceflow start transcribing", "Start continuous transcription"),
         ("voiceflow stop transcribing", "Stop transcription and save"),
         ("voiceflow open notes", "Open Notes folder in Finder"),
+        ("voiceflow open notes panel", "Open the Notes panel"),
         ("voiceflow open recordings", "Open Recordings folder in Finder"),
         ("voiceflow open transcripts", "Open Transcripts folder in Finder"),
         ("voiceflow send", "Retype/paste the last utterance")
@@ -2925,6 +2927,22 @@ class AppState: ObservableObject {
             return
         }
 
+        // "voiceflow open notes panel" - open the notes panel (check BEFORE open notes folder)
+        if lowerTranscript.hasPrefix("voiceflow open notes panel") || lowerTranscript.hasPrefix("voice flow open notes panel") {
+            if turn.endOfTurn {
+                openNotesPanel()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_notes_panel"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow open notes panel' detected")
+            }
+            return
+        }
+
         // "voiceflow open notes" / "voice flow open note(s)" - open notes folder in Finder
         if lowerTranscript.hasPrefix("voiceflow open note") || lowerTranscript.hasPrefix("voice flow open note") || lowerTranscript.hasPrefix("open note") {
             if turn.endOfTurn {
@@ -4241,6 +4259,16 @@ class AppState: ObservableObject {
     func openNotesFolder() {
         NSWorkspace.shared.open(notesDirectory)
         triggerCommandFlash(name: "Opening Notes")
+    }
+
+    /// Open the Notes panel
+    func openNotesPanel() {
+        // Post notification to VoiceFlowApp to show the panel
+        NotificationCenter.default.post(
+            name: NSNotification.Name("VoiceFlowShowNotesPanel"),
+            object: nil
+        )
+        triggerCommandFlash(name: "Notes Panel")
     }
 
     /// Open the recordings folder in Finder
