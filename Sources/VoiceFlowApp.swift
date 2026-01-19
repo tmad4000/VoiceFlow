@@ -791,6 +791,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let searchItem = NSMenuItem(title: "Search Settings", action: #selector(focusSearch), keyEquivalent: "f")
         searchItem.keyEquivalentModifierMask = [.command, .shift]
         helpMenu.submenu?.addItem(searchItem)
+        helpMenu.submenu?.addItem(NSMenuItem.separator())
+        let featureRequestItem = NSMenuItem(title: "Submit Feature Request...", action: #selector(showFeatureRequestDialog), keyEquivalent: "")
+        helpMenu.submenu?.addItem(featureRequestItem)
+        let listTicketsItem = NSMenuItem(title: "View Open Tickets", action: #selector(listOpenTickets), keyEquivalent: "")
+        helpMenu.submenu?.addItem(listTicketsItem)
         mainMenu.addItem(helpMenu)
         
         NSApp.mainMenu = mainMenu
@@ -798,10 +803,96 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func focusSearch() {
         appState.settingsSearchText = ""
-        // This is a bit of a hack to focus the search bar, 
-        // usually we'd use a focused binding or @FocusState, 
+        // This is a bit of a hack to focus the search bar,
+        // usually we'd use a focused binding or @FocusState,
         // but for now setting the text empty and opening the window is a good start.
         openSettings()
+    }
+
+    @objc func showFeatureRequestDialog() {
+        Task { @MainActor in
+            let alert = NSAlert()
+            alert.messageText = "Submit Feature Request"
+            alert.informativeText = "Enter a title for your feature request. It will be saved as a VoiceFlow ticket."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "Submit")
+            alert.addButton(withTitle: "Cancel")
+
+            let inputField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+            inputField.placeholderString = "e.g., Add dark mode support"
+            alert.accessoryView = inputField
+
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                let title = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !title.isEmpty {
+                    createBeadsTicket(title: title, type: "feature")
+                }
+            }
+        }
+    }
+
+    @objc func listOpenTickets() {
+        Task { @MainActor in
+            // Run bd list and show results in a dialog
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", "cd /Users/jacobcole/code/VoiceFlow && bd list --status=open 2>/dev/null | head -30"]
+            process.currentDirectoryURL = URL(fileURLWithPath: "/Users/jacobcole/code/VoiceFlow")
+
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? "No tickets found"
+
+                let alert = NSAlert()
+                alert.messageText = "Open VoiceFlow Tickets"
+                alert.informativeText = output.isEmpty ? "No open tickets" : output
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            } catch {
+                NSLog("[VoiceFlow] Failed to list tickets: \(error)")
+            }
+        }
+    }
+
+    private func createBeadsTicket(title: String, type: String) {
+        Task {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", "cd /Users/jacobcole/code/VoiceFlow && bd create --title=\"\(title.replacingOccurrences(of: "\"", with: "\\\""))\" --type=\(type) --priority=2"]
+            process.currentDirectoryURL = URL(fileURLWithPath: "/Users/jacobcole/code/VoiceFlow")
+
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+
+                await MainActor.run {
+                    if process.terminationStatus == 0 {
+                        appState.triggerCommandFlash(name: "Ticket Created")
+                        NSLog("[VoiceFlow] Created ticket: \(output)")
+                    } else {
+                        NSLog("[VoiceFlow] Failed to create ticket: \(output)")
+                    }
+                }
+            } catch {
+                NSLog("[VoiceFlow] Failed to create ticket: \(error)")
+            }
+        }
     }
 
     @objc func pasteLastUtterance() {

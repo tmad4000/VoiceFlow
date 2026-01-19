@@ -3920,7 +3920,7 @@ class AppState: ObservableObject {
         executeKeyboardShortcut(undoShortcut)
     }
 
-    private func triggerCommandFlash(name: String) {
+    func triggerCommandFlash(name: String) {
         lastCommandName = name
         isCommandFlashActive = true
 
