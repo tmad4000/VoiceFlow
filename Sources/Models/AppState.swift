@@ -511,6 +511,9 @@ class AppState: ObservableObject {
     private let typingFlushDelaySeconds: TimeInterval = 0.12
     private let latencyWarningThresholdMs = 1500
     private let latencyRecoveryThresholdMs = 900
+    private let autoSwitchOfflineThresholdMs = 500  // Auto-switch to offline if latency exceeds this
+    @Published var autoSwitchToOfflineOnHighLatency = false  // Toggle for auto-switch feature
+    private var didAutoSwitchToOffline = false  // Track if we auto-switched this session
     private var didTriggerSayKeyword = false
     private var turnHandledBySpecialCommand = false  // Set by spell, focus to prevent dictation
     private var typedFinalWordCount = 0
@@ -576,6 +579,7 @@ class AppState: ObservableObject {
         loadAutoOffSettings()
         loadAIFormatterSettings()
         loadCommandPanelSettings()
+        loadAutoSwitchOfflineSettings()
         checkAccessibilityPermission(silent: true)
         checkMicrophonePermission()
         checkSpeechPermission()
@@ -5136,6 +5140,48 @@ class AppState: ObservableObject {
             isLatencyDegraded = false
             logDebug("Latency recovered: \(latencyMs)ms")
         }
+
+        // Auto-switch to offline if enabled and latency exceeds threshold
+        if autoSwitchToOfflineOnHighLatency && !didAutoSwitchToOffline && latencyMs >= autoSwitchOfflineThresholdMs {
+            // Only switch if we're currently using an online provider
+            if dictationProvider != .offline && !effectiveIsOffline {
+                didAutoSwitchToOffline = true
+                logDebug("Auto-switching to offline due to high latency: \(latencyMs)ms")
+                NSLog("[VoiceFlow] Auto-switching to offline speech (latency: %dms > %dms threshold)", latencyMs, autoSwitchOfflineThresholdMs)
+
+                // Switch to offline provider
+                let wasOn = microphoneMode == .on
+                if wasOn {
+                    stopListening()
+                }
+                // Temporarily switch to offline
+                let previousProvider = dictationProvider
+                dictationProvider = .offline
+                if wasOn {
+                    startListening(transcribeMode: true)
+                }
+
+                // Flash notification
+                triggerCommandFlash(name: "Slow network → Offline")
+
+                // Restore original provider after some time (30 seconds) if latency improves
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 30_000_000_000)  // 30 seconds
+                    if self.didAutoSwitchToOffline {
+                        self.didAutoSwitchToOffline = false
+                        // Check if latency has improved
+                        if let currentLatency = self.connectionLatencyMs, currentLatency < self.autoSwitchOfflineThresholdMs {
+                            self.logDebug("Latency recovered, switching back to \(previousProvider.rawValue)")
+                            let wasOn = self.microphoneMode == .on
+                            if wasOn { self.stopListening() }
+                            self.dictationProvider = previousProvider
+                            if wasOn { self.startListening(transcribeMode: true) }
+                            self.triggerCommandFlash(name: "Online restored")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func loadUtteranceSettings() {
@@ -5381,6 +5427,18 @@ class AppState: ObservableObject {
     func saveCommandPanelFontSize(_ value: Double) {
         commandPanelFontSize = value
         UserDefaults.standard.set(value, forKey: "command_panel_font_size")
+    }
+
+    // MARK: - Auto-Switch Offline Settings
+
+    private func loadAutoSwitchOfflineSettings() {
+        autoSwitchToOfflineOnHighLatency = UserDefaults.standard.bool(forKey: "auto_switch_offline_high_latency")
+    }
+
+    func saveAutoSwitchOfflineSetting(_ enabled: Bool) {
+        autoSwitchToOfflineOnHighLatency = enabled
+        UserDefaults.standard.set(enabled, forKey: "auto_switch_offline_high_latency")
+        logDebug("Auto-switch to offline on high latency: \(enabled)")
     }
 
     private func loadDictationHistory() {

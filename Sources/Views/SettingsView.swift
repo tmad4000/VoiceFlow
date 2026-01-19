@@ -722,6 +722,13 @@ struct GeneralSettingsView: View {
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
 
+                        Toggle("Auto-switch to offline if slow", isOn: autoSwitchOfflineBinding)
+                            .font(.system(size: 13))
+
+                        Text("Automatically use Mac Speech if network latency exceeds 500ms.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
                         Divider()
 
                         HStack {
@@ -1105,6 +1112,13 @@ struct GeneralSettingsView: View {
         Binding(
             get: { appState.dictationProvider },
             set: { appState.saveDictationProvider($0) }
+        )
+    }
+
+    private var autoSwitchOfflineBinding: Binding<Bool> {
+        Binding(
+            get: { appState.autoSwitchToOfflineOnHighLatency },
+            set: { appState.saveAutoSwitchOfflineSetting($0) }
         )
     }
 
