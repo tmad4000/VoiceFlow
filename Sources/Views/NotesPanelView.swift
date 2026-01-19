@@ -6,15 +6,21 @@ struct NotesPanelView: View {
     @EnvironmentObject var appState: AppState
     @State private var notes: [NoteFile] = []
     @State private var selectedNote: NoteFile?
+    @State private var viewingNote: NoteFile?  // Note being viewed in popup
     @State private var searchText: String = ""
     @State private var isLoading: Bool = true
     @State private var isCreatingNote: Bool = false
     @State private var newNoteText: String = ""
+    @AppStorage("notesFullTextMode") private var fullTextMode: Bool = false
+    @AppStorage("noteCollapseStatesData") private var collapseStatesData: Data = Data()
 
     private let notesDirectory: URL = {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         return docs.appendingPathComponent("VoiceFlow/Notes", isDirectory: true)
     }()
+
+    /// Length threshold for showing collapse option (characters)
+    private let collapseThreshold: Int = 200
 
     var filteredNotes: [NoteFile] {
         if searchText.isEmpty {
@@ -24,6 +30,34 @@ struct NotesPanelView: View {
             $0.content.localizedCaseInsensitiveContains(searchText) ||
             $0.name.localizedCaseInsensitiveContains(searchText)
         }
+    }
+
+    // MARK: - Collapse State Management
+
+    private var collapseStates: [String: Bool] {
+        get {
+            (try? JSONDecoder().decode([String: Bool].self, from: collapseStatesData)) ?? [:]
+        }
+    }
+
+    private func setCollapseStates(_ states: [String: Bool]) {
+        collapseStatesData = (try? JSONEncoder().encode(states)) ?? Data()
+    }
+
+    private func isNoteCollapsed(_ note: NoteFile) -> Bool {
+        collapseStates[note.url.path] ?? false  // default: expanded
+    }
+
+    private func toggleNoteCollapsed(_ note: NoteFile) {
+        var states = collapseStates
+        states[note.url.path] = !isNoteCollapsed(note)
+        setCollapseStates(states)
+    }
+
+    private func cleanupCollapseState(for note: NoteFile) {
+        var states = collapseStates
+        states.removeValue(forKey: note.url.path)
+        setCollapseStates(states)
     }
 
     var body: some View {
@@ -57,6 +91,9 @@ struct NotesPanelView: View {
         }
         .sheet(isPresented: $isCreatingNote) {
             newNoteSheet
+        }
+        .sheet(item: $viewingNote) { note in
+            noteViewSheet(note: note)
         }
     }
 
@@ -93,6 +130,58 @@ struct NotesPanelView: View {
         .frame(width: 350, height: 250)
     }
 
+    // MARK: - Note View Sheet
+
+    private func noteViewSheet(note: NoteFile) -> some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("View Note")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Text(note.formattedDate)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                Button("Done") {
+                    viewingNote = nil
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            ScrollView {
+                Text(note.content)
+                    .font(.system(size: 13))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(maxHeight: .infinity)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.3))
+            .cornerRadius(8)
+
+            HStack {
+                Button(action: {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(note.content, forType: .string)
+                }) {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.plain)
+
+                Button(action: {
+                    NSWorkspace.shared.selectFile(note.url.path, inFileViewerRootedAtPath: "")
+                }) {
+                    Label("Reveal in Finder", systemImage: "folder")
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+            }
+            .foregroundColor(.secondary)
+            .font(.system(size: 12))
+        }
+        .padding()
+        .frame(width: 400, height: 350)
+    }
+
     // MARK: - Header
 
     private var headerBar: some View {
@@ -106,6 +195,14 @@ struct NotesPanelView: View {
             Text("\(filteredNotes.count) notes")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
+
+            Button(action: { fullTextMode.toggle() }) {
+                Image(systemName: fullTextMode ? "text.alignleft" : "list.bullet")
+                    .font(.system(size: 11))
+                    .foregroundColor(fullTextMode ? .accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(fullTextMode ? "Switch to compact view" : "Switch to full-text view")
 
             Button(action: { startCreatingNote() }) {
                 Image(systemName: "plus")
@@ -167,25 +264,39 @@ struct NotesPanelView: View {
 
     private var notesList: some View {
         ScrollView {
-            LazyVStack(spacing: 8) {
+            LazyVStack(spacing: fullTextMode ? 12 : 8) {
                 ForEach(filteredNotes) { note in
-                    NoteRowView(note: note, isSelected: selectedNote?.id == note.id)
-                        .onTapGesture {
-                            selectedNote = note
+                    NoteRowView(
+                        note: note,
+                        isSelected: selectedNote?.id == note.id,
+                        fullTextMode: fullTextMode,
+                        isCollapsed: isNoteCollapsed(note),
+                        collapseThreshold: collapseThreshold,
+                        onToggleCollapse: { toggleNoteCollapsed(note) }
+                    )
+                    .onTapGesture {
+                        selectedNote = note
+                        // In compact mode, open the view sheet
+                        if !fullTextMode {
+                            viewingNote = note
                         }
-                        .contextMenu {
-                            Button("Copy to Clipboard") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(note.content, forType: .string)
-                            }
-                            Button("Reveal in Finder") {
-                                NSWorkspace.shared.selectFile(note.url.path, inFileViewerRootedAtPath: "")
-                            }
-                            Divider()
-                            Button("Delete", role: .destructive) {
-                                deleteNote(note)
-                            }
+                    }
+                    .contextMenu {
+                        Button("View Note") {
+                            viewingNote = note
                         }
+                        Button("Copy to Clipboard") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(note.content, forType: .string)
+                        }
+                        Button("Reveal in Finder") {
+                            NSWorkspace.shared.selectFile(note.url.path, inFileViewerRootedAtPath: "")
+                        }
+                        Divider()
+                        Button("Delete", role: .destructive) {
+                            deleteNote(note)
+                        }
+                    }
                 }
             }
             .padding(12)
@@ -311,6 +422,8 @@ struct NotesPanelView: View {
             if selectedNote?.id == note.id {
                 selectedNote = nil
             }
+            // Cleanup collapse state
+            cleanupCollapseState(for: note)
         } catch {
             NSLog("[VoiceFlow] Error deleting note: \(error)")
         }
@@ -356,17 +469,58 @@ struct NoteFile: Identifiable {
 struct NoteRowView: View {
     let note: NoteFile
     let isSelected: Bool
+    var fullTextMode: Bool = false
+    var isCollapsed: Bool = false
+    var collapseThreshold: Int = 200
+    var onToggleCollapse: (() -> Void)?
+
+    private var shouldShowCollapseButton: Bool {
+        fullTextMode && note.content.count > collapseThreshold
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(note.preview)
-                .font(.system(size: 13))
-                .foregroundColor(.primary)
-                .lineLimit(2)
+            if fullTextMode {
+                // Full-text mode: show entire content or collapsed
+                if isCollapsed {
+                    Text(note.preview)
+                        .font(.system(size: 13))
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+                } else {
+                    Text(note.content)
+                        .font(.system(size: 13))
+                        .foregroundColor(.primary)
+                        .textSelection(.enabled)
+                }
 
-            Text(note.formattedDate)
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
+                HStack {
+                    Text(note.formattedDate)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    if shouldShowCollapseButton {
+                        Button(action: { onToggleCollapse?() }) {
+                            Text(isCollapsed ? "Expand" : "Collapse")
+                                .font(.system(size: 10))
+                                .foregroundColor(.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } else {
+                // Compact mode: show preview only
+                Text(note.preview)
+                    .font(.system(size: 13))
+                    .foregroundColor(.primary)
+                    .lineLimit(2)
+
+                Text(note.formattedDate)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
