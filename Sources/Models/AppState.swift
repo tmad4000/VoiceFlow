@@ -5669,36 +5669,41 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Filter words to only include those within the PTT time window
-    /// Words with startTime < pttPressStreamTime are ignored (pre-press background speech)
-    /// Words with endTime > pttReleaseStreamTime are ignored (post-release speech)
+    /// Filter words to exclude pre-press background speech
+    /// Only filters out words that started before PTT was pressed
+    /// Does NOT filter by release time - the graceful sleep mechanism handles capturing all speech
     private func filterWordsForPTT(_ words: [TranscriptWord]) -> [TranscriptWord] {
-        // Only filter if PTT is/was active and we have timestamps
-        guard pttPressStreamTime != nil || pttReleaseStreamTime != nil else {
+        // Only filter if PTT was pressed and we have a press timestamp
+        guard let pressTime = pttPressStreamTime else {
             return words
         }
 
-        return words.filter { word in
+        // Don't filter while PTT is actively held - only filter completed PTT sessions
+        // This prevents filtering interim words while user is still speaking
+        guard !isPTTActive else {
+            return words
+        }
+
+        var excludedCount = 0
+        let filtered = words.filter { word in
             // If word has no timing info, include it (can't filter)
             guard let wordStart = word.startTime else { return true }
 
             // Filter out words that started before PTT was pressed
-            if let pressTime = pttPressStreamTime {
-                if wordStart < pressTime {
-                    return false
-                }
-            }
-
-            // Filter out words that ended after PTT was released (if we have release time)
-            if let releaseTime = pttReleaseStreamTime, let wordEnd = word.endTime {
-                // Allow a small grace period (500ms) after release for words in progress
-                if wordEnd > releaseTime + 0.5 {
-                    return false
-                }
+            // This excludes background speech detected before user pressed the key
+            if wordStart < pressTime {
+                excludedCount += 1
+                return false
             }
 
             return true
         }
+
+        if excludedCount > 0 {
+            logDebug("PTT filter: Excluded \(excludedCount) pre-press words (press time: \(String(format: "%.2f", pressTime))s)")
+        }
+
+        return filtered
     }
 
     /// Reset PTT timestamps (called when stream restarts or mode changes)
