@@ -387,8 +387,8 @@ class AppState: ObservableObject {
         ("close bracket", "Insert ]"),
         ("open brace", "Insert {"),
         ("close brace", "Insert }"),
-        ("backspace", "Delete the previous character"),
-        ("back space", "Delete the previous character")
+        ("backspace", "Delete previous character"),
+        ("backspace N", "Delete N characters (e.g., \"backspace 3\", \"backspace five\")")
     ]
 
     var panelVisibilityHandler: ((Bool) -> Void)?
@@ -2124,28 +2124,56 @@ class AppState: ObservableObject {
                 }
             }
 
-            // "backspace" - delete the previous character from output
+            // "backspace" or "backspace N" - delete previous character(s) from output
             if token == "backspace" {
-                keyword = keyword ?? "Backspace"
-                if !output.isEmpty {
-                    output.removeLast()
+                var count = 1
+                var wordsConsumed = 1
+
+                // Check if next word is a number (e.g., "backspace 3" or "backspace three")
+                if index + 1 < words.count {
+                    let nextWord = words[index + 1]
+                    let nextToken = normalizeToken(nextWord.text)
+                    if let num = parseNumberWord(nextToken), isKeywordGapAcceptable(previous: word, next: nextWord) {
+                        count = num
+                        wordsConsumed = 2
+                    }
                 }
-                triggerKeywordFlash(name: "Backspace")
-                index += 1
+
+                keyword = keyword ?? (count == 1 ? "Backspace" : "Backspace \(count)")
+                let toRemove = min(count, output.count)
+                if toRemove > 0 {
+                    output.removeLast(toRemove)
+                }
+                triggerKeywordFlash(name: count == 1 ? "Backspace" : "⌫\(count)")
+                index += wordsConsumed
                 continue
             }
 
-            // "back space" - two word variant
+            // "back space" or "back space N" - two word variant
             if token == "back", index + 1 < words.count {
                 let next = words[index + 1]
                 let nextToken = normalizeToken(next.text)
                 if nextToken == "space", isKeywordGapAcceptable(previous: word, next: next) {
-                    keyword = keyword ?? "Backspace"
-                    if !output.isEmpty {
-                        output.removeLast()
+                    var count = 1
+                    var wordsConsumed = 2
+
+                    // Check if word after "back space" is a number
+                    if index + 2 < words.count {
+                        let numWord = words[index + 2]
+                        let numToken = normalizeToken(numWord.text)
+                        if let num = parseNumberWord(numToken), isKeywordGapAcceptable(previous: next, next: numWord) {
+                            count = num
+                            wordsConsumed = 3
+                        }
                     }
-                    triggerKeywordFlash(name: "Backspace")
-                    index += 2
+
+                    keyword = keyword ?? (count == 1 ? "Backspace" : "Backspace \(count)")
+                    let toRemove = min(count, output.count)
+                    if toRemove > 0 {
+                        output.removeLast(toRemove)
+                    }
+                    triggerKeywordFlash(name: count == 1 ? "Backspace" : "⌫\(count)")
+                    index += wordsConsumed
                     continue
                 }
             }
@@ -4438,6 +4466,28 @@ class AppState: ObservableObject {
 
     private func normalizeToken(_ text: String) -> String {
         text.lowercased().trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+    }
+
+    /// Parse a number word or digit string to an integer (1-99), or nil if not a number
+    private func parseNumberWord(_ text: String) -> Int? {
+        let normalized = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Try parsing as digit first
+        if let num = Int(normalized), num >= 1 && num <= 99 {
+            return num
+        }
+
+        // Word to number mapping
+        let wordNumbers: [String: Int] = [
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+            "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+            "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+            "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+            "seventy": 70, "eighty": 80, "ninety": 90
+        ]
+
+        return wordNumbers[normalized]
     }
 
     private struct NormalizedToken {
