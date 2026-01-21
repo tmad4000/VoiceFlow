@@ -156,6 +156,9 @@ class AppState: ObservableObject {
     @Published var microphoneMode: MicrophoneMode = .off
     @Published var currentTranscript: String = ""
     @Published var recentTurns: [TranscriptTurn] = []
+
+    /// Preserved transcript from Sleep mode - allows force send to type text that was transcribed while in Sleep mode
+    private var lastSleepModeTranscript: String = ""
     @Published var isolatedSpeakerId: Int? = nil
     @Published var isConnected: Bool = false
 
@@ -1023,6 +1026,7 @@ class AppState: ObservableObject {
             currentWords = []
             recentTurns = []
             isolatedSpeakerId = nil
+            lastSleepModeTranscript = ""  // Clear preserved Sleep transcript when waking
             // Mark that we just woke up to prevent the "wake up" phrase from typing
             currentUtteranceHadCommand = true
             wakeUpTime = Date()  // Grace period to ignore residual wake word audio
@@ -1427,6 +1431,10 @@ class AppState: ObservableObject {
             let shouldAutoSubmit = autoSubmitEnabled && microphoneMode == .on && didTypeDictationThisUtterance
 
             if shouldAddToHistory {
+                // Preserve transcript in Sleep mode so force send can use it
+                if microphoneMode == .sleep && !currentTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    lastSleepModeTranscript = currentTranscript
+                }
                 // Flush any buffered terminal newlines before resetting state
                 // This ensures newlines are sent after the full utterance is typed
                 flushBufferedTerminalNewlines()
@@ -5882,9 +5890,17 @@ class AppState: ObservableObject {
     private func flushDictationBuffer(isForceEnd: Bool) {
         logDebug("flushDictationBuffer called: transcript=\"\(currentTranscript.prefix(50))\", mode=\(microphoneMode.rawValue), isForceEnd=\(isForceEnd)")
 
-        // If buffer is empty but force end requested, send last completed utterance
+        // If buffer is empty but force end requested, try to use preserved Sleep mode transcript or last utterance
         if currentTranscript.isEmpty {
             if isForceEnd {
+                // First, try to use the preserved Sleep mode transcript
+                if !lastSleepModeTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    logDebug("flushDictationBuffer: buffer empty, using preserved Sleep mode transcript: \"\(lastSleepModeTranscript.prefix(50))\"")
+                    typeText(lastSleepModeTranscript, appendSpace: true)
+                    lastSleepModeTranscript = ""
+                    return
+                }
+
                 // Find the most complete utterance - history may have partials
                 // Look through recent non-command entries and find the longest one
                 // that's part of the same "utterance group" (similar prefix)
