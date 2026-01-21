@@ -45,12 +45,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var commandPanelMenuItem: NSMenuItem?
     var notesPanelMenuItem: NSMenuItem?
     var transcriptsPanelMenuItem: NSMenuItem?
+    var vocabularyPanelMenuItem: NSMenuItem?
     private var settingsWindow: NSWindow?
     private var panelWindow: FloatingPanelWindow?
     private var commandPanelWindow: CommandPanelWindow?
     private var notesPanelWindow: NotesPanelWindow?
     private var transcriptsPanelWindow: TranscriptsPanelWindow?
     private var ticketsPanelWindow: TicketsPanelWindow?
+    private var vocabularyPanelWindow: VocabularyPanelWindow?
     private var cancellables = Set<AnyCancellable>()
     private var pttMonitor: Any?
     private var pttActivatedOnMode: Bool = false  // Track if On mode was activated via PTT
@@ -133,6 +135,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         transcriptsPanelMenuItem = NSMenuItem(title: "Transcripts Panel", action: #selector(toggleTranscriptsPanel), keyEquivalent: "")
         transcriptsPanelMenuItem?.target = self
         menu.addItem(transcriptsPanelMenuItem!)
+
+        vocabularyPanelMenuItem = NSMenuItem(title: "Custom Vocabulary", action: #selector(toggleVocabularyPanel), keyEquivalent: "")
+        vocabularyPanelMenuItem?.target = self
+        menu.addItem(vocabularyPanelMenuItem!)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -240,6 +246,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(showTicketsPanel),
             name: Notification.Name("VoiceFlowShowTicketsPanel"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideVocabularyPanel),
+            name: Notification.Name("VocabularyPanelDidClose"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showVocabularyPanel),
+            name: Notification.Name("VoiceFlowShowVocabularyPanel"),
             object: nil
         )
 
@@ -852,6 +870,93 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
+    // MARK: - Vocabulary Panel
+
+    @objc func showVocabularyPanel() {
+        if vocabularyPanelWindow == nil {
+            configureVocabularyPanelWindow()
+        }
+        guard let vocabularyPanelWindow else { return }
+        positionVocabularyPanelWindow(vocabularyPanelWindow)
+
+        NSApp.activate(ignoringOtherApps: true)
+        vocabularyPanelWindow.makeKeyAndOrderFront(nil)
+        appState.isVocabularyPanelVisible = true
+    }
+
+    @objc func hideVocabularyPanel() {
+        vocabularyPanelWindow?.orderOut(nil)
+        appState.isVocabularyPanelVisible = false
+    }
+
+    @objc func toggleVocabularyPanel() {
+        if appState.isVocabularyPanelVisible {
+            hideVocabularyPanel()
+        } else {
+            showVocabularyPanel()
+        }
+    }
+
+    private func configureVocabularyPanelWindow() {
+        let panel = VocabularyPanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 450),
+            styleMask: [.titled, .resizable, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingController = NSHostingController(
+            rootView: VocabularyPanelView()
+                .environmentObject(appState)
+        )
+
+        let containerView = FirstMouseContainerView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(hostingController.view)
+
+        NSLayoutConstraint.activate([
+            hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor)
+        ])
+
+        panel.contentView = containerView
+
+        panel.identifier = NSUserInterfaceItemIdentifier("voiceflow.vocabularypanel")
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.isFloatingPanel = true
+        panel.title = "Custom Vocabulary"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+
+        panel.minSize = NSSize(width: 350, height: 350)
+        panel.maxSize = NSSize(width: 600, height: 700)
+
+        vocabularyPanelWindow = panel
+    }
+
+    private func positionVocabularyPanelWindow(_ window: NSWindow) {
+        guard let screen = NSScreen.main else { return }
+        let panelWidth = window.frame.width
+        let panelHeight = window.frame.height
+        // Position centered horizontally, below top of screen
+        let x = (screen.frame.width - panelWidth) / 2 + screen.frame.origin.x
+        let y = screen.frame.maxY - panelHeight - 100
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
     @objc func setModeOff() {
         print("[VoiceFlow] Setting mode: Off")
         Task { @MainActor in
@@ -1045,6 +1150,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             commandPanelMenuItem?.title = appState.isCommandPanelVisible ? "Hide Claude Code Panel" : "Show Claude Code Panel"
             notesPanelMenuItem?.title = appState.isNotesPanelVisible ? "Hide Notes Panel" : "Show Notes Panel"
             transcriptsPanelMenuItem?.title = appState.isTranscriptsPanelVisible ? "Hide Transcripts Panel" : "Show Transcripts Panel"
+            vocabularyPanelMenuItem?.title = appState.isVocabularyPanelVisible ? "Hide Custom Vocabulary" : "Show Custom Vocabulary"
         }
     }
 

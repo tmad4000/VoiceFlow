@@ -150,6 +150,23 @@ struct AppWarning: Identifiable {
     }
 }
 
+/// A custom vocabulary entry that maps a spoken phrase to a written form
+struct VocabularyEntry: Identifiable, Codable, Equatable {
+    var id: UUID
+    var spokenPhrase: String      // What the user says (e.g., "jacob cole")
+    var writtenForm: String       // What gets typed (e.g., "Jacob Cole")
+    var category: String?         // Optional category for organization
+    var isEnabled: Bool           // Whether this entry is active
+
+    init(id: UUID = UUID(), spokenPhrase: String, writtenForm: String, category: String? = nil, isEnabled: Bool = true) {
+        self.id = id
+        self.spokenPhrase = spokenPhrase
+        self.writtenForm = writtenForm
+        self.category = category
+        self.isEnabled = isEnabled
+    }
+}
+
 /// Main application state management
 @MainActor
 class AppState: ObservableObject {
@@ -183,6 +200,7 @@ class AppState: ObservableObject {
     @Published var apiKey: String = ""
     @Published var deepgramApiKey: String = ""
     @Published var voiceCommands: [VoiceCommand] = VoiceCommand.defaults
+    @Published var customVocabulary: [VocabularyEntry] = []
     @Published var isPanelVisible: Bool = true
     @Published var isPanelMinimal: Bool = false
     @Published var currentWords: [TranscriptWord] = []
@@ -248,6 +266,7 @@ class AppState: ObservableObject {
     @Published var isNotesPanelVisible: Bool = false
     @Published var isTranscriptsPanelVisible: Bool = false
     @Published var isTicketsPanelVisible: Bool = false
+    @Published var isVocabularyPanelVisible: Bool = false
     @Published var commandMessages: [CommandMessage] = []
     @Published var commandInput: String = ""
     @Published var commandMessageQueue: [String] = []
@@ -358,6 +377,8 @@ class AppState: ObservableObject {
         ("voiceflow open notes", "Open Notes folder in Finder"),
         ("voiceflow open notes panel", "Open the Notes panel"),
         ("voiceflow open transcripts panel", "Open the Transcripts panel"),
+        ("voiceflow vocabulary", "Open the Custom Vocabulary panel"),
+        ("voiceflow open vocabulary", "Open the Custom Vocabulary panel"),
         ("voiceflow open recordings", "Open Recordings folder in Finder"),
         ("voiceflow open transcripts", "Open Transcripts folder in Finder"),
         ("voiceflow send", "Retype/paste the last utterance")
@@ -542,7 +563,6 @@ class AppState: ObservableObject {
     private var suppressNextAutoCap = false
     private var lastKeyEventTime: Date?  // For consistent Return key timing across typeText calls
     private var bufferedTerminalNewlines: Int = 0  // Newlines to send after utterance ends (terminal mode)
-    private var charsSinceLastFlush: Int = 0  // Track chars typed for proportional delay calculation
 
     // Cross-utterance keyword state: tracks partial keywords that span utterance boundaries
     // e.g., "new" at end of one utterance + "line" at start of next = "new line"
@@ -572,6 +592,7 @@ class AppState: ObservableObject {
     init() {
         loadAPIKey()
         loadVoiceCommands()
+        loadCustomVocabulary()
         loadCommandDelay()
         loadLiveDictationEnabled()
         loadUtteranceSettings()
@@ -2603,6 +2624,11 @@ class AppState: ObservableObject {
             return "" // Handled by processVoiceCommands
         }
 
+        // 1c. Apply custom vocabulary substitutions (only if not literal)
+        if !isLiteral {
+            processed = applyVocabularySubstitutions(processed)
+        }
+
         // 2. Handle inline text replacements (only if not literal)
         if !isLiteral {
             let (keywordProcessed, keyword) = applyKeywordReplacements(processed, words: words, isLiteral: isLiteral)
@@ -3112,6 +3138,23 @@ class AppState: ObservableObject {
                 }
                 turnHandledBySpecialCommand = true
                 NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow open transcripts' detected")
+            }
+            return
+        }
+
+        // "voiceflow vocabulary" / "voiceflow open vocabulary" - open the custom vocabulary panel
+        if lowerTranscript.hasPrefix("voiceflow vocabulary") || lowerTranscript.hasPrefix("voice flow vocabulary") ||
+           lowerTranscript.hasPrefix("voiceflow open vocabulary") || lowerTranscript.hasPrefix("voice flow open vocabulary") {
+            if turn.endOfTurn {
+                openVocabularyPanel()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_vocabulary"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow vocabulary' detected")
             }
             return
         }
@@ -4434,6 +4477,16 @@ class AppState: ObservableObject {
         triggerCommandFlash(name: "Tickets Panel")
     }
 
+    /// Open the Vocabulary panel
+    func openVocabularyPanel() {
+        // Post notification to VoiceFlowApp to show the panel
+        NotificationCenter.default.post(
+            name: NSNotification.Name("VoiceFlowShowVocabularyPanel"),
+            object: nil
+        )
+        triggerCommandFlash(name: "Vocabulary")
+    }
+
     /// Open the recordings folder in Finder
     func openRecordingsFolder() {
         let recordingsDir = FileManager.default.homeDirectoryForCurrentUser
@@ -5056,7 +5109,6 @@ class AppState: ObservableObject {
                 keyUp?.post(tap: .cghidEventTap)
                 lastKeyEventTime = Date()
                 eventsPosted += 1
-                charsSinceLastFlush += 1  // Track for proportional delay calculation
 
                 // Apply inter-character delay for apps that need slower typing (Google Docs, etc.)
                 if interCharDelay > 0 {
@@ -5069,12 +5121,25 @@ class AppState: ObservableObject {
 
     /// Send Return key via AppleScript (System Events)
     /// This uses a different mechanism than CGEvent and may be more reliable for some apps
-    private func sendReturnViaAppleScript() {
-        let script = """
-        tell application "System Events"
-            keystroke return
-        end tell
-        """
+    /// The delay parameter adds a pause INSIDE AppleScript before keystroke - this is more
+    /// reliable than Thread.sleep because it happens in the same event context as the keystroke
+    private func sendReturnViaAppleScript(delaySeconds: Double = 0) {
+        let script: String
+        if delaySeconds > 0 {
+            script = """
+            tell application "System Events"
+                delay \(delaySeconds)
+                keystroke return
+            end tell
+            """
+            NSLog("[VoiceFlow] ⏎ AppleScript: delay %.0fms then return", delaySeconds * 1000)
+        } else {
+            script = """
+            tell application "System Events"
+                keystroke return
+            end tell
+            """
+        }
         if let appleScript = NSAppleScript(source: script) {
             var error: NSDictionary?
             appleScript.executeAndReturnError(&error)
@@ -5089,42 +5154,18 @@ class AppState: ObservableObject {
     private func flushBufferedTerminalNewlines() {
         guard bufferedTerminalNewlines > 0 else { return }
 
-        logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s), charsSinceLastFlush=\(charsSinceLastFlush)")
+        logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s)")
 
-        // Proportional delay: ~15ms per character typed + 100ms base buffer
-        // This accounts for CGEvent processing time which scales with text length
-        // Much better than fixed 5s delay but still reliable
-        let perCharDelay: TimeInterval = 0.015  // 15ms per character
-        let baseBuffer: TimeInterval = 0.1  // 100ms base
-        let proportionalDelay = TimeInterval(charsSinceLastFlush) * perCharDelay + baseBuffer
+        let isTerminal = focusContextManager.isCurrentAppTerminal()
 
-        NSLog("[VoiceFlow] ⏎ FLUSH: chars=%d, proportionalDelay=%.0fms", charsSinceLastFlush, proportionalDelay * 1000)
+        // For terminals: use AppleScript with built-in delay (more atomic/reliable than Thread.sleep)
+        // For non-terminals: CGEvent with no delay (faster)
+        let appleScriptDelay: Double = 0.15  // 150ms delay inside AppleScript
 
         for i in 0..<bufferedTerminalNewlines {
-            // Ensure sufficient delay before Return key
-            let actualDelay: TimeInterval
-            if let lastTime = lastKeyEventTime {
-                let elapsed = Date().timeIntervalSince(lastTime)
-                actualDelay = max(0, proportionalDelay - elapsed)
-                NSLog("[VoiceFlow] ⏎ FLUSH: i=%d, elapsed=%.0fms, neededDelay=%.0fms", i, elapsed * 1000, actualDelay * 1000)
-                if actualDelay > 0 {
-                    Thread.sleep(forTimeInterval: actualDelay)
-                }
-            } else if i > 0 {
-                actualDelay = proportionalDelay
-                NSLog("[VoiceFlow] ⏎ FLUSH: i=%d, no lastKeyEventTime, delay=%.0fms", i, actualDelay * 1000)
-                Thread.sleep(forTimeInterval: proportionalDelay)
-            } else {
-                actualDelay = baseBuffer  // At least base buffer even if no prior typing
-                NSLog("[VoiceFlow] ⏎ FLUSH: i=0, no lastKeyEventTime, using baseBuffer=%.0fms", actualDelay * 1000)
-                Thread.sleep(forTimeInterval: baseBuffer)
-            }
-
-            // For terminals, try AppleScript which uses a different keystroke mechanism
-            // This is consistent with how we send newlines in typeText
-            let isTerminal = focusContextManager.isCurrentAppTerminal()
             if isTerminal {
-                sendReturnViaAppleScript()
+                // AppleScript handles its own timing internally - more reliable than Thread.sleep
+                sendReturnViaAppleScript(delaySeconds: i == 0 ? appleScriptDelay : 0.05)
             } else {
                 let source = CGEventSource(stateID: .hidSystemState)
                 let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
@@ -5136,7 +5177,6 @@ class AppState: ObservableObject {
         }
 
         bufferedTerminalNewlines = 0
-        charsSinceLastFlush = 0  // Reset for next utterance
     }
 
     /// Send a single Enter key press (for explicit "press enter" / "submit" command)
@@ -5227,6 +5267,103 @@ class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(voiceCommands) {
             UserDefaults.standard.set(data, forKey: "voice_commands")
         }
+    }
+
+    // MARK: - Custom Vocabulary
+
+    private func loadCustomVocabulary() {
+        if let data = UserDefaults.standard.data(forKey: "custom_vocabulary"),
+           let entries = try? JSONDecoder().decode([VocabularyEntry].self, from: data) {
+            customVocabulary = entries
+        }
+    }
+
+    func saveCustomVocabulary() {
+        if let data = try? JSONEncoder().encode(customVocabulary) {
+            UserDefaults.standard.set(data, forKey: "custom_vocabulary")
+        }
+    }
+
+    func addVocabularyEntry(_ entry: VocabularyEntry) {
+        customVocabulary.append(entry)
+        saveCustomVocabulary()
+    }
+
+    func updateVocabularyEntry(_ entry: VocabularyEntry) {
+        if let index = customVocabulary.firstIndex(where: { $0.id == entry.id }) {
+            customVocabulary[index] = entry
+            saveCustomVocabulary()
+        }
+    }
+
+    func deleteVocabularyEntry(_ entry: VocabularyEntry) {
+        customVocabulary.removeAll { $0.id == entry.id }
+        saveCustomVocabulary()
+    }
+
+    /// Build a lookup dictionary from custom vocabulary for fast matching
+    func vocabularyLookup() -> [String: String] {
+        var lookup: [String: String] = [:]
+        for entry in customVocabulary where entry.isEnabled {
+            // Store with lowercased key for case-insensitive matching
+            lookup[entry.spokenPhrase.lowercased()] = entry.writtenForm
+        }
+        return lookup
+    }
+
+    /// Apply custom vocabulary substitutions to text
+    /// Replaces spoken phrases with their written forms (case-insensitive)
+    private func applyVocabularySubstitutions(_ text: String) -> String {
+        guard !customVocabulary.isEmpty else { return text }
+
+        var result = text
+
+        // Sort entries by spoken phrase length (longest first) to handle overlapping phrases
+        let sortedEntries = customVocabulary
+            .filter { $0.isEnabled }
+            .sorted { $0.spokenPhrase.count > $1.spokenPhrase.count }
+
+        for entry in sortedEntries {
+            // Use word boundary matching to avoid partial word replacements
+            // The pattern matches the spoken phrase with optional surrounding punctuation
+            let pattern = "(?i)\\b\(NSRegularExpression.escapedPattern(for: entry.spokenPhrase))\\b"
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let range = NSRange(result.startIndex..<result.endIndex, in: result)
+                let matches = regex.matches(in: result, options: [], range: range)
+
+                // Replace from end to start to preserve indices
+                for match in matches.reversed() {
+                    if let matchRange = Range(match.range, in: result) {
+                        let originalText = String(result[matchRange])
+                        // Preserve the original case pattern for simple cases
+                        let replacement = preserveCase(original: originalText, replacement: entry.writtenForm)
+                        result.replaceSubrange(matchRange, with: replacement)
+                        logDebug("Vocabulary: '\(originalText)' → '\(replacement)'")
+                    }
+                }
+            }
+        }
+
+        return result
+    }
+
+    /// Attempt to preserve case pattern from original text in replacement
+    private func preserveCase(original: String, replacement: String) -> String {
+        // If original is all uppercase, make replacement all uppercase
+        if original == original.uppercased() && original != original.lowercased() {
+            return replacement.uppercased()
+        }
+        // If original is all lowercase, keep replacement as-is (it has the desired form)
+        if original == original.lowercased() {
+            return replacement
+        }
+        // If original is capitalized (first letter upper, rest lower), capitalize replacement
+        if original.first?.isUppercase == true &&
+           String(original.dropFirst()) == String(original.dropFirst()).lowercased() {
+            return replacement.prefix(1).uppercased() + replacement.dropFirst()
+        }
+        // Otherwise, use the replacement as defined
+        return replacement
     }
 
     private func loadCommandDelay() {
