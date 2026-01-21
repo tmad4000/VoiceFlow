@@ -32,21 +32,41 @@ struct TicketsPanelView: View {
 
     enum SortOrder: String, CaseIterable {
         case priority = "Priority"
+        case newest = "Newest"
+        case updated = "Updated"
         case type = "Type"
         case alphabetical = "A-Z"
-        case id = "ID"
+
+        /// The beads CLI sort field name
+        var beadsField: String {
+            switch self {
+            case .priority: return "priority"
+            case .newest: return "created"
+            case .updated: return "updated"
+            case .type: return "type"
+            case .alphabetical: return "title"
+            }
+        }
+
+        /// Whether to reverse sort (newest first for dates)
+        var reversed: Bool {
+            switch self {
+            case .newest, .updated: return true
+            default: return false
+            }
+        }
     }
 
     var filteredTickets: [BeadsTicket] {
         var result = tickets
 
-        // Filter by type
+        // Filter by type (client-side since we fetch all)
         if filterType != .all {
             let typeString = filterType.rawValue.lowercased().dropLast() // "Bugs" -> "bug"
             result = result.filter { $0.type.lowercased() == typeString }
         }
 
-        // Filter by search
+        // Filter by search (client-side)
         if !searchText.isEmpty {
             result = result.filter {
                 $0.title.localizedCaseInsensitiveContains(searchText) ||
@@ -54,18 +74,7 @@ struct TicketsPanelView: View {
             }
         }
 
-        // Sort
-        switch sortOrder {
-        case .priority:
-            result.sort { $0.priority < $1.priority }
-        case .type:
-            result.sort { $0.type < $1.type }
-        case .alphabetical:
-            result.sort { $0.title.lowercased() < $1.title.lowercased() }
-        case .id:
-            result.sort { $0.id < $1.id }
-        }
-
+        // Sorting is done server-side via bd list --sort
         return result
     }
 
@@ -125,6 +134,9 @@ struct TicketsPanelView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onAppear {
+            loadTickets()
+        }
+        .onChange(of: sortOrder) { _ in
             loadTickets()
         }
     }
@@ -380,7 +392,13 @@ struct TicketsPanelView: View {
 
             // Use full path to bd and proper environment
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-l", "-c", "cd \(projectPath) && bd list --status=open 2>&1"]
+            // Build command with sort options
+            var command = "cd \(projectPath) && bd list --status=open --sort \(sortOrder.beadsField)"
+            if sortOrder.reversed {
+                command += " --reverse"
+            }
+            command += " 2>&1"
+            process.arguments = ["-l", "-c", command]
             process.standardOutput = pipe
             process.standardError = pipe
 

@@ -241,6 +241,10 @@ struct GeneralSettingsView: View {
     
     @State private var isAssemblyExpanded = false  // Collapsed by default to reduce clutter
     @State private var isDeepgramExpanded = false
+    @State private var isAIFormatterExpanded = false  // Collapsible API key section
+    @State private var isAppearanceExpanded = false
+    @State private var isIdeaFlowExpanded = false
+    @State private var isDebugExpanded = false
 
     enum TestStatus {
         case idle, testing, success, failed(String)
@@ -350,87 +354,95 @@ struct GeneralSettingsView: View {
                     .padding(4)
                 }
 
-                // AI Formatter Section (Experimental)
+                // AI Formatter Section (Experimental) - Collapsible
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 10) {
+                    DisclosureGroup(isExpanded: $isAIFormatterExpanded) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle("Enable context-aware formatting", isOn: Binding(
+                                get: { appState.aiFormatterEnabled },
+                                set: { appState.saveAIFormatterEnabled($0) }
+                            ))
+                            .font(.system(size: 12))
+
+                            if appState.aiFormatterEnabled {
+                                Text("Uses focus context to improve capitalization. Capitalizes after sentences and at the start of new app focus sessions.")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+
+                                // Warning if no API key
+                                if appState.anthropicApiKey.isEmpty {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .foregroundColor(.orange)
+                                        Text("No API key set - using local heuristics only (basic capitalization)")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.orange)
+                                    }
+                                    .padding(8)
+                                    .background(Color.orange.opacity(0.1))
+                                    .cornerRadius(6)
+                                }
+
+                                Divider()
+
+                                HStack {
+                                    Text("Anthropic API Key")
+                                        .font(.system(size: 12, weight: .medium))
+                                    if !appState.anthropicApiKey.isEmpty {
+                                        Text("(saved)")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.green)
+                                    }
+                                }
+
+                                SecureField("Enter your Anthropic API key", text: $anthropicApiKeyInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(size: 12))
+                                    .onAppear { anthropicApiKeyInput = appState.anthropicApiKey }
+
+                                HStack {
+                                    Button("Save") {
+                                        appState.saveAnthropicApiKey(anthropicApiKeyInput)
+                                    }
+                                    .disabled(anthropicApiKeyInput.isEmpty)
+                                    .font(.system(size: 11))
+
+                                    Button("Test") {
+                                        testAnthropicKey()
+                                    }
+                                    .disabled(anthropicApiKeyInput.isEmpty)
+                                    .font(.system(size: 11))
+
+                                    testStatusView(anthropicTestStatus)
+
+                                    if !appState.anthropicApiKey.isEmpty {
+                                        Button("Clear") {
+                                            appState.saveAnthropicApiKey("")
+                                            anthropicApiKeyInput = ""
+                                        }
+                                        .foregroundColor(.red)
+                                        .font(.system(size: 11))
+                                    }
+
+                                    Spacer()
+
+                                    Link("Get API Key", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
+                                        .font(.system(size: 11))
+                                }
+                            }
+                        }
+                        .padding(.top, 8)
+                    } label: {
                         HStack {
                             Text("AI Formatter")
                                 .font(.system(size: 13, weight: .semibold))
                             Text("(Experimental)")
                                 .font(.system(size: 11))
                                 .foregroundColor(.orange)
-                        }
-
-                        Toggle("Enable context-aware formatting", isOn: Binding(
-                            get: { appState.aiFormatterEnabled },
-                            set: { appState.saveAIFormatterEnabled($0) }
-                        ))
-                        .font(.system(size: 12))
-
-                        if appState.aiFormatterEnabled {
-                            Text("Uses focus context to improve capitalization. Capitalizes after sentences and at the start of new app focus sessions.")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-
-                            // Warning if no API key
-                            if appState.anthropicApiKey.isEmpty {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .foregroundColor(.orange)
-                                    Text("No API key set - using local heuristics only (basic capitalization)")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.orange)
-                                }
-                                .padding(8)
-                                .background(Color.orange.opacity(0.1))
-                                .cornerRadius(6)
-                            }
-
-                            Divider()
-
-                            HStack {
-                                Text("Anthropic API Key")
-                                    .font(.system(size: 12, weight: .medium))
-                                if !appState.anthropicApiKey.isEmpty {
-                                    Text("(saved)")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.green)
-                                }
-                            }
-
-                            SecureField("Enter your Anthropic API key", text: $anthropicApiKeyInput)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 12))
-                                .onAppear { anthropicApiKeyInput = appState.anthropicApiKey }
-
-                            HStack {
-                                Button("Save") {
-                                    appState.saveAnthropicApiKey(anthropicApiKeyInput)
-                                }
-                                .disabled(anthropicApiKeyInput.isEmpty)
-                                .font(.system(size: 11))
-
-                                Button("Test") {
-                                    testAnthropicKey()
-                                }
-                                .disabled(anthropicApiKeyInput.isEmpty)
-                                .font(.system(size: 11))
-
-                                testStatusView(anthropicTestStatus)
-
-                                if !appState.anthropicApiKey.isEmpty {
-                                    Button("Clear") {
-                                        appState.saveAnthropicApiKey("")
-                                        anthropicApiKeyInput = ""
-                                    }
-                                    .foregroundColor(.red)
-                                    .font(.system(size: 11))
-                                }
-
-                                Spacer()
-
-                                Link("Get API Key", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
-                                    .font(.system(size: 11))
+                            if !appState.anthropicApiKey.isEmpty {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                    .font(.system(size: 10))
                             }
                         }
                     }
