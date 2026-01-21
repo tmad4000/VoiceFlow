@@ -26,7 +26,7 @@ struct FloatingPanelView: View {
 
             // Audio pulse indicator when active
             if appState.microphoneMode != .off {
-                AudioPulseIndicator(level: appState.audioLevel, mode: appState.microphoneMode)
+                AudioPulseIndicator(level: appState.audioLevel, mode: appState.microphoneMode, isMuted: appState.isPTMMuted)
             }
 
             // PTT processing indicator (waiting for finalized text)
@@ -245,6 +245,15 @@ struct FloatingPanelView: View {
                                 set: { appState.trailingNewlineSendsEnter = $0 }
                             )) {
                                 Label("Newline→Enter", systemImage: "arrow.turn.down.left")
+                            }
+                        }
+
+                        Divider()
+
+                        // Feedback section
+                        Section("Feedback") {
+                            Button(action: { appState.openTicketsPanel() }) {
+                                Label("Tickets", systemImage: "ticket")
                             }
                         }
 
@@ -928,22 +937,38 @@ private struct InputDeviceMenuItems: View {
 private struct CompactModeButtons: View {
     @EnvironmentObject var appState: AppState
 
+    private var isOnAndMuted: Bool {
+        appState.microphoneMode == .on && appState.isPTMMuted
+    }
+
     var body: some View {
         HStack(spacing: 4) {
             ForEach([MicrophoneMode.off, .sleep, .on], id: \.self) { mode in
                 Button(action: { appState.setMode(mode) }) {
-                    Circle()
-                        .fill(colorFor(mode).opacity(appState.microphoneMode == mode ? 1.0 : 0.3))
-                        .frame(width: 12, height: 12)
-                        .overlay(
+                    ZStack {
+                        // PTM: Show red circle with mic.slash for On mode when muted
+                        if mode == .on && isOnAndMuted {
                             Circle()
-                                .stroke(colorFor(mode), lineWidth: appState.microphoneMode == mode ? 0 : 1)
-                                .opacity(0.5)
-                        )
+                                .fill(Color.red)
+                                .frame(width: 12, height: 12)
+                            Image(systemName: "mic.slash.fill")
+                                .font(.system(size: 7, weight: .bold))
+                                .foregroundColor(.white)
+                        } else {
+                            Circle()
+                                .fill(colorFor(mode).opacity(appState.microphoneMode == mode ? 1.0 : 0.3))
+                                .frame(width: 12, height: 12)
+                                .overlay(
+                                    Circle()
+                                        .stroke(colorFor(mode), lineWidth: appState.microphoneMode == mode ? 0 : 1)
+                                        .opacity(0.5)
+                                )
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
-                .help("\(mode.rawValue.capitalized) (\(mode.keyboardShortcut))")
+                .help(mode == .on && isOnAndMuted ? "Muted (release key to unmute)" : "\(mode.rawValue.capitalized) (\(mode.keyboardShortcut))")
             }
         }
     }
@@ -961,27 +986,39 @@ private struct CompactModeButtons: View {
 private struct AudioPulseIndicator: View {
     let level: Float
     let mode: MicrophoneMode
+    var isMuted: Bool = false  // PTM state
 
     // Amplify level for better visibility (input is typically 0-0.3)
     private var amplifiedLevel: Float {
-        min(1.0, level * 5.0)
+        isMuted ? 0 : min(1.0, level * 5.0)
     }
 
     var body: some View {
         ZStack {
-            // Outer glow when speaking
-            Circle()
-                .fill(pulseColor.opacity(0.3))
-                .frame(width: 14, height: 14)
-                .scaleEffect(1.0 + CGFloat(amplifiedLevel) * 0.5)
-                .opacity(Double(amplifiedLevel))
+            if isMuted {
+                // PTM: Collapsed red dot with mic.slash
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 8, height: 8)
+                Image(systemName: "mic.slash.fill")
+                    .font(.system(size: 6, weight: .bold))
+                    .foregroundColor(.white)
+            } else {
+                // Normal: Outer glow when speaking
+                Circle()
+                    .fill(pulseColor.opacity(0.3))
+                    .frame(width: 14, height: 14)
+                    .scaleEffect(1.0 + CGFloat(amplifiedLevel) * 0.5)
+                    .opacity(Double(amplifiedLevel))
 
-            // Inner solid circle
-            Circle()
-                .fill(pulseColor)
-                .frame(width: 8, height: 8)
+                // Inner solid circle
+                Circle()
+                    .fill(pulseColor)
+                    .frame(width: 8, height: 8)
+            }
         }
-        .animation(.easeInOut(duration: 0.08), value: amplifiedLevel)
+        // No animation for PTM transitions - instant snap
+        .animation(isMuted ? nil : .easeInOut(duration: 0.08), value: amplifiedLevel)
     }
 
     private var pulseColor: Color {

@@ -244,6 +244,7 @@ class AppState: ObservableObject {
     @Published var isCommandPanelVisible: Bool = false
     @Published var isNotesPanelVisible: Bool = false
     @Published var isTranscriptsPanelVisible: Bool = false
+    @Published var isTicketsPanelVisible: Bool = false
     @Published var commandMessages: [CommandMessage] = []
     @Published var commandInput: String = ""
     @Published var commandMessageQueue: [String] = []
@@ -382,7 +383,9 @@ class AppState: ObservableObject {
         ("open bracket", "Insert ["),
         ("close bracket", "Insert ]"),
         ("open brace", "Insert {"),
-        ("close brace", "Insert }")
+        ("close brace", "Insert }"),
+        ("backspace", "Delete the previous character"),
+        ("back space", "Delete the previous character")
     ]
 
     var panelVisibilityHandler: ((Bool) -> Void)?
@@ -521,6 +524,8 @@ class AppState: ObservableObject {
     private var hasTypedInSession = false  // Tracks if we've typed anything since going On
     @Published var isPTTProcessing = false  // When true, waiting for finalized text before sleep
     private var pttSleepTimeoutTask: Task<Void, Never>?  // Fallback timeout for PTT sleep
+    @Published var isPTMMuted = false  // Push-to-mute: temporarily mute when key held in On mode
+    var lastPTTKeyDownTime: Date?  // For double-tap detection
 
     // PTT timestamp tracking - filters words to only include those within PTT time window
     private var streamStartTime: Date?  // When audio stream started (for calculating stream-relative times)
@@ -534,6 +539,7 @@ class AppState: ObservableObject {
     private var suppressNextAutoCap = false
     private var lastKeyEventTime: Date?  // For consistent Return key timing across typeText calls
     private var bufferedTerminalNewlines: Int = 0  // Newlines to send after utterance ends (terminal mode)
+    private var charsSinceLastFlush: Int = 0  // Track chars typed for proportional delay calculation
 
     // Cross-utterance keyword state: tracks partial keywords that span utterance boundaries
     // e.g., "new" at end of one utterance + "line" at start of next = "new line"
@@ -1148,8 +1154,9 @@ class AppState: ObservableObject {
 
         // Connect audio output to WebSocket
         audioCaptureManager?.onAudioData = { [weak self] data in
-            self?.assemblyAIService?.sendAudio(data)
-            self?.bufferAudioForRecording(data)
+            guard let self = self, !self.isPTMMuted else { return }  // PTM: skip audio when muted
+            self.assemblyAIService?.sendAudio(data)
+            self.bufferAudioForRecording(data)
         }
 
         // Connect audio level for visualization
@@ -1232,8 +1239,9 @@ class AppState: ObservableObject {
 
         // Connect audio output to WebSocket
         audioCaptureManager?.onAudioData = { [weak self] data in
-            self?.deepgramService?.sendAudio(data)
-            self?.bufferAudioForRecording(data)
+            guard let self = self, !self.isPTMMuted else { return }  // PTM: skip audio when muted
+            self.deepgramService?.sendAudio(data)
+            self.bufferAudioForRecording(data)
         }
 
         // Connect audio level for visualization
@@ -1304,8 +1312,9 @@ class AppState: ObservableObject {
 
         // Connect audio output to Apple Speech Service
         audioCaptureManager?.onAudioData = { [weak self] data in
-            self?.appleSpeechService?.sendAudio(data)
-            self?.bufferAudioForRecording(data)
+            guard let self = self, !self.isPTMMuted else { return }  // PTM: skip audio when muted
+            self.appleSpeechService?.sendAudio(data)
+            self.bufferAudioForRecording(data)
         }
 
         // Connect audio level for visualization
@@ -2102,6 +2111,32 @@ class AppState: ObservableObject {
                 if nextToken == "space", isKeywordGapAcceptable(previous: word, next: next) {
                     keyword = keyword ?? "No space"
                     suppressNextSpace = true  // Next word will join directly
+                    index += 2
+                    continue
+                }
+            }
+
+            // "backspace" - delete the previous character from output
+            if token == "backspace" {
+                keyword = keyword ?? "Backspace"
+                if !output.isEmpty {
+                    output.removeLast()
+                }
+                triggerKeywordFlash(name: "Backspace")
+                index += 1
+                continue
+            }
+
+            // "back space" - two word variant
+            if token == "back", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "space", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Backspace"
+                    if !output.isEmpty {
+                        output.removeLast()
+                    }
+                    triggerKeywordFlash(name: "Backspace")
                     index += 2
                     continue
                 }
@@ -3543,6 +3578,12 @@ class AppState: ObservableObject {
                     logDebug("Creating VoiceFlow issue: \"\(issueDescription)\"")
                     createBeadsIssue(title: issueDescription, projectPath: "~/code/VoiceFlow")
                     triggerCommandFlash(name: "VoiceFlow Issue")
+                } else if commandLower == "format" || commandLower == "format that" ||
+                          commandLower == "improve" || commandLower == "improve that" ||
+                          commandLower == "improve this" || commandLower == "format this" {
+                    // AI text improvement - copies selected text, improves, and pastes back
+                    logDebug("Improving selected text via command prefix")
+                    improveSelectedText()
                 } else {
                     // Execute inline command
                     logDebug("Executing command: \"\(commandText)\"")
@@ -3651,12 +3692,22 @@ class AppState: ObservableObject {
                 (phrase: "use offline model", key: "system.provider_offline", name: "Offline Model", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.offline) } as () -> Void),
                 (phrase: "use auto model", key: "system.provider_auto", name: "Auto Model", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.auto) } as () -> Void),
                 (phrase: "use deepgram", key: "system.provider_deepgram", name: "Deepgram", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.deepgram) } as () -> Void),
-                (phrase: "switch to deepgram", key: "system.provider_deepgram", name: "Deepgram", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.deepgram) } as () -> Void)
+                (phrase: "switch to deepgram", key: "system.provider_deepgram", name: "Deepgram", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.deepgram) } as () -> Void),
+
+                // AI Text Improvement - improves selected text (requires pause to avoid false positives)
+                (phrase: "improve that", key: "system.improve_text", name: "Improve", haltsProcessing: true, action: { [weak self] in self?.improveSelectedText() } as () -> Void),
+                (phrase: "improve this", key: "system.improve_text", name: "Improve", haltsProcessing: true, action: { [weak self] in self?.improveSelectedText() } as () -> Void),
+                (phrase: "format that", key: "system.improve_text", name: "Improve", haltsProcessing: true, action: { [weak self] in self?.improveSelectedText() } as () -> Void),
+                (phrase: "format this", key: "system.improve_text", name: "Improve", haltsProcessing: true, action: { [weak self] in self?.improveSelectedText() } as () -> Void)
             ])
         }
 
         // Mode-changing commands that must appear at START of utterance only (prevents "oddly enough, speech off" from triggering)
         let modeCommandKeys: Set<String> = ["system.wake_up", "system.go_to_sleep", "system.microphone_off"]
+
+        // Commands that require a pause (endOfTurn) to avoid false positives in natural speech
+        // e.g., "improve that" or "format that" could be said naturally without intending a command
+        let pauseRequiredKeys: Set<String> = ["system.improve_text"]
 
         for systemCommand in systemCommands {
             let phraseTokens = tokenizePhrase(systemCommand.phrase)
@@ -3678,13 +3729,15 @@ class AppState: ObservableObject {
                 let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
                 // Submit/send commands should execute even if words aren't final
                 let skipStability = systemCommand.key == "system.force_end_utterance"
+                // Some commands require a pause to avoid false positives
+                let needsPause = pauseRequiredKeys.contains(systemCommand.key)
                 matches.append(PendingCommandMatch(
                     key: systemCommand.key,
                     startWordIndex: startWordIndex,
                     endWordIndex: endWordIndex,
                     isPrefixed: isPrefixed,
                     isStable: isStable,
-                    requiresPause: false,
+                    requiresPause: needsPause,
                     haltsProcessing: systemCommand.haltsProcessing,
                     skipStabilityCheck: skipStability,
                     turn: turn,
@@ -4335,6 +4388,16 @@ class AppState: ObservableObject {
         triggerCommandFlash(name: "Transcripts Panel")
     }
 
+    /// Open the Tickets panel
+    func openTicketsPanel() {
+        // Post notification to VoiceFlowApp to show the panel
+        NotificationCenter.default.post(
+            name: NSNotification.Name("VoiceFlowShowTicketsPanel"),
+            object: nil
+        )
+        triggerCommandFlash(name: "Tickets Panel")
+    }
+
     /// Open the recordings folder in Finder
     func openRecordingsFolder() {
         let recordingsDir = FileManager.default.homeDirectoryForCurrentUser
@@ -4935,6 +4998,7 @@ class AppState: ObservableObject {
                 keyUp?.post(tap: .cghidEventTap)
                 lastKeyEventTime = Date()
                 eventsPosted += 1
+                charsSinceLastFlush += 1  // Track for proportional delay calculation
 
                 // Apply inter-character delay for apps that need slower typing (Google Docs, etc.)
                 if interCharDelay > 0 {
@@ -4967,20 +5031,35 @@ class AppState: ObservableObject {
     private func flushBufferedTerminalNewlines() {
         guard bufferedTerminalNewlines > 0 else { return }
 
-        logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s)")
+        logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s), charsSinceLastFlush=\(charsSinceLastFlush)")
 
-        let minDelayBeforeReturn: TimeInterval = 0.05
+        // Proportional delay: ~15ms per character typed + 100ms base buffer
+        // This accounts for CGEvent processing time which scales with text length
+        // Much better than fixed 5s delay but still reliable
+        let perCharDelay: TimeInterval = 0.015  // 15ms per character
+        let baseBuffer: TimeInterval = 0.1  // 100ms base
+        let proportionalDelay = TimeInterval(charsSinceLastFlush) * perCharDelay + baseBuffer
+
+        NSLog("[VoiceFlow] ⏎ FLUSH: chars=%d, proportionalDelay=%.0fms", charsSinceLastFlush, proportionalDelay * 1000)
 
         for i in 0..<bufferedTerminalNewlines {
             // Ensure sufficient delay before Return key
+            let actualDelay: TimeInterval
             if let lastTime = lastKeyEventTime {
                 let elapsed = Date().timeIntervalSince(lastTime)
-                let neededDelay = max(0, minDelayBeforeReturn - elapsed)
-                if neededDelay > 0 {
-                    Thread.sleep(forTimeInterval: neededDelay)
+                actualDelay = max(0, proportionalDelay - elapsed)
+                NSLog("[VoiceFlow] ⏎ FLUSH: i=%d, elapsed=%.0fms, neededDelay=%.0fms", i, elapsed * 1000, actualDelay * 1000)
+                if actualDelay > 0 {
+                    Thread.sleep(forTimeInterval: actualDelay)
                 }
             } else if i > 0 {
-                Thread.sleep(forTimeInterval: minDelayBeforeReturn)
+                actualDelay = proportionalDelay
+                NSLog("[VoiceFlow] ⏎ FLUSH: i=%d, no lastKeyEventTime, delay=%.0fms", i, actualDelay * 1000)
+                Thread.sleep(forTimeInterval: proportionalDelay)
+            } else {
+                actualDelay = baseBuffer  // At least base buffer even if no prior typing
+                NSLog("[VoiceFlow] ⏎ FLUSH: i=0, no lastKeyEventTime, using baseBuffer=%.0fms", actualDelay * 1000)
+                Thread.sleep(forTimeInterval: baseBuffer)
             }
 
             // For terminals, try AppleScript which uses a different keystroke mechanism
@@ -4999,6 +5078,7 @@ class AppState: ObservableObject {
         }
 
         bufferedTerminalNewlines = 0
+        charsSinceLastFlush = 0  // Reset for next utterance
     }
 
     /// Send a single Enter key press (for explicit "press enter" / "submit" command)
@@ -5914,6 +5994,55 @@ class AppState: ObservableObject {
                 }
             } else {
                 logDebug("Idea Flow: App not found and no URL/Shortcut configured")
+            }
+        }
+    }
+
+    // MARK: - Improve Selected Text
+
+    /// Improve selected text using AI - copies, improves, and pastes back
+    /// Triggered by "improve that" voice command
+    func improveSelectedText() {
+        logDebug("Improve: Starting text improvement")
+        triggerCommandFlash(name: "Improving...")
+
+        // 1. Copy selected text (Cmd+C)
+        executeKeyboardShortcut(KeyboardShortcut(keyCode: UInt16(kVK_ANSI_C), modifiers: [.command]))
+
+        // 2. Wait for clipboard to update, then read and improve
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self = self else { return }
+
+            // Read from clipboard
+            guard let text = NSPasteboard.general.string(forType: .string),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                self.logDebug("Improve: No text selected or clipboard empty")
+                self.triggerCommandFlash(name: "No Selection")
+                return
+            }
+
+            self.logDebug("Improve: Got text \"\(text.prefix(30))...\"")
+
+            // 3. Call AI to improve
+            Task { @MainActor in
+                let improved = await self.aiFormatterService.improve(text)
+
+                if improved == text {
+                    self.logDebug("Improve: No changes made")
+                    self.triggerCommandFlash(name: "No Changes")
+                    return
+                }
+
+                self.logDebug("Improve: Text improved, pasting")
+
+                // 4. Write improved text to clipboard
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(improved, forType: .string)
+
+                // 5. Paste (Cmd+V)
+                self.executeKeyboardShortcut(KeyboardShortcut(keyCode: UInt16(kVK_ANSI_V), modifiers: [.command]))
+
+                self.triggerCommandFlash(name: "Improved")
             }
         }
     }

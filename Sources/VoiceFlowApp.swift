@@ -50,9 +50,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var commandPanelWindow: CommandPanelWindow?
     private var notesPanelWindow: NotesPanelWindow?
     private var transcriptsPanelWindow: TranscriptsPanelWindow?
+    private var ticketsPanelWindow: TicketsPanelWindow?
     private var cancellables = Set<AnyCancellable>()
     private var pttMonitor: Any?
     private var pttActivatedOnMode: Bool = false  // Track if On mode was activated via PTT
+    private var isPTTKeyPhysicallyDown: Bool = false  // Track physical key state to ignore macOS key repeat events
+    private var panelTopEdgeY: CGFloat?  // Track desired top-edge position for panel (fixes recurring banner-push-off bug)
+    private var isRepositioningPanel: Bool = false  // Prevent didMove from updating anchor during programmatic repositioning
 
     // CGEventTap for consuming PTT key events (prevents them from reaching apps)
     private var pttEventTap: CFMachPort?
@@ -224,6 +228,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(showTranscriptsPanel),
             name: Notification.Name("VoiceFlowShowTranscriptsPanel"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideTicketsPanel),
+            name: Notification.Name("TicketsPanelDidClose"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showTicketsPanel),
+            name: Notification.Name("VoiceFlowShowTicketsPanel"),
             object: nil
         )
 
@@ -398,6 +414,52 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.maxSize = NSSize(width: 1000, height: 800)
 
         panelWindow = panel
+
+        // Observe frame changes to keep top edge pinned (fixes recurring banner-push-off bug VoiceFlow-3y6k)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelFrameDidChange(_:)),
+            name: NSWindow.didResizeNotification,
+            object: panel
+        )
+
+        // Track when user drags window to update the anchor point (VoiceFlow-hvdi)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelDidMove(_:)),
+            name: NSWindow.didMoveNotification,
+            object: panel
+        )
+    }
+
+    @objc private func panelFrameDidChange(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window == panelWindow,
+              let targetTopY = panelTopEdgeY,
+              let screen = NSScreen.main else { return }
+
+        // Calculate where top edge currently is
+        let currentTopY = window.frame.origin.y + window.frame.height
+
+        // If top edge has moved, reposition to maintain original top-edge position
+        // Allow small tolerance to avoid infinite loops from rounding
+        if abs(currentTopY - targetTopY) > 1 {
+            let newOriginY = targetTopY - window.frame.height
+            // Ensure we don't go below the screen bottom
+            let clampedY = max(screen.frame.origin.y, newOriginY)
+            // Set flag to prevent panelDidMove from updating anchor
+            isRepositioningPanel = true
+            window.setFrameOrigin(NSPoint(x: window.frame.origin.x, y: clampedY))
+            isRepositioningPanel = false
+        }
+    }
+
+    @objc private func panelDidMove(_ notification: Notification) {
+        // Update anchor when USER drags window - ignore programmatic moves
+        guard let window = notification.object as? NSWindow,
+              window == panelWindow,
+              !isRepositioningPanel else { return }  // Skip if we're programmatically repositioning
+        panelTopEdgeY = window.frame.origin.y + window.frame.height
     }
 
     private func setPanelVisible(_ visible: Bool) {
@@ -417,7 +479,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let screen = NSScreen.main else { return }
         let panelWidth = window.frame.width
         let x = (screen.frame.width - panelWidth) / 2 + screen.frame.origin.x
-        let y = screen.frame.maxY - 80
+
+        // Pin to TOP edge of screen (20px clearance for menu bar)
+        // This fixes the recurring bug where banners push the header off-screen (VoiceFlow-3y6k)
+        let desiredTopY = screen.frame.maxY - 20
+        let y = desiredTopY - window.frame.height
+
+        // Store the target top-edge position for the frame observer
+        panelTopEdgeY = desiredTopY
+
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
@@ -695,6 +765,93 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
+    // MARK: - Tickets Panel
+
+    @objc func showTicketsPanel() {
+        if ticketsPanelWindow == nil {
+            configureTicketsPanelWindow()
+        }
+        guard let ticketsPanelWindow else { return }
+        positionTicketsPanelWindow(ticketsPanelWindow)
+
+        NSApp.activate(ignoringOtherApps: true)
+        ticketsPanelWindow.makeKeyAndOrderFront(nil)
+        appState.isTicketsPanelVisible = true
+    }
+
+    @objc func hideTicketsPanel() {
+        ticketsPanelWindow?.orderOut(nil)
+        appState.isTicketsPanelVisible = false
+    }
+
+    @objc func toggleTicketsPanel() {
+        if appState.isTicketsPanelVisible {
+            hideTicketsPanel()
+        } else {
+            showTicketsPanel()
+        }
+    }
+
+    private func configureTicketsPanelWindow() {
+        let panel = TicketsPanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 500),
+            styleMask: [.titled, .resizable, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingController = NSHostingController(
+            rootView: TicketsPanelView()
+                .environmentObject(appState)
+        )
+
+        let containerView = FirstMouseContainerView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(hostingController.view)
+
+        NSLayoutConstraint.activate([
+            hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor)
+        ])
+
+        panel.contentView = containerView
+
+        panel.identifier = NSUserInterfaceItemIdentifier("voiceflow.ticketspanel")
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.isFloatingPanel = true
+        panel.title = "Tickets"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+
+        panel.minSize = NSSize(width: 350, height: 400)
+        panel.maxSize = NSSize(width: 600, height: 800)
+
+        ticketsPanelWindow = panel
+    }
+
+    private func positionTicketsPanelWindow(_ window: NSWindow) {
+        guard let screen = NSScreen.main else { return }
+        let panelWidth = window.frame.width
+        let panelHeight = window.frame.height
+        // Position centered horizontally, below top of screen
+        let x = (screen.frame.width - panelWidth) / 2 + screen.frame.origin.x
+        let y = screen.frame.maxY - panelHeight - 100
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
     @objc func setModeOff() {
         print("[VoiceFlow] Setting mode: Off")
         Task { @MainActor in
@@ -833,34 +990,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func listOpenTickets() {
-        Task { @MainActor in
-            // Run bd list and show results in a dialog
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = ["-c", "cd /Users/jacobcole/code/VoiceFlow && bd list --status=open 2>/dev/null | head -30"]
-            process.currentDirectoryURL = URL(fileURLWithPath: "/Users/jacobcole/code/VoiceFlow")
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? "No tickets found"
-
-                let alert = NSAlert()
-                alert.messageText = "Open VoiceFlow Tickets"
-                alert.informativeText = output.isEmpty ? "No open tickets" : output
-                alert.alertStyle = .informational
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
-            } catch {
-                NSLog("[VoiceFlow] Failed to list tickets: \(error)")
-            }
-        }
+        showTicketsPanel()
     }
 
     private func createBeadsTicket(title: String, type: String) {
@@ -1001,10 +1131,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         state.onPTTPressed = { [weak self] in
             Task { @MainActor in
                 guard let self = self else { return }
+
+                // Ignore macOS key repeat events - only act on initial press
+                if self.isPTTKeyPhysicallyDown { return }
+                self.isPTTKeyPhysicallyDown = true
+
+                // Double-tap detection (300ms window)
+                let now = Date()
+                if let lastTap = self.appState.lastPTTKeyDownTime,
+                   now.timeIntervalSince(lastTap) < 0.3 {
+                    // Double-tap detected - toggle On mode
+                    self.appState.lastPTTKeyDownTime = nil  // Reset to avoid triple-tap
+                    if self.appState.microphoneMode == .on {
+                        self.appState.logDebug("PTT: Double-tap → OFF")
+                        self.appState.setMode(.off)
+                    } else {
+                        self.appState.logDebug("PTT: Double-tap → ON (persistent)")
+                        self.appState.setMode(.on)
+                    }
+                    self.pttActivatedOnMode = false  // Persistent mode, not PTT-activated
+                    return
+                }
+                self.appState.lastPTTKeyDownTime = now
+
                 self.appState.cancelPendingPTTSleep()
                 // Record PTT press timestamp for filtering pre-press background speech
                 self.appState.recordPTTPress()
-                if self.appState.microphoneMode != .on {
+
+                if self.appState.microphoneMode == .on && !self.pttActivatedOnMode {
+                    // Already in On mode (not via PTT) → Push-to-Mute
+                    self.appState.isPTMMuted = true
+                    self.appState.logDebug("PTM: Muted (key held)")
+                } else if self.appState.microphoneMode != .on {
+                    // Off or Sleep mode → Push-to-Talk
                     self.appState.setMode(.on)
                     self.pttActivatedOnMode = true
                     self.appState.logDebug("PTT: ON (key consumed)")
@@ -1015,6 +1174,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         state.onPTTReleased = { [weak self] in
             Task { @MainActor in
                 guard let self = self else { return }
+
+                // Reset physical key state to allow next press
+                self.isPTTKeyPhysicallyDown = false
+
+                // Handle Push-to-Mute release
+                if self.appState.isPTMMuted {
+                    self.appState.isPTMMuted = false
+                    self.appState.logDebug("PTM: Unmuted (key released)")
+                    return
+                }
+
+                // Handle Push-to-Talk release
                 // Record PTT release timestamp for filtering post-release speech
                 self.appState.recordPTTRelease()
                 if self.appState.microphoneMode == .on && self.pttActivatedOnMode {
