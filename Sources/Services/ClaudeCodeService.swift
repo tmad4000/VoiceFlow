@@ -40,7 +40,7 @@ class ClaudeCodeService: ObservableObject {
 
     // MARK: - Initialization
 
-    init(workingDirectory: String = "~/ai-os", model: String? = nil) {
+    init(workingDirectory: String = "~/code/ai-os-apple-data/workspace", model: String? = nil) {
         self.workingDirectory = (workingDirectory as NSString).expandingTildeInPath
         self.model = model
     }
