@@ -96,6 +96,10 @@ enum VoiceFlowCLI {
             handleAutoSubmit(Array(args.dropFirst(2)))
             return true
 
+        case "vocab", "vocabulary":
+            handleVocabulary(Array(args.dropFirst(2)))
+            return true
+
         case "help", "-h", "--help":
             printHelp()
             return true
@@ -453,6 +457,159 @@ enum VoiceFlowCLI {
         }
     }
 
+    // MARK: - Vocabulary Command
+
+    private static func handleVocabulary(_ args: [String]) {
+        guard let subcommand = args.first?.lowercased() else {
+            print("Usage: VoiceFlow vocab <list|add|remove|enable|disable>")
+            print("")
+            print("Commands:")
+            print("  list              - List all vocabulary entries")
+            print("  add <spoken> <written> [category]  - Add a new entry")
+            print("  remove <spoken>   - Remove an entry by spoken phrase")
+            print("  enable <spoken>   - Enable an entry")
+            print("  disable <spoken>  - Disable an entry")
+            exit(1)
+        }
+
+        let defaults = UserDefaults.standard
+        var entries = loadVocabularyEntries(from: defaults)
+
+        switch subcommand {
+        case "list":
+            if entries.isEmpty {
+                print("No custom vocabulary entries.")
+                print("Add entries with: VoiceFlow vocab add <spoken> <written>")
+            } else {
+                print("Custom Vocabulary (\(entries.count) entries):")
+                print(String(repeating: "-", count: 60))
+                for entry in entries {
+                    let status = entry.isEnabled ? "✓" : "○"
+                    let category = entry.category.map { " [\($0)]" } ?? ""
+                    print("\(status) \"\(entry.spokenPhrase)\" → \"\(entry.writtenForm)\"\(category)")
+                }
+            }
+
+        case "add":
+            guard args.count >= 3 else {
+                print("Usage: VoiceFlow vocab add <spoken> <written> [category]")
+                print("Example: VoiceFlow vocab add \"nuos\" \"Noos\" \"Projects\"")
+                exit(1)
+            }
+            let spoken = args[1]
+            let written = args[2]
+            let category = args.count > 3 ? args[3] : nil
+
+            // Check for duplicate
+            if entries.contains(where: { $0.spokenPhrase.lowercased() == spoken.lowercased() }) {
+                print("Entry for '\(spoken)' already exists. Remove it first to replace.")
+                exit(1)
+            }
+
+            let newEntry = VocabEntry(
+                id: UUID().uuidString,
+                spokenPhrase: spoken,
+                writtenForm: written,
+                category: category,
+                isEnabled: true
+            )
+            entries.append(newEntry)
+            saveVocabularyEntries(entries, to: defaults)
+            print("Added: \"\(spoken)\" → \"\(written)\"")
+            notifyVocabularyChanged()
+
+        case "remove", "delete":
+            guard args.count >= 2 else {
+                print("Usage: VoiceFlow vocab remove <spoken>")
+                exit(1)
+            }
+            let spoken = args[1].lowercased()
+            let originalCount = entries.count
+            entries.removeAll { $0.spokenPhrase.lowercased() == spoken }
+            if entries.count < originalCount {
+                saveVocabularyEntries(entries, to: defaults)
+                print("Removed entry for '\(args[1])'")
+                notifyVocabularyChanged()
+            } else {
+                print("No entry found for '\(args[1])'")
+                exit(1)
+            }
+
+        case "enable":
+            guard args.count >= 2 else {
+                print("Usage: VoiceFlow vocab enable <spoken>")
+                exit(1)
+            }
+            let spoken = args[1].lowercased()
+            if let index = entries.firstIndex(where: { $0.spokenPhrase.lowercased() == spoken }) {
+                entries[index].isEnabled = true
+                saveVocabularyEntries(entries, to: defaults)
+                print("Enabled: '\(entries[index].spokenPhrase)'")
+                notifyVocabularyChanged()
+            } else {
+                print("No entry found for '\(args[1])'")
+                exit(1)
+            }
+
+        case "disable":
+            guard args.count >= 2 else {
+                print("Usage: VoiceFlow vocab disable <spoken>")
+                exit(1)
+            }
+            let spoken = args[1].lowercased()
+            if let index = entries.firstIndex(where: { $0.spokenPhrase.lowercased() == spoken }) {
+                entries[index].isEnabled = false
+                saveVocabularyEntries(entries, to: defaults)
+                print("Disabled: '\(entries[index].spokenPhrase)'")
+                notifyVocabularyChanged()
+            } else {
+                print("No entry found for '\(args[1])'")
+                exit(1)
+            }
+
+        default:
+            print("Unknown vocab command: \(subcommand)")
+            print("Valid commands: list, add, remove, enable, disable")
+            exit(1)
+        }
+    }
+
+    // Simple struct for CLI vocabulary handling (matches AppState.VocabularyEntry)
+    private struct VocabEntry: Codable {
+        var id: String
+        var spokenPhrase: String
+        var writtenForm: String
+        var category: String?
+        var isEnabled: Bool
+    }
+
+    private static func loadVocabularyEntries(from defaults: UserDefaults) -> [VocabEntry] {
+        guard let data = defaults.data(forKey: "custom_vocabulary"),
+              let entries = try? JSONDecoder().decode([VocabEntry].self, from: data) else {
+            return []
+        }
+        return entries
+    }
+
+    private static func saveVocabularyEntries(_ entries: [VocabEntry], to defaults: UserDefaults) {
+        if let data = try? JSONEncoder().encode(entries) {
+            defaults.set(data, forKey: "custom_vocabulary")
+            defaults.synchronize()
+        }
+    }
+
+    private static func notifyVocabularyChanged() {
+        // Notify running app to reload vocabulary
+        let center = DistributedNotificationCenter.default()
+        center.postNotificationName(
+            NSNotification.Name("com.jacobcole.voiceflow.vocabularyChanged"),
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
+        print("(Notified running app to reload vocabulary)")
+    }
+
     // MARK: - Help
 
     private static func printHelp() {
@@ -469,6 +626,10 @@ enum VoiceFlowCLI {
             VoiceFlow force-send                Force send partial text or last utterance
             VoiceFlow log [N] [-f]              Show last N log lines (default 50), -f to follow
             VoiceFlow history [N] [-c] [-a]     Show dictation history (default 10), -c=commands, -a=all
+            VoiceFlow vocab list                List custom vocabulary entries
+            VoiceFlow vocab add <s> <w> [cat]   Add vocabulary: spoken → written [category]
+            VoiceFlow vocab remove <spoken>     Remove a vocabulary entry
+            VoiceFlow vocab enable/disable <s>  Toggle a vocabulary entry
             VoiceFlow restart                   Restart app (preserves current mode)
             VoiceFlow auto-submit <on|off> [s]  Toggle auto-Enter after utterance (vibe coding)
             VoiceFlow help                      Show this help message

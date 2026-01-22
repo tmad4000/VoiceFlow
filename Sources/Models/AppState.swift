@@ -227,6 +227,7 @@ class AppState: ObservableObject {
     @Published var isOffline: Bool = false
     @Published var connectionLatencyMs: Int? = nil
     @Published var isLatencyDegraded: Bool = false
+    @Published var systemThermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
     @Published var dictationProvider: DictationProvider = .auto
     @Published var sleepTimerEnabled: Bool = true
     @Published var sleepTimerMinutes: Double = 15
@@ -476,6 +477,21 @@ class AppState: ObservableObject {
             ))
         }
 
+        // System thermal state warning - CPU under heavy load affects dictation quality
+        if systemThermalState == .serious {
+            warnings.append(AppWarning(
+                id: "thermal_serious",
+                message: "System under load — dictation may be degraded",
+                severity: .warning
+            ))
+        } else if systemThermalState == .critical {
+            warnings.append(AppWarning(
+                id: "thermal_critical",
+                message: "System overheating — dictation quality affected",
+                severity: .error
+            ))
+        }
+
         // Filter out temporarily dismissed warnings
         return warnings.filter { !dismissedWarningIds.contains($0.id) }
     }
@@ -638,6 +654,19 @@ class AppState: ObservableObject {
                         self.stopListening()
                         self.setMode(currentMode)
                     }
+                }
+            }
+            .store(in: &cancellables)
+
+        // Monitor thermal state for system performance warnings
+        NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                let newState = ProcessInfo.processInfo.thermalState
+                self.systemThermalState = newState
+                if newState == .serious || newState == .critical {
+                    NSLog("[VoiceFlow] ⚠️ Thermal state changed to \(newState == .critical ? "CRITICAL" : "SERIOUS") - dictation quality may be affected")
                 }
             }
             .store(in: &cancellables)
@@ -2787,6 +2816,18 @@ class AppState: ObservableObject {
             return words  // Now handled by startIndex adjustment
         }
 
+        let startsWithNoSpaceCommand: ([String]) -> Bool = { [self] words in
+            guard !isLiteral, let first = words.first else { return false }
+            let firstToken = self.normalizeToken(first)
+            if firstToken == "nospace" {
+                return true
+            }
+            if firstToken == "no", words.count > 1 {
+                return self.normalizeToken(words[1]) == "space"
+            }
+            return false
+        }
+
         // Helper to process inline replacements
         let processInlineReplacements: (String, [TranscriptWord]?, Bool) -> String = { text, words, isLiteral in
             let (keywordProcessed, keyword) = self.applyKeywordReplacements(text, words: words, isLiteral: isLiteral)
@@ -2826,8 +2867,9 @@ class AppState: ObservableObject {
             var newWords = finalWords[startIndex...].filter(filterPunctuation)
             newWords = stripLeadingSay(Array(newWords))
             guard !newWords.isEmpty else { return }
-            
-            let needsSpace = startIndex > 0 || hasTypedInSession
+
+            let suppressLeadingSpace = startsWithNoSpaceCommand(newWords)
+            let needsSpace = (startIndex > 0 || hasTypedInSession) && !suppressLeadingSpace
             let prefix = needsSpace ? " " : ""
             let rawText = prefix + newWords.joined(separator: " ")
             let finalWordObjects = effectiveWords.filter { $0.isFinal == true }
@@ -2865,8 +2907,9 @@ class AppState: ObservableObject {
                 typedFinalWordCount = 0
                 return
             }
-            
-            let needsSpace = startIndex > 0 || hasTypedInSession
+
+            let suppressLeadingSpace = startsWithNoSpaceCommand(newWords)
+            let needsSpace = (startIndex > 0 || hasTypedInSession) && !suppressLeadingSpace
             let prefix = needsSpace ? " " : ""
             let rawText = prefix + newWords.joined(separator: " ")
             let wordSlice = Array(effectiveWords[startIndex...].filter { filterPunctuation($0.text) })
@@ -5278,6 +5321,16 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Reload vocabulary from UserDefaults (called when CLI modifies vocabulary)
+    func reloadVocabulary() {
+        loadCustomVocabulary()
+        loadVocabularyPrompt()
+        // Reconnect to apply new vocabulary to AssemblyAI
+        if microphoneMode != .off && !effectiveIsOffline {
+            reconnect()
+        }
+    }
+
     func saveCustomVocabulary() {
         if let data = try? JSONEncoder().encode(customVocabulary) {
             UserDefaults.standard.set(data, forKey: "custom_vocabulary")
@@ -5769,6 +5822,15 @@ class AppState: ObservableObject {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
             terms.append(contentsOf: userTerms)
+        }
+
+        // Add custom vocabulary entries (both spoken and written forms for better recognition)
+        for entry in customVocabulary where entry.isEnabled {
+            terms.append(entry.spokenPhrase)
+            // Also add written form if different (helps AssemblyAI recognize both)
+            if entry.writtenForm.lowercased() != entry.spokenPhrase.lowercased() {
+                terms.append(entry.writtenForm)
+            }
         }
 
         // Auto-populate with command phrases if enabled

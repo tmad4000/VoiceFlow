@@ -372,6 +372,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.appState.logDebug("CLI: Auto-submit \(enabled ? "enabled" : "disabled") (delay: \(delay)s)")
             }
         }
+
+        // Handle vocabulary changes from CLI
+        center.addObserver(
+            forName: NSNotification.Name("com.jacobcole.voiceflow.vocabularyChanged"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                self.appState.reloadVocabulary()
+                self.appState.logDebug("CLI: Vocabulary reloaded")
+            }
+        }
     }
 
     func showPanelWindow() {

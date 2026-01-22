@@ -206,6 +206,9 @@ struct FloatingPanelView: View {
                             Button(action: { appState.openTranscriptsPanel() }) {
                                 Label("Transcripts", systemImage: "text.quote")
                             }
+                            Button(action: { appState.openVocabularyPanel() }) {
+                                Label("Custom Vocabulary", systemImage: "textformat.abc")
+                            }
                         }
 
                         Divider()
