@@ -189,13 +189,11 @@ struct FloatingPanelView: View {
                         Section("Panels") {
                             Button(action: { appState.toggleCommandPanel() }) {
                                 Label {
-                                    HStack {
-                                        Text(appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code")
-                                        Spacer()
-                                        Text("⌃⌥C")
-                                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                            .foregroundColor(.secondary)
-                                    }
+                                    MenuShortcutRow(
+                                        title: appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code",
+                                        shortcut: appState.shortcutString(for: appState.commandPanelShortcut),
+                                        voiceCommand: nil
+                                    )
                                 } icon: {
                                     Image(systemName: "terminal")
                                 }
@@ -754,17 +752,17 @@ private struct UnifiedModeButton: View {
                         Button {
                             appState.setMode(m)
                         } label: {
-                            Label {
-                                HStack {
-                                    Text(m.rawValue)
-                                    Spacer()
-                                    Text(m.keyboardShortcut)
-                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            HStack {
+                                Image(systemName: m.icon)
+                                Text(m.rawValue)
+                                Spacer()
+                                if let shortcut = appState.shortcutString(for: m) {
+                                    Text(shortcut)
+                                        .font(.system(size: 11, design: .monospaced))
                                         .foregroundColor(.secondary)
                                 }
-                            } icon: {
-                                Image(systemName: m.icon)
                             }
+                            .frame(minWidth: 160)
                         }
                         .disabled(m == mode)
                     }
@@ -782,6 +780,38 @@ private struct UnifiedModeButton: View {
                                 Label(behavior.rawValue, systemImage: behavior.icon)
                             }
                         }
+                    }
+                }
+
+                Section("Shortcuts") {
+                    Button {
+                        NotificationCenter.default.post(name: .openSettings, object: nil)
+                    } label: {
+                        HStack {
+                            Text("Toggle On/Sleep")
+                            Spacer()
+                            if let shortcut = appState.shortcutString(for: appState.modeToggleShortcut) {
+                                Text(shortcut)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .frame(minWidth: 160)
+                    }
+
+                    Button {
+                        NotificationCenter.default.post(name: .openSettings, object: nil)
+                    } label: {
+                        HStack {
+                            Text("Push-to-Talk")
+                            Spacer()
+                            if let shortcut = appState.shortcutString(for: appState.pttShortcut) {
+                                Text(shortcut)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .frame(minWidth: 160)
                     }
                 }
             } label: {
@@ -818,10 +848,18 @@ private struct UnifiedModeButton: View {
 
     private var toggleHelpText: String {
         switch mode {
-        case .off: return "Click to turn On (⌃⌥⌘1)"
-        case .on: return "Click to Sleep (⌃⌥⌘2)"
-        case .sleep: return "Click to turn On (⌃⌥⌘1)"
+        case .off:
+            return modeToggleHelpText(action: "Click to turn On", shortcut: appState.shortcutString(for: .on))
+        case .on:
+            return modeToggleHelpText(action: "Click to Sleep", shortcut: appState.shortcutString(for: .sleep))
+        case .sleep:
+            return modeToggleHelpText(action: "Click to turn On", shortcut: appState.shortcutString(for: .on))
         }
+    }
+
+    private func modeToggleHelpText(action: String, shortcut: String?) -> String {
+        guard let shortcut else { return action }
+        return "\(action) (\(shortcut))"
     }
 }
 
@@ -971,9 +1009,18 @@ private struct CompactModeButtons: View {
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
-                .help(mode == .on && isOnAndMuted ? "Muted (release key to unmute)" : "\(mode.rawValue.capitalized) (\(mode.keyboardShortcut))")
+                .help(compactModeHelpText(for: mode))
             }
         }
+    }
+
+    private func compactModeHelpText(for mode: MicrophoneMode) -> String {
+        if mode == .on && isOnAndMuted {
+            return "Muted (release key to unmute)"
+        }
+        let base = mode.rawValue.capitalized
+        guard let shortcut = appState.shortcutString(for: mode) else { return base }
+        return "\(base) (\(shortcut))"
     }
 
     private func colorFor(_ mode: MicrophoneMode) -> Color {

@@ -461,6 +461,15 @@ class AppState: ObservableObject {
             }
         }
 
+        if let message = vocabularyBiasUnsupportedMessage {
+            warnings.append(AppWarning(
+                id: "vocab_bias_unsupported",
+                message: message,
+                severity: .warning,
+                actionLabel: "Open Settings"
+            ))
+        }
+
         if effectiveIsOffline, supportsOnDeviceSpeech == false {
             warnings.append(AppWarning(id: "offline_unsupported", message: "On-device speech not supported on this Mac — offline dictation may not work.", severity: .warning))
         }
@@ -667,6 +676,25 @@ class AppState: ObservableObject {
                 self.systemThermalState = newState
                 if newState == .serious || newState == .critical {
                     NSLog("[VoiceFlow] ⚠️ Thermal state changed to \(newState == .critical ? "CRITICAL" : "SERIOUS") - dictation quality may be affected")
+                }
+            }
+            .store(in: &cancellables)
+
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceCenter.publisher(for: NSWorkspace.willSleepNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.logDebug("System sleep detected")
+            }
+            .store(in: &cancellables)
+
+        workspaceCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                self.logDebug("System wake detected - reconnecting speech services")
+                if self.microphoneMode != .off {
+                    self.reconnect()
                 }
             }
             .store(in: &cancellables)
@@ -1306,7 +1334,7 @@ class AppState: ObservableObject {
         // Start services
         deepgramService?.setTranscribeMode(transcribeMode)
         deepgramService?.setFormatTurns(!liveDictationEnabled)
-        deepgramService?.setVocabularyPrompt(effectiveVocabularyPrompt)
+        deepgramService?.setVocabularyTerms(effectiveVocabularyTerms)
         deepgramService?.connect()
         audioCaptureManager?.startCapture()
 
@@ -1670,6 +1698,31 @@ class AppState: ObservableObject {
 
         var result = text
         var keyword: String? = nil
+
+        func consumeLeadingBackspace(_ input: String) -> (remaining: String, count: Int)? {
+            let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawTokens = trimmed.split(whereSeparator: \.isWhitespace)
+            guard !rawTokens.isEmpty else { return nil }
+            let firstToken = normalizeToken(String(rawTokens[0]))
+            var consumed = 0
+            if firstToken == "backspace" {
+                consumed = 1
+            } else if firstToken == "back", rawTokens.count > 1, normalizeToken(String(rawTokens[1])) == "space" {
+                consumed = 2
+            } else {
+                return nil
+            }
+            var count = 1
+            if rawTokens.count > consumed {
+                let numberToken = normalizeToken(String(rawTokens[consumed]))
+                if let num = parseNumberWord(numberToken) {
+                    count = num
+                    consumed += 1
+                }
+            }
+            let remainder = rawTokens.dropFirst(consumed).joined(separator: " ")
+            return (remainder, count)
+        }
         
         // "no caps" directive (string fallback)
         if let regex = try? NSRegularExpression(pattern: "(?i)^\\s*no\\s*caps\\b[\\.,!?]?\\s*", options: []) {
@@ -1698,6 +1751,12 @@ class AppState: ObservableObject {
                     result = remainder
                 }
             }
+        }
+
+        if let consumed = consumeLeadingBackspace(result) {
+            keyword = keyword ?? (consumed.count == 1 ? "Backspace" : "Backspace \(consumed.count)")
+            sendBackspaceKeypresses(consumed.count)
+            result = consumed.remaining
         }
 
         // Match "new line" or "newline" with optional trailing punctuation
@@ -1965,6 +2024,18 @@ class AppState: ObservableObject {
             appendToken(wordText, joinDirectly: shouldJoin)
         }
 
+        let sayStartIndex = consumedFirstWordForCrossUtterance ? 1 : 0
+        if words.indices.contains(sayStartIndex),
+           normalizeToken(words[sayStartIndex].text) == "say" {
+            keyword = keyword ?? "Say"
+            var index = sayStartIndex + 1
+            while index < words.count {
+                appendToken(words[index].text)
+                index += 1
+            }
+            return (output, keyword)
+        }
+
         func isTagStopToken(_ token: String, nextToken: String?) -> Bool {
             if token == "at", nextToken == "sign" { return true }
             if token == "hash", nextToken == "tag" { return true }
@@ -2194,6 +2265,10 @@ class AppState: ObservableObject {
                 if toRemove > 0 {
                     output.removeLast(toRemove)
                 }
+                let remaining = count - toRemove
+                if remaining > 0 {
+                    sendBackspaceKeypresses(remaining)
+                }
                 triggerKeywordFlash(name: count == 1 ? "Backspace" : "⌫\(count)")
                 index += wordsConsumed
                 continue
@@ -2221,6 +2296,10 @@ class AppState: ObservableObject {
                     let toRemove = min(count, output.count)
                     if toRemove > 0 {
                         output.removeLast(toRemove)
+                    }
+                    let remaining = count - toRemove
+                    if remaining > 0 {
+                        sendBackspaceKeypresses(remaining)
                     }
                     triggerKeywordFlash(name: count == 1 ? "Backspace" : "⌫\(count)")
                     index += wordsConsumed
@@ -2856,6 +2935,7 @@ class AppState: ObservableObject {
                         result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
                     }
                 }
+                result = self.applyVocabularySubstitutions(result)
             }
             return result.trimmingCharacters(in: .whitespaces)
         }
@@ -3724,10 +3804,17 @@ class AppState: ObservableObject {
         }
 
         let tokenStrings = normalizedTokens.map { $0.token }
+        let wakeCommandPhrases = ["wake up", "microphone on", "flow on", "speech on"]
+        let hasWakeCommandPrefix = wakeCommandPhrases.contains { phrase in
+            let phraseTokens = tokenizePhrase(phrase)
+            guard tokenStrings.count >= phraseTokens.count else { return false }
+            return Array(tokenStrings.prefix(phraseTokens.count)) == phraseTokens
+        }
 
         var matches: [PendingCommandMatch] = []
 
-        if microphoneMode == .on {
+        let allowPressCommandsInSleep = microphoneMode == .sleep && hasWakeCommandPrefix
+        if microphoneMode == .on || allowPressCommandsInSleep {
             // Log tokens for press command debugging (VoiceFlow-3o0)
             if tokenStrings.contains("press") {
                 NSLog("[VoiceFlow] 🔍 Pre-pressCommandMatches: detected 'press' in tokens [%@]", tokenStrings.joined(separator: ", "))
@@ -5238,6 +5325,19 @@ class AppState: ObservableObject {
         lastKeyEventTime = Date()
     }
 
+    private func sendBackspaceKeypresses(_ count: Int) {
+        guard count > 0 else { return }
+        let source = CGEventSource(stateID: .hidSystemState)
+        for _ in 0..<count {
+            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Delete), keyDown: true)
+            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Delete), keyDown: false)
+            keyDown?.post(tap: .cghidEventTap)
+            keyUp?.post(tap: .cghidEventTap)
+            usleep(10000)
+        }
+        lastKeyEventTime = Date()
+    }
+
     private func executeKeyboardShortcut(_ shortcut: KeyboardShortcut) {
         // Log which app will receive the shortcut
         if let frontApp = NSWorkspace.shared.frontmostApplication {
@@ -5377,12 +5477,23 @@ class AppState: ObservableObject {
             .sorted { $0.spokenPhrase.count > $1.spokenPhrase.count }
 
         for entry in sortedEntries {
+            let lowerResult = result.lowercased()
+            let spokenLower = entry.spokenPhrase.lowercased()
+            let containsSpoken = lowerResult.contains(spokenLower)
+
             // Use word boundary matching to avoid partial word replacements
             // The pattern matches the spoken phrase with optional surrounding punctuation
             let pattern = "(?i)\\b\(NSRegularExpression.escapedPattern(for: entry.spokenPhrase))\\b"
             if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
                 let range = NSRange(result.startIndex..<result.endIndex, in: result)
                 let matches = regex.matches(in: result, options: [], range: range)
+
+                if matches.isEmpty {
+                    if isDebugMode && containsSpoken {
+                        logDebug("Vocabulary: '\(entry.spokenPhrase)' seen but no word-boundary match in \"\(result.prefix(120))\"")
+                    }
+                    continue
+                }
 
                 // Replace from end to start to preserve indices
                 for match in matches.reversed() {
@@ -5812,7 +5923,7 @@ class AppState: ObservableObject {
     }
 
     /// Generates the effective vocabulary prompt combining user prompt + command phrases
-    var effectiveVocabularyPrompt: String {
+    private var effectiveVocabularyTerms: [String] {
         var terms: [String] = []
 
         // Add user-specified vocabulary (split by comma or newline)
@@ -5852,14 +5963,50 @@ class AppState: ObservableObject {
         }
 
         // Remove duplicates and limit to 100 terms (AssemblyAI limit)
-        let uniqueTerms = Array(Set(terms)).prefix(100)
+        return Array(Set(terms)).prefix(100).map { $0 }
+    }
 
+    /// Generates the effective vocabulary prompt combining user prompt + command phrases
+    var effectiveVocabularyPrompt: String {
+        let terms = effectiveVocabularyTerms
+        guard !terms.isEmpty else { return "" }
         // Format as JSON array for keyterms_prompt
-        if let jsonData = try? JSONSerialization.data(withJSONObject: Array(uniqueTerms)),
+        if let jsonData = try? JSONSerialization.data(withJSONObject: terms),
            let jsonString = String(data: jsonData, encoding: .utf8) {
             return jsonString
         }
         return ""
+    }
+
+    var hasUserVocabularyBiasTerms: Bool {
+        let hasPrompt = !vocabularyPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasCustom = customVocabulary.contains { $0.isEnabled }
+        return hasPrompt || hasCustom
+    }
+
+    var supportsVocabularyBiasForCurrentProvider: Bool {
+        if effectiveIsOffline || dictationProvider == .offline {
+            return false
+        }
+        if dictationProvider == .deepgram {
+            return true
+        }
+        return true
+    }
+
+    var vocabularyBiasSupportedProvidersLabel: String {
+        "AssemblyAI (Auto/Online) and Deepgram (Nova-2 keywords)"
+    }
+
+    var vocabularyBiasUnsupportedMessage: String? {
+        guard hasUserVocabularyBiasTerms else { return nil }
+        if effectiveIsOffline || dictationProvider == .offline {
+            if dictationProvider == .auto {
+                return "Vocabulary bias terms are ignored while offline (Auto uses Mac Speech)."
+            }
+            return "Vocabulary bias terms aren't supported in Mac Speech (Offline)."
+        }
+        return nil
     }
 
     private func loadIdeaFlowSettings() {
@@ -6134,6 +6281,27 @@ class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(shortcut) {
             UserDefaults.standard.set(data, forKey: "shortcut_mode_off")
         }
+    }
+
+    func shortcut(for mode: MicrophoneMode) -> KeyboardShortcut {
+        switch mode {
+        case .off: return modeOffShortcut
+        case .sleep: return modeSleepShortcut
+        case .on: return modeOnShortcut
+        }
+    }
+
+    func shortcutString(for mode: MicrophoneMode) -> String? {
+        shortcutString(for: shortcut(for: mode))
+    }
+
+    func shortcutString(for shortcut: KeyboardShortcut) -> String? {
+        shortcut.isEmpty ? nil : shortcut.description
+    }
+
+    func shortcutString(for shortcut: KeyboardShortcut?) -> String? {
+        guard let shortcut else { return nil }
+        return shortcutString(for: shortcut)
     }
 
     private func flushDictationBuffer(isForceEnd: Bool) {

@@ -16,7 +16,11 @@ struct MenuBarView: View {
                     HStack {
                         Image(systemName: appState.microphoneMode == mode ? "checkmark" : "")
                             .frame(width: 16)
-                        Text(mode.rawValue)
+                        MenuShortcutRow(
+                            title: mode.rawValue,
+                            shortcut: appState.shortcutString(for: mode),
+                            voiceCommand: mode.voiceCommandHint
+                        )
                     }
                 }
                 .buttonStyle(.borderless)
@@ -36,7 +40,7 @@ struct MenuBarView: View {
                         HStack {
                             Image(systemName: appState.activeBehavior == behavior ? "checkmark" : "")
                                 .frame(width: 16)
-                            Text(behavior.rawValue)
+                            MenuShortcutRow(title: behavior.rawValue, shortcut: nil, voiceCommand: nil, minWidth: 0)
                         }
                     }
                     .buttonStyle(.borderless)
@@ -55,7 +59,7 @@ struct MenuBarView: View {
                         HStack {
                             Image(systemName: appState.dictationProvider == provider ? "checkmark" : "")
                                 .frame(width: 16)
-                            Text(provider.displayName)
+                            MenuShortcutRow(title: provider.displayName, shortcut: nil, voiceCommand: nil, minWidth: 0)
                         }
                     }
                     .buttonStyle(.borderless)
@@ -77,7 +81,11 @@ struct MenuBarView: View {
             } label: {
                 HStack {
                     Image(systemName: "terminal")
-                    Text(appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code")
+                    MenuShortcutRow(
+                        title: appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code",
+                        shortcut: appState.shortcutString(for: appState.commandPanelShortcut),
+                        voiceCommand: nil
+                    )
                 }
             }
 

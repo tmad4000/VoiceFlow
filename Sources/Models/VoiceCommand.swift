@@ -47,10 +47,10 @@ struct KeyboardModifiers: OptionSet, Codable, Equatable, Hashable {
 
     var description: String {
         var parts: [String] = []
-        if contains(.control) { parts.append("^") }
-        if contains(.option) { parts.append("") }
-        if contains(.shift) { parts.append("") }
-        if contains(.command) { parts.append("") }
+        if contains(.control) { parts.append("⌃") }
+        if contains(.option) { parts.append("⌥") }
+        if contains(.shift) { parts.append("⇧") }
+        if contains(.command) { parts.append("⌘") }
         return parts.joined()
     }
 }
@@ -59,6 +59,10 @@ struct KeyboardModifiers: OptionSet, Codable, Equatable, Hashable {
 struct KeyboardShortcut: Codable, Equatable, Hashable {
     var keyCode: UInt16
     var modifiers: KeyboardModifiers
+    
+    var isEmpty: Bool {
+        keyCode == 0 && modifiers.isEmpty
+    }
 
     var description: String {
         let keyName = KeyboardShortcut.keyCodeToString(keyCode)

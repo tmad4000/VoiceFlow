@@ -734,6 +734,10 @@ struct GeneralSettingsView: View {
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
 
+                        Text(vocabularyBiasProviderNote)
+                            .font(.system(size: 11))
+                            .foregroundColor(vocabularyBiasProviderNoteColor)
+
                         Toggle("Auto-switch to offline if slow", isOn: autoSwitchOfflineBinding)
                             .font(.system(size: 13))
 
@@ -790,7 +794,7 @@ struct GeneralSettingsView: View {
                         TextField("Custom words or phrases...", text: vocabularyPromptBinding)
                             .textFieldStyle(.roundedBorder)
 
-                        Text("Comma-separated words or phrases to improve recognition of technical terms, names, or jargon (Online mode only).")
+                        Text("Comma-separated words or phrases to bias recognition of technical terms, names, or jargon. Supported by \(appState.vocabularyBiasSupportedProvidersLabel).")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
@@ -1153,6 +1157,26 @@ struct GeneralSettingsView: View {
             get: { appState.vocabularyPrompt },
             set: { appState.saveVocabularyPrompt($0) }
         )
+    }
+
+    private var vocabularyBiasProviderNote: String {
+        if let message = appState.vocabularyBiasUnsupportedMessage {
+            return message
+        }
+        switch appState.dictationProvider {
+        case .deepgram:
+            return "Bias terms sent as Deepgram keywords (Nova-2)."
+        case .online:
+            return "Bias terms supported via AssemblyAI."
+        case .auto:
+            return "Bias terms supported via AssemblyAI when online."
+        case .offline:
+            return "Bias terms aren't supported in Mac Speech (Offline)."
+        }
+    }
+
+    private var vocabularyBiasProviderNoteColor: Color {
+        appState.supportsVocabularyBiasForCurrentProvider ? .secondary : .orange
     }
 
     private var ideaFlowURLBinding: Binding<String> {
@@ -2586,4 +2610,3 @@ struct ShortcutRecorder: View {
         startActivityMonitoring()
     }
 }
-

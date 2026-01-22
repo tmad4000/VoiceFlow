@@ -89,6 +89,12 @@ struct ModeButton: View {
         return mode.rawValue
     }
 
+    private var helpText: String {
+        let base = mode.description
+        guard let shortcut = appState.shortcutString(for: mode) else { return base }
+        return "\(base) (\(shortcut))"
+    }
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: compact ? 4 : 6) {
@@ -119,7 +125,7 @@ struct ModeButton: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
-        .help(mode.description)
+        .help(helpText)
     }
 }
 

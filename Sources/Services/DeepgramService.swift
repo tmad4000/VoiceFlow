@@ -30,7 +30,7 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
 
         // Also check for "connection reset" in the description (catches wrapped errors)
         let desc = error.localizedDescription.lowercased()
-        if desc.contains("connection reset") || desc.contains("network") || desc.contains("timed out") {
+        if desc.contains("connection reset") || desc.contains("socket is not connected") || desc.contains("network") || desc.contains("timed out") {
             NSLog("[Deepgram] Suppressing network-related error: %@", error.localizedDescription)
             return true
         }
@@ -40,10 +40,14 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
 
     private var transcribeMode = true
     private var formatTurns = true
-    private var vocabularyPrompt: String?
+    private var vocabularyTerms: [String] = []
     private var utteranceConfig: UtteranceConfig = .default
     private var pingTimer: Timer?
     private let pingIntervalSeconds: TimeInterval = 10
+    private let keywordBoost: Int = 2
+    private var shouldMaintainConnection = false
+    private var isReconnecting = false
+    private var reconnectWorkItem: DispatchWorkItem?
 
     // Track turn order locally since Deepgram doesn't provide it directly in the same way
     private var turnOrder = 0
@@ -61,8 +65,8 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
         formatTurns = enabled
     }
 
-    func setVocabularyPrompt(_ prompt: String?) {
-        vocabularyPrompt = prompt
+    func setVocabularyTerms(_ terms: [String]) {
+        vocabularyTerms = terms
     }
 
     func setUtteranceConfig(_ config: UtteranceConfig) {
@@ -71,6 +75,7 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
 
     func connect() {
         guard webSocketTask == nil else { return }
+        shouldMaintainConnection = true
 
         var urlComponents = URLComponents(string: endpoint)!
 
@@ -92,9 +97,13 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
             URLQueryItem(name: "endpointing", value: String(effectiveEndpointing))
         ]
 
-        // Keywords disabled - needs investigation
-        // Deepgram returns 400 Bad Request with keywords
-        // if let prompt = vocabularyPrompt, !prompt.isEmpty { ... }
+        if !vocabularyTerms.isEmpty {
+            for term in vocabularyTerms.prefix(100) {
+                let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                queryItems.append(URLQueryItem(name: "keywords", value: "\(trimmed):\(keywordBoost)"))
+            }
+        }
 
         urlComponents.queryItems = queryItems
 
@@ -143,15 +152,25 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
 
             case .failure(let error):
                 NSLog("[Deepgram] Receive error: %@", error.localizedDescription)
+                let suppressError = self.isNetworkRelatedError(error)
                 DispatchQueue.main.async {
-                    self.errorMessage = error.localizedDescription
+                    if !suppressError {
+                        self.errorMessage = error.localizedDescription
+                    }
                     self.isConnected = false
+                }
+                self.stopPingTimer()
+                if suppressError {
+                    self.scheduleReconnect(reason: "receive error: \(error.localizedDescription)")
                 }
             }
         }
     }
 
     func disconnect() {
+        shouldMaintainConnection = false
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
@@ -167,6 +186,10 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
                 // Ignore "Operation canceled" errors - they're expected during disconnect
                 let desc = error.localizedDescription
                 if desc.contains("canceled") || desc.contains("cancelled") {
+                    return
+                }
+                if self?.isNetworkRelatedError(error) == true {
+                    self?.scheduleReconnect(reason: "send error: \(desc)")
                     return
                 }
                 // Only log if we're still supposed to be connected
@@ -273,6 +296,9 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
             }
         }
         stopPingTimer()
+        if !suppressDisconnect {
+            scheduleReconnect(reason: "close code \(closeCode.rawValue)")
+        }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -296,6 +322,9 @@ class DeepgramService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
                 self?.isConnected = false
             }
             stopPingTimer()
+            if suppressError {
+                scheduleReconnect(reason: "session error: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -335,11 +364,35 @@ private extension DeepgramService {
                     }
                     self?.isConnected = false
                     self?.stopPingTimer()
+                    if self?.isNetworkRelatedError(error) == true {
+                        self?.scheduleReconnect(reason: "ping error: \(error.localizedDescription)")
+                    }
                 } else if let self = self {
                     let latencyMs = Int(Date().timeIntervalSince(sentAt) * 1000)
                     self.lastPingLatencyMs = latencyMs
                 }
             }
         }
+    }
+
+    func scheduleReconnect(reason: String) {
+        guard shouldMaintainConnection, !isReconnecting else { return }
+        isReconnecting = true
+        reconnectWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.isReconnecting = false
+            guard self.shouldMaintainConnection else { return }
+            self.webSocketTask?.cancel(with: .goingAway, reason: nil)
+            self.webSocketTask = nil
+            self.urlSession?.invalidateAndCancel()
+            self.urlSession = nil
+            self.isConnected = false
+            self.stopPingTimer()
+            NSLog("[Deepgram] Reconnecting (%@)", reason)
+            self.connect()
+        }
+        reconnectWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
     }
 }

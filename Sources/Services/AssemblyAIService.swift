@@ -43,7 +43,7 @@ class AssemblyAIService: NSObject, ObservableObject {
 
         // Also check for "connection reset" in the description (catches wrapped errors)
         let desc = error.localizedDescription.lowercased()
-        if desc.contains("connection reset") || desc.contains("network") || desc.contains("timed out") {
+        if desc.contains("connection reset") || desc.contains("socket is not connected") || desc.contains("network") || desc.contains("timed out") {
             NSLog("[AssemblyAI] Suppressing network-related error: %@", error.localizedDescription)
             return true
         }

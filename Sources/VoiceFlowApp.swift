@@ -1262,11 +1262,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                    now.timeIntervalSince(lastTap) < 0.3 {
                     // Double-tap detected - toggle On mode
                     self.appState.lastPTTKeyDownTime = nil  // Reset to avoid triple-tap
-                    if self.appState.microphoneMode == .on {
+                    
+                    // Check if we're in graceful sleep period (PTT release just triggered)
+                    // If so, double-tap should cancel sleep and stay ON (Persistent)
+                    if self.appState.microphoneMode == .on && !self.appState.isPTTProcessing {
                         self.appState.logDebug("PTT: Double-tap → OFF")
                         self.appState.setMode(.off)
                     } else {
                         self.appState.logDebug("PTT: Double-tap → ON (persistent)")
+                        self.appState.cancelPendingPTTSleep()
                         self.appState.setMode(.on)
                     }
                     self.pttActivatedOnMode = false  // Persistent mode, not PTT-activated
@@ -1278,8 +1282,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // Record PTT press timestamp for filtering pre-press background speech
                 self.appState.recordPTTPress()
 
-                if self.appState.microphoneMode == .on && !self.pttActivatedOnMode {
-                    // Already in On mode (not via PTT) → Push-to-Mute
+                if self.appState.microphoneMode == .on {
+                    // Already in On mode → Push-to-Mute
+                    self.pttActivatedOnMode = false
                     self.appState.isPTMMuted = true
                     self.appState.logDebug("PTM: Muted (key held)")
                 } else if self.appState.microphoneMode != .on {
