@@ -2,6 +2,15 @@ import SwiftUI
 import AppKit
 import AVFoundation
 
+// Helper to format menu item text with right-aligned gray shortcut
+private func menuLabel(_ title: String, shortcut: String?) -> Text {
+    if let shortcut = shortcut {
+        return Text(title) + Text("\t\(shortcut)").foregroundColor(.secondary)
+    } else {
+        return Text(title)
+    }
+}
+
 struct FloatingPanelView: View {
     @EnvironmentObject var appState: AppState
     @State private var showingHideToast = false
@@ -189,10 +198,9 @@ struct FloatingPanelView: View {
                         Section("Panels") {
                             Button(action: { appState.toggleCommandPanel() }) {
                                 Label {
-                                    MenuShortcutRow(
-                                        title: appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code",
-                                        shortcut: appState.shortcutString(for: appState.commandPanelShortcut),
-                                        voiceCommand: nil
+                                    menuLabel(
+                                        appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code",
+                                        shortcut: appState.shortcutString(for: appState.commandPanelShortcut)
                                     )
                                 } icon: {
                                     Image(systemName: "terminal")
@@ -752,17 +760,11 @@ private struct UnifiedModeButton: View {
                         Button {
                             appState.setMode(m)
                         } label: {
-                            HStack {
+                            Label {
+                                menuLabel(m.rawValue, shortcut: appState.shortcutString(for: m))
+                            } icon: {
                                 Image(systemName: m.icon)
-                                Text(m.rawValue)
-                                Spacer()
-                                if let shortcut = appState.shortcutString(for: m) {
-                                    Text(shortcut)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundColor(.secondary)
-                                }
                             }
-                            .frame(minWidth: 160)
                         }
                         .disabled(m == mode)
                     }
@@ -787,31 +789,13 @@ private struct UnifiedModeButton: View {
                     Button {
                         NotificationCenter.default.post(name: .openSettings, object: nil)
                     } label: {
-                        HStack {
-                            Text("Toggle On/Sleep")
-                            Spacer()
-                            if let shortcut = appState.shortcutString(for: appState.modeToggleShortcut) {
-                                Text(shortcut)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .frame(minWidth: 160)
+                        menuLabel("Toggle On/Sleep", shortcut: appState.shortcutString(for: appState.modeToggleShortcut))
                     }
 
                     Button {
                         NotificationCenter.default.post(name: .openSettings, object: nil)
                     } label: {
-                        HStack {
-                            Text("Push-to-Talk")
-                            Spacer()
-                            if let shortcut = appState.shortcutString(for: appState.pttShortcut) {
-                                Text(shortcut)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .frame(minWidth: 160)
+                        menuLabel("Push-to-Talk", shortcut: appState.shortcutString(for: appState.pttShortcut))
                     }
                 }
             } label: {

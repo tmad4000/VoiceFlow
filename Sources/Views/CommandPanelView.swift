@@ -375,12 +375,12 @@ struct CommandPanelView: View {
         !inputText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    /// Dynamic height based on content (1-5 lines)
+    /// Dynamic height based on content (2-8 lines)
     private var calculatedInputHeight: CGFloat {
         let lineHeight: CGFloat = 18
         let padding: CGFloat = 10
-        let minLines: CGFloat = 1
-        let maxLines: CGFloat = 5
+        let minLines: CGFloat = 2  // Start taller
+        let maxLines: CGFloat = 8  // Allow more expansion
 
         let lineCount = CGFloat(max(1, inputText.components(separatedBy: "\n").count))
         let clampedLines = min(max(lineCount, minLines), maxLines)
