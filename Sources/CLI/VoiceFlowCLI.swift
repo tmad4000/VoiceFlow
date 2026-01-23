@@ -100,6 +100,10 @@ enum VoiceFlowCLI {
             handleVocabulary(Array(args.dropFirst(2)))
             return true
 
+        case "shortcuts":
+            handleShortcuts()
+            return true
+
         case "help", "-h", "--help":
             printHelp()
             return true
@@ -610,6 +614,93 @@ enum VoiceFlowCLI {
         print("(Notified running app to reload vocabulary)")
     }
 
+    // MARK: - Shortcuts Command
+
+    private static func handleShortcuts() {
+        let defaults = UserDefaults.standard
+
+        print("VoiceFlow Keyboard Shortcuts:")
+        print(String(repeating: "-", count: 50))
+
+        // Mode shortcuts
+        print("\nMode Shortcuts:")
+        let modeOnKey = defaults.integer(forKey: "modeOnShortcut_keyCode")
+        let modeOnMods = defaults.integer(forKey: "modeOnShortcut_modifiers")
+        print("  On:     \(formatShortcut(keyCode: modeOnKey, modifiers: modeOnMods, defaultKey: "1", defaultMods: "⌃⌥⌘"))")
+
+        let modeSleepKey = defaults.integer(forKey: "modeSleepShortcut_keyCode")
+        let modeSleepMods = defaults.integer(forKey: "modeSleepShortcut_modifiers")
+        print("  Sleep:  \(formatShortcut(keyCode: modeSleepKey, modifiers: modeSleepMods, defaultKey: "2", defaultMods: "⌃⌥⌘"))")
+
+        let modeOffKey = defaults.integer(forKey: "modeOffShortcut_keyCode")
+        let modeOffMods = defaults.integer(forKey: "modeOffShortcut_modifiers")
+        print("  Off:    \(formatShortcut(keyCode: modeOffKey, modifiers: modeOffMods, defaultKey: "0", defaultMods: "⌃⌥⌘"))")
+
+        // Toggle shortcut
+        print("\nOther Shortcuts:")
+        let toggleKey = defaults.integer(forKey: "modeToggleShortcut_keyCode")
+        let toggleMods = defaults.integer(forKey: "modeToggleShortcut_modifiers")
+        print("  Toggle On/Sleep:  \(formatShortcut(keyCode: toggleKey, modifiers: toggleMods, defaultKey: "F19", defaultMods: ""))")
+
+        let pttKey = defaults.integer(forKey: "pttShortcut_keyCode")
+        let pttMods = defaults.integer(forKey: "pttShortcut_modifiers")
+        print("  Push-to-Talk:     \(formatShortcut(keyCode: pttKey, modifiers: pttMods, defaultKey: "Space", defaultMods: "⌃⌥"))")
+
+        let cmdPanelKey = defaults.integer(forKey: "commandPanelShortcut_keyCode")
+        let cmdPanelMods = defaults.integer(forKey: "commandPanelShortcut_modifiers")
+        print("  Command Panel:    \(formatShortcut(keyCode: cmdPanelKey, modifiers: cmdPanelMods, defaultKey: "C", defaultMods: "⌃⌥"))")
+    }
+
+    private static func formatShortcut(keyCode: Int, modifiers: Int, defaultKey: String, defaultMods: String) -> String {
+        // If not set (0), return default
+        if keyCode == 0 && modifiers == 0 {
+            return "\(defaultMods)\(defaultKey) (default)"
+        }
+
+        var result = ""
+
+        // Decode modifiers (NSEvent.ModifierFlags raw values)
+        if modifiers & (1 << 18) != 0 { result += "⌃" }  // control
+        if modifiers & (1 << 19) != 0 { result += "⌥" }  // option
+        if modifiers & (1 << 17) != 0 { result += "⇧" }  // shift
+        if modifiers & (1 << 20) != 0 { result += "⌘" }  // command
+
+        // Map common key codes to readable names
+        let keyName: String
+        switch keyCode {
+        case 0: keyName = "A"
+        case 1: keyName = "S"
+        case 2: keyName = "D"
+        case 3: keyName = "F"
+        case 8: keyName = "C"
+        case 18: keyName = "1"
+        case 19: keyName = "2"
+        case 20: keyName = "3"
+        case 29: keyName = "0"
+        case 49: keyName = "Space"
+        case 53: keyName = "Esc"
+        case 80: keyName = "F19"
+        case 96: keyName = "F5"
+        case 97: keyName = "F6"
+        case 98: keyName = "F7"
+        case 99: keyName = "F3"
+        case 100: keyName = "F8"
+        case 101: keyName = "F9"
+        case 103: keyName = "F11"
+        case 105: keyName = "F13"
+        case 107: keyName = "F14"
+        case 109: keyName = "F10"
+        case 111: keyName = "F12"
+        case 113: keyName = "F15"
+        case 118: keyName = "F4"
+        case 120: keyName = "F2"
+        case 122: keyName = "F1"
+        default: keyName = "key(\(keyCode))"
+        }
+
+        return result + keyName
+    }
+
     // MARK: - Help
 
     private static func printHelp() {
@@ -632,6 +723,7 @@ enum VoiceFlowCLI {
             VoiceFlow vocab enable/disable <s>  Toggle a vocabulary entry
             VoiceFlow restart                   Restart app (preserves current mode)
             VoiceFlow auto-submit <on|off> [s]  Toggle auto-Enter after utterance (vibe coding)
+            VoiceFlow shortcuts                 Show all keyboard shortcuts
             VoiceFlow help                      Show this help message
 
         CONFIG KEYS:
