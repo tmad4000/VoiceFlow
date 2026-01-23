@@ -3926,14 +3926,15 @@ class AppState: ObservableObject {
                 let startWordIndex = normalizedTokens[startTokenIndex].wordIndex
                 let endWordIndex = normalizedTokens[endTokenIndex].wordIndex
 
+                let isPrefixed = startTokenIndex > 0 && normalizedTokens[startTokenIndex - 1].token == commandPrefixToken
+
                 // FIX VoiceFlow-7n8p: Mode commands must be at START of utterance (word index 0)
                 // This prevents natural speech like "Oddly enough, speech off." from triggering mode changes
-                if modeCommandKeys.contains(systemCommand.key) && startWordIndex != 0 {
-                    NSLog("[VoiceFlow] 🚫 Ignoring mode command '%@' at word index %d (must be at start)", systemCommand.phrase, startWordIndex)
+                // BUT allow if explicitly prefixed with "command" (e.g., "command speech off")
+                if modeCommandKeys.contains(systemCommand.key) && startWordIndex != 0 && !isPrefixed {
+                    NSLog("[VoiceFlow] 🚫 Ignoring mode command '%@' at word index %d (must be at start, or use 'command' prefix)", systemCommand.phrase, startWordIndex)
                     continue
                 }
-
-                let isPrefixed = startTokenIndex > 0 && normalizedTokens[startTokenIndex - 1].token == commandPrefixToken
                 let wordIndices = normalizedTokens[range].map { $0.wordIndex }
                 let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
                 // Submit/send commands should execute even if words aren't final
