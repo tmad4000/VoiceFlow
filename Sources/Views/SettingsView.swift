@@ -771,6 +771,28 @@ struct GeneralSettingsView: View {
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
 
+                        if appState.liveDictationEnabled {
+                            Toggle("Aggressive Mode", isOn: aggressiveLiveModeBinding)
+                                .font(.system(size: 13))
+                                .padding(.leading, 16)
+
+                            Text("Type immediately from partials - fastest but may briefly show corrections.")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .padding(.leading, 16)
+
+                            if appState.aggressiveLiveMode {
+                                Toggle("Allow Corrections", isOn: aggressiveAllowCorrectionsBinding)
+                                    .font(.system(size: 13))
+                                    .padding(.leading, 32)
+
+                                Text("Use backspace to fix ASR changes. Disable for terminals (auto-detected).")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                                    .padding(.leading, 32)
+                            }
+                        }
+
                         Divider()
 
                         SliderRow(
@@ -1149,6 +1171,20 @@ struct GeneralSettingsView: View {
         Binding(
             get: { appState.liveDictationEnabled },
             set: { appState.saveLiveDictationEnabled($0) }
+        )
+    }
+
+    private var aggressiveLiveModeBinding: Binding<Bool> {
+        Binding(
+            get: { appState.aggressiveLiveMode },
+            set: { appState.saveAggressiveLiveMode($0) }
+        )
+    }
+
+    private var aggressiveAllowCorrectionsBinding: Binding<Bool> {
+        Binding(
+            get: { appState.aggressiveAllowCorrections },
+            set: { appState.saveAggressiveAllowCorrections($0) }
         )
     }
 

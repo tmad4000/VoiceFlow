@@ -206,6 +206,8 @@ class AppState: ObservableObject {
     @Published var currentWords: [TranscriptWord] = []
     @Published var commandDelayMs: Double = 50
     @Published var liveDictationEnabled: Bool = false
+    @Published var aggressiveLiveMode: Bool = false  // Type immediately from partials, correct if changed
+    @Published var aggressiveAllowCorrections: Bool = true  // Allow backspace corrections (disable for terminals)
     @Published var audioLevel: Float = 0.0
     @Published var isAccessibilityGranted: Bool = false
     @Published var isMicrophoneGranted: Bool = false
@@ -571,6 +573,9 @@ class AppState: ObservableObject {
     private var typedFinalWordCount = 0
     private var didTypeDictationThisUtterance = false
     private var hasTypedInSession = false  // Tracks if we've typed anything since going On
+    // Aggressive live mode tracking
+    private var lastTypedPartialWords: [String] = []  // Words we've typed from partials
+    private var lastTypedPartialText: String = ""  // Full text typed (for backspace calculation)
     @Published var isPTTProcessing = false  // When true, waiting for finalized text before sleep
     private var pttSleepTimeoutTask: Task<Void, Never>?  // Fallback timeout for PTT sleep
     @Published var isPTMMuted = false  // Push-to-mute: temporarily mute when key held in On mode
@@ -620,6 +625,8 @@ class AppState: ObservableObject {
         loadCustomVocabulary()
         loadCommandDelay()
         loadLiveDictationEnabled()
+        loadAggressiveLiveMode()
+        loadAggressiveAllowCorrections()
         loadUtteranceSettings()
         loadActiveBehavior()
         loadLaunchMode()
@@ -1082,6 +1089,14 @@ class AppState: ObservableObject {
 
         let previousMode = microphoneMode
         microphoneMode = mode
+        // Persist current mode so it survives restarts/crashes
+        let rawValue = mode.rawValue
+        UserDefaults.standard.set(rawValue, forKey: "last_mode")
+        UserDefaults.standard.synchronize()  // Force immediate write
+        // Debug: verify the save worked
+        let savedValue = UserDefaults.standard.string(forKey: "last_mode")
+        NSLog("[VoiceFlow] Saved last_mode: \"%@\" (verified: \"%@\"), domain: %@",
+              rawValue, savedValue ?? "nil", Bundle.main.bundleIdentifier ?? "unknown")
         logDebug("Mode changed: \(previousMode.rawValue) -> \(mode.rawValue)")
         NSLog("[VoiceFlow] Mode changed: %@ -> %@", previousMode.rawValue, mode.rawValue)
 
@@ -2974,8 +2989,80 @@ class AppState: ObservableObject {
             return
         }
 
-        // If it's unformatted (Live Dictation mode)
+        // AGGRESSIVE LIVE MODE: Type immediately from partials, correct if words change
+        if aggressiveLiveMode && !turn.endOfTurn {
+            let allWords = effectiveWords.map { $0.text }
+            guard allWords.count > startIndex else { return }
+            var newWords = Array(allWords[startIndex...]).filter(filterPunctuation)
+            newWords = stripLeadingSay(newWords)
+            guard !newWords.isEmpty else { return }
+
+            // Find common prefix between what we typed and what we see now
+            var commonPrefixLength = 0
+            for i in 0..<min(lastTypedPartialWords.count, newWords.count) {
+                if lastTypedPartialWords[i].lowercased() == newWords[i].lowercased() {
+                    commonPrefixLength = i + 1
+                } else {
+                    break
+                }
+            }
+
+            // If nothing changed or we've typed more than what's in partial, skip
+            if newWords.count <= lastTypedPartialWords.count && commonPrefixLength == newWords.count {
+                return
+            }
+
+            // Check if corrections are possible (not in terminal and corrections enabled)
+            let canCorrect = aggressiveAllowCorrections && !isFrontmostAppTerminal()
+
+            // In terminals or when corrections disabled, skip aggressive mode entirely
+            // and fall through to wait for finalized text. This avoids duplicated/garbled output
+            // from progressive word refinement (e.g., "prior" → "priorit" → "prioritize").
+            if !canCorrect {
+                NSLog("[VoiceFlow] ⚠️ Aggressive live: terminal or corrections disabled - waiting for finalized text")
+                // Don't return - fall through to the endOfTurn handling below
+            } else {
+                // If words diverged (ASR changed its mind), backspace and retype
+                if commonPrefixLength < lastTypedPartialWords.count {
+                    // Calculate how much to delete
+                    let wordsToDelete = Array(lastTypedPartialWords[commonPrefixLength...])
+                    let textToDelete = wordsToDelete.joined(separator: " ")
+                    let deleteCount = textToDelete.count + (wordsToDelete.count > 0 ? 1 : 0)  // +1 for leading space
+
+                    if deleteCount > 0 {
+                        NSLog("[VoiceFlow] 🔄 Aggressive live: correcting %d chars (\"%@\" → \"%@\")",
+                              deleteCount, wordsToDelete.joined(separator: " "),
+                              newWords[commonPrefixLength...].joined(separator: " "))
+                        sendBackspaceKeypresses(deleteCount)
+                    }
+                    lastTypedPartialWords = Array(lastTypedPartialWords.prefix(commonPrefixLength))
+                }
+
+                // Type new words beyond what we've already typed
+                if newWords.count > lastTypedPartialWords.count {
+                    let wordsToType = Array(newWords[lastTypedPartialWords.count...])
+                    let needsSpace = !lastTypedPartialWords.isEmpty || hasTypedInSession
+                    let prefix = needsSpace ? " " : ""
+                    let textToType = prefix + wordsToType.joined(separator: " ")
+
+                    NSLog("[VoiceFlow] ⚡ Aggressive live: typing \"%@\"", textToType)
+                    typeText(textToType, appendSpace: false)
+
+                    lastTypedPartialWords = newWords
+                    lastTypedPartialText = newWords.joined(separator: " ")
+                    didTypeDictationThisUtterance = true
+                    hasTypedInSession = true
+                }
+                return
+            }
+        }
+
+        // If it's unformatted (Live Dictation mode) - wait for endOfTurn
         if turn.endOfTurn {
+            // Reset aggressive mode tracking on utterance end
+            lastTypedPartialWords = []
+            lastTypedPartialText = ""
+
             let allWords = effectiveWords.map { $0.text }
             guard allWords.count > startIndex else {
                 typedFinalWordCount = 0
@@ -2984,6 +3071,17 @@ class AppState: ObservableObject {
             var newWords = allWords[startIndex...].filter(filterPunctuation)
             newWords = stripLeadingSay(Array(newWords))
             guard !newWords.isEmpty else {
+                typedFinalWordCount = 0
+                return
+            }
+
+            // In aggressive mode, we already typed everything - just do final corrections
+            if aggressiveLiveMode {
+                // Check if final differs from what we typed
+                if newWords != lastTypedPartialWords && !lastTypedPartialWords.isEmpty {
+                    // Final correction already handled above, just log
+                    NSLog("[VoiceFlow] ✅ Aggressive live: utterance finalized")
+                }
                 typedFinalWordCount = 0
                 return
             }
@@ -3911,9 +4009,6 @@ class AppState: ObservableObject {
             ])
         }
 
-        // Mode-changing commands that must appear at START of utterance only (prevents "oddly enough, speech off" from triggering)
-        let modeCommandKeys: Set<String> = ["system.wake_up", "system.go_to_sleep", "system.microphone_off"]
-
         // Commands that require a pause (endOfTurn) to avoid false positives in natural speech
         // e.g., "improve that" or "format that" could be said naturally without intending a command
         let pauseRequiredKeys: Set<String> = ["system.improve_text"]
@@ -3927,14 +4022,6 @@ class AppState: ObservableObject {
                 let endWordIndex = normalizedTokens[endTokenIndex].wordIndex
 
                 let isPrefixed = startTokenIndex > 0 && normalizedTokens[startTokenIndex - 1].token == commandPrefixToken
-
-                // FIX VoiceFlow-7n8p: Mode commands must be at START of utterance (word index 0)
-                // This prevents natural speech like "Oddly enough, speech off." from triggering mode changes
-                // BUT allow if explicitly prefixed with "command" (e.g., "command speech off")
-                if modeCommandKeys.contains(systemCommand.key) && startWordIndex != 0 && !isPrefixed {
-                    NSLog("[VoiceFlow] 🚫 Ignoring mode command '%@' at word index %d (must be at start, or use 'command' prefix)", systemCommand.phrase, startWordIndex)
-                    continue
-                }
                 let wordIndices = normalizedTokens[range].map { $0.wordIndex }
                 let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
                 // Submit/send commands should execute even if words aren't final
@@ -4046,9 +4133,48 @@ class AppState: ObservableObject {
         forceEndPending = false
         forceEndRequestedAt = nil
         suppressNextAutoCap = false
+        // Reset aggressive live mode tracking
+        lastTypedPartialWords = []
+        lastTypedPartialText = ""
         // Note: We intentionally DON'T reset these flags here because they persist across utterances:
         // - pendingCrossUtteranceKeyword: for cross-utterance keyword detection (e.g., "new" + "line")
         // - pendingLiteralMode: for cross-turn "say" escape (e.g., "say" + [pause] + "newline")
+    }
+
+    /// Known terminal app bundle identifiers where backspace corrections don't work reliably
+    private static let terminalBundleIds: Set<String> = [
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+        "dev.warp.Warp-Stable",
+        "dev.warp.Warp",
+        "net.kovidgoyal.kitty",
+        "io.alacritty",
+        "co.zeit.hyper",
+        "com.github.atom",  // Atom terminal
+        "com.microsoft.VSCode",  // VS Code integrated terminal
+        "com.sublimetext.4",  // Sublime Text console
+        "org.gnu.Emacs",  // Emacs terminal modes
+        "com.jetbrains.intellij",  // IntelliJ terminal
+        "com.jetbrains.pycharm",
+        "com.jetbrains.WebStorm",
+        "com.todesktop.230313mzl4w4u92",  // Cursor (VS Code fork)
+    ]
+
+    /// Check if the frontmost application is a terminal where backspace corrections are unreliable
+    private func isFrontmostAppTerminal() -> Bool {
+        guard let frontApp = NSWorkspace.shared.frontmostApplication,
+              let bundleId = frontApp.bundleIdentifier else {
+            return false
+        }
+        // Check exact matches
+        if Self.terminalBundleIds.contains(bundleId) {
+            return true
+        }
+        // Check for JetBrains IDEs (all have terminal)
+        if bundleId.hasPrefix("com.jetbrains.") {
+            return true
+        }
+        return false
     }
 
     private func isSayPrefix(_ text: String) -> Bool {
@@ -5549,11 +5675,33 @@ class AppState: ObservableObject {
         let previousValue = liveDictationEnabled
         liveDictationEnabled = value
         UserDefaults.standard.set(value, forKey: "live_dictation_enabled")
-        
+
         if previousValue != value && microphoneMode != .off {
             logDebug("Live dictation changed: Restarting services")
             restartServicesIfActive()
         }
+    }
+
+    private func loadAggressiveLiveMode() {
+        aggressiveLiveMode = UserDefaults.standard.bool(forKey: "aggressive_live_mode")
+    }
+
+    func saveAggressiveLiveMode(_ value: Bool) {
+        aggressiveLiveMode = value
+        UserDefaults.standard.set(value, forKey: "aggressive_live_mode")
+        // Reset tracking when toggled
+        lastTypedPartialWords = []
+        lastTypedPartialText = ""
+    }
+
+    private func loadAggressiveAllowCorrections() {
+        // Default to true - corrections enabled unless explicitly disabled
+        aggressiveAllowCorrections = UserDefaults.standard.object(forKey: "aggressive_allow_corrections") as? Bool ?? true
+    }
+
+    func saveAggressiveAllowCorrections(_ value: Bool) {
+        aggressiveAllowCorrections = value
+        UserDefaults.standard.set(value, forKey: "aggressive_allow_corrections")
     }
 
     private func restartServicesIfActive() {
@@ -6033,7 +6181,13 @@ class AppState: ObservableObject {
     }
 
     private func loadLaunchMode() {
-        // Check for resume_mode first (set during restart to preserve state)
+        // Priority: resume_mode > last_mode > sleep (default)
+        // resume_mode is set during in-app restart for one-time use
+        // last_mode persists across all restarts/crashes
+
+        NSLog("[VoiceFlow] loadLaunchMode: Starting, domain=%@", Bundle.main.bundleIdentifier ?? "nil")
+
+        // 1. Check for resume_mode first (set during in-app restart)
         if let resumeMode = UserDefaults.standard.string(forKey: "resume_mode") {
             // Clear it immediately so it's only used once
             UserDefaults.standard.removeObject(forKey: "resume_mode")
@@ -6044,25 +6198,33 @@ class AppState: ObservableObject {
             case "on": launchMode = .on
             case "off": launchMode = .off
             case "sleep": launchMode = .sleep
-            default: break // Fall through to normal launch_mode
+            default: break // Fall through to last_mode
             }
-            logDebug("Resuming from restart with mode: \(launchMode.rawValue)")
-            return
+            if launchMode != .sleep || normalized == "sleep" {
+                NSLog("[VoiceFlow] loadLaunchMode: Using resume_mode=%@", launchMode.rawValue)
+                return
+            }
         }
 
-        // Normal launch - use configured launch_mode
-        if let modeString = UserDefaults.standard.string(forKey: "launch_mode") {
-            // Case-insensitive matching
-            let normalized = modeString.lowercased()
+        // 2. Check for last_mode (persisted whenever mode changes)
+        let lastModeValue = UserDefaults.standard.string(forKey: "last_mode")
+        NSLog("[VoiceFlow] loadLaunchMode: last_mode raw value=%@", lastModeValue ?? "nil")
+
+        if let lastMode = lastModeValue {
+            let normalized = lastMode.lowercased()
             switch normalized {
             case "on": launchMode = .on
             case "off": launchMode = .off
             case "sleep": launchMode = .sleep
             default: launchMode = .sleep
             }
-        } else {
-            launchMode = .sleep // Default to Sleep
+            NSLog("[VoiceFlow] loadLaunchMode: Restoring last_mode=%@", launchMode.rawValue)
+            return
         }
+
+        // 3. Default to Sleep mode
+        launchMode = .sleep
+        NSLog("[VoiceFlow] loadLaunchMode: No saved mode, defaulting to Sleep")
     }
 
     func saveLaunchMode(_ mode: MicrophoneMode) {
