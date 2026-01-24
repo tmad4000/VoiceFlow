@@ -2990,7 +2990,10 @@ class AppState: ObservableObject {
         }
 
         // AGGRESSIVE LIVE MODE: Type immediately from partials, correct if words change
-        if aggressiveLiveMode && !turn.endOfTurn {
+        // Skip aggressive mode in terminals where backspace corrections don't work properly
+        let canUseAggressiveMode = aggressiveLiveMode && aggressiveAllowCorrections && !isFrontmostAppTerminal()
+
+        if canUseAggressiveMode && !turn.endOfTurn {
             let allWords = effectiveWords.map { $0.text }
             guard allWords.count > startIndex else { return }
             var newWords = Array(allWords[startIndex...]).filter(filterPunctuation)
@@ -3012,49 +3015,38 @@ class AppState: ObservableObject {
                 return
             }
 
-            // Check if corrections are possible (not in terminal and corrections enabled)
-            let canCorrect = aggressiveAllowCorrections && !isFrontmostAppTerminal()
+            // If words diverged (ASR changed its mind), backspace and retype
+            if commonPrefixLength < lastTypedPartialWords.count {
+                // Calculate how much to delete
+                let wordsToDelete = Array(lastTypedPartialWords[commonPrefixLength...])
+                let textToDelete = wordsToDelete.joined(separator: " ")
+                let deleteCount = textToDelete.count + (wordsToDelete.count > 0 ? 1 : 0)  // +1 for leading space
 
-            // In terminals or when corrections disabled, skip aggressive mode entirely
-            // and fall through to wait for finalized text. This avoids duplicated/garbled output
-            // from progressive word refinement (e.g., "prior" → "priorit" → "prioritize").
-            if !canCorrect {
-                NSLog("[VoiceFlow] ⚠️ Aggressive live: terminal or corrections disabled - waiting for finalized text")
-                // Don't return - fall through to the endOfTurn handling below
-            } else {
-                // If words diverged (ASR changed its mind), backspace and retype
-                if commonPrefixLength < lastTypedPartialWords.count {
-                    // Calculate how much to delete
-                    let wordsToDelete = Array(lastTypedPartialWords[commonPrefixLength...])
-                    let textToDelete = wordsToDelete.joined(separator: " ")
-                    let deleteCount = textToDelete.count + (wordsToDelete.count > 0 ? 1 : 0)  // +1 for leading space
-
-                    if deleteCount > 0 {
-                        NSLog("[VoiceFlow] 🔄 Aggressive live: correcting %d chars (\"%@\" → \"%@\")",
-                              deleteCount, wordsToDelete.joined(separator: " "),
-                              newWords[commonPrefixLength...].joined(separator: " "))
-                        sendBackspaceKeypresses(deleteCount)
-                    }
-                    lastTypedPartialWords = Array(lastTypedPartialWords.prefix(commonPrefixLength))
+                if deleteCount > 0 {
+                    NSLog("[VoiceFlow] 🔄 Aggressive live: correcting %d chars (\"%@\" → \"%@\")",
+                          deleteCount, wordsToDelete.joined(separator: " "),
+                          newWords[commonPrefixLength...].joined(separator: " "))
+                    sendBackspaceKeypresses(deleteCount)
                 }
-
-                // Type new words beyond what we've already typed
-                if newWords.count > lastTypedPartialWords.count {
-                    let wordsToType = Array(newWords[lastTypedPartialWords.count...])
-                    let needsSpace = !lastTypedPartialWords.isEmpty || hasTypedInSession
-                    let prefix = needsSpace ? " " : ""
-                    let textToType = prefix + wordsToType.joined(separator: " ")
-
-                    NSLog("[VoiceFlow] ⚡ Aggressive live: typing \"%@\"", textToType)
-                    typeText(textToType, appendSpace: false)
-
-                    lastTypedPartialWords = newWords
-                    lastTypedPartialText = newWords.joined(separator: " ")
-                    didTypeDictationThisUtterance = true
-                    hasTypedInSession = true
-                }
-                return
+                lastTypedPartialWords = Array(lastTypedPartialWords.prefix(commonPrefixLength))
             }
+
+            // Type new words beyond what we've already typed
+            if newWords.count > lastTypedPartialWords.count {
+                let wordsToType = Array(newWords[lastTypedPartialWords.count...])
+                let needsSpace = !lastTypedPartialWords.isEmpty || hasTypedInSession
+                let prefix = needsSpace ? " " : ""
+                let textToType = prefix + wordsToType.joined(separator: " ")
+
+                NSLog("[VoiceFlow] ⚡ Aggressive live: typing \"%@\"", textToType)
+                typeText(textToType, appendSpace: false)
+
+                lastTypedPartialWords = newWords
+                lastTypedPartialText = newWords.joined(separator: " ")
+                didTypeDictationThisUtterance = true
+                hasTypedInSession = true
+            }
+            return
         }
 
         // If it's unformatted (Live Dictation mode) - wait for endOfTurn
