@@ -2990,8 +2990,11 @@ class AppState: ObservableObject {
         }
 
         // AGGRESSIVE LIVE MODE: Type immediately from partials, correct if words change
-        // Skip aggressive mode in terminals where backspace corrections don't work properly
-        let canUseAggressiveMode = aggressiveLiveMode && aggressiveAllowCorrections && !isFrontmostAppTerminal()
+        // Skip aggressive mode only in terminals where backspace corrections don't work properly
+        // The "allow corrections" setting only controls whether we backspace to fix ASR changes,
+        // not whether aggressive mode is used at all.
+        let isInTerminal = isFrontmostAppTerminal()
+        let canUseAggressiveMode = aggressiveLiveMode && !isInTerminal
 
         if canUseAggressiveMode && !turn.endOfTurn {
             let allWords = effectiveWords.map { $0.text }
@@ -3016,19 +3019,27 @@ class AppState: ObservableObject {
             }
 
             // If words diverged (ASR changed its mind), backspace and retype
+            // Only do corrections if the setting allows it
             if commonPrefixLength < lastTypedPartialWords.count {
-                // Calculate how much to delete
-                let wordsToDelete = Array(lastTypedPartialWords[commonPrefixLength...])
-                let textToDelete = wordsToDelete.joined(separator: " ")
-                let deleteCount = textToDelete.count + (wordsToDelete.count > 0 ? 1 : 0)  // +1 for leading space
+                if aggressiveAllowCorrections {
+                    // Calculate how much to delete
+                    let wordsToDelete = Array(lastTypedPartialWords[commonPrefixLength...])
+                    let textToDelete = wordsToDelete.joined(separator: " ")
+                    let deleteCount = textToDelete.count + (wordsToDelete.count > 0 ? 1 : 0)  // +1 for leading space
 
-                if deleteCount > 0 {
-                    NSLog("[VoiceFlow] 🔄 Aggressive live: correcting %d chars (\"%@\" → \"%@\")",
-                          deleteCount, wordsToDelete.joined(separator: " "),
-                          newWords[commonPrefixLength...].joined(separator: " "))
-                    sendBackspaceKeypresses(deleteCount)
+                    if deleteCount > 0 {
+                        NSLog("[VoiceFlow] 🔄 Aggressive live: correcting %d chars (\"%@\" → \"%@\")",
+                              deleteCount, wordsToDelete.joined(separator: " "),
+                              newWords[commonPrefixLength...].joined(separator: " "))
+                        sendBackspaceKeypresses(deleteCount)
+                    }
+                    lastTypedPartialWords = Array(lastTypedPartialWords.prefix(commonPrefixLength))
+                } else {
+                    // Corrections disabled - update tracking to common prefix without backspacing
+                    // This may cause some duplicated text when ASR changes its mind
+                    NSLog("[VoiceFlow] ⚠️ Aggressive live: skipping correction (disabled in settings)")
+                    lastTypedPartialWords = Array(lastTypedPartialWords.prefix(commonPrefixLength))
                 }
-                lastTypedPartialWords = Array(lastTypedPartialWords.prefix(commonPrefixLength))
             }
 
             // Type new words beyond what we've already typed
