@@ -2991,10 +2991,13 @@ class AppState: ObservableObject {
 
         // AGGRESSIVE LIVE MODE: Type immediately from partials, correct if words change
         // Skip aggressive mode only in terminals where backspace corrections don't work properly
-        // The "allow corrections" setting only controls whether we backspace to fix ASR changes,
-        // not whether aggressive mode is used at all.
+        // AGGRESSIVE LIVE MODE requirements:
+        // 1. Setting is enabled
+        // 2. Corrections are allowed (without corrections, partial typing causes duplicates)
+        // 3. Not in a terminal (terminals don't handle backspace well)
+        // If any requirement is not met, we fall through to wait for endOfTurn.
         let isInTerminal = isFrontmostAppTerminal()
-        let canUseAggressiveMode = aggressiveLiveMode && !isInTerminal
+        let canUseAggressiveMode = aggressiveLiveMode && aggressiveAllowCorrections && !isInTerminal
 
         if canUseAggressiveMode && !turn.endOfTurn {
             let allWords = effectiveWords.map { $0.text }
@@ -3078,13 +3081,15 @@ class AppState: ObservableObject {
                 return
             }
 
-            // In aggressive mode, we already typed everything - just do final corrections
-            if aggressiveLiveMode {
-                // Check if final differs from what we typed
-                if newWords != lastTypedPartialWords && !lastTypedPartialWords.isEmpty {
-                    // Final correction already handled above, just log
-                    NSLog("[VoiceFlow] ✅ Aggressive live: utterance finalized")
-                }
+            // In aggressive mode (when actually used), we already typed everything
+            // Aggressive mode requires: enabled + corrections allowed + not in terminal
+            // If any condition was false, aggressive mode was skipped and we type final text here
+            let isInTerminal = isFrontmostAppTerminal()
+            let wasAggressiveModeUsed = aggressiveLiveMode && aggressiveAllowCorrections && !isInTerminal
+
+            if wasAggressiveModeUsed && !lastTypedPartialWords.isEmpty {
+                // We used aggressive mode and typed something - just log finalization
+                NSLog("[VoiceFlow] ✅ Aggressive live: utterance finalized")
                 typedFinalWordCount = 0
                 return
             }
