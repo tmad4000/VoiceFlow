@@ -1,0 +1,75 @@
+name: VoiceFlowKeyboard
+options:
+  bundleIdPrefix: com.voiceflow
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    MARKETING_VERSION: 1.0
+    CURRENT_PROJECT_VERSION: 1
+    SWIFT_VERSION: 5.9
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    ENABLE_BITCODE: NO
+
+packages: {}
+
+schemes:
+  VoiceFlowKeyboard:
+    build:
+      targets:
+        VoiceFlowKeyboardHost: all
+        VoiceFlowKeyboard: all
+
+targets:
+  VoiceFlowKeyboardHost:
+    type: application
+    platform: iOS
+    sources:
+      - Sources/HostApp
+    frameworks:
+      - AVFoundation.framework
+      - Speech.framework
+    info:
+      path: Sources/HostApp/Info.plist
+      properties:
+        CFBundleDisplayName: "VoiceFlow Keyboard"
+        UILaunchScreen:
+          UIColor: ""
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSMicrophoneUsageDescription: "VoiceFlow Keyboard needs microphone access to transcribe your speech into text."
+        NSSpeechRecognitionUsageDescription: "VoiceFlow Keyboard needs speech recognition to transcribe your speech into text."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.voiceflow.keyboard
+    dependencies:
+      - target: VoiceFlowKeyboard
+        embed: true
+  VoiceFlowKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Sources/KeyboardExtension
+    frameworks:
+      - AVFoundation.framework
+      - Speech.framework
+    info:
+      path: Sources/KeyboardExtension/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).KeyboardViewController"
+          NSExtensionAttributes:
+            IsASCIICapable: true
+            PrefersRightToLeft: false
+            PrimaryLanguage: "en-US"
+            RequestsOpenAccess: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.voiceflow.keyboard.extension
