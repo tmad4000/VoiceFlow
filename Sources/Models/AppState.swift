@@ -576,8 +576,11 @@ class AppState: ObservableObject {
     // Aggressive live mode tracking
     private var lastTypedPartialWords: [String] = []  // Words we've typed from partials
     private var lastTypedPartialText: String = ""  // Full text typed (for backspace calculation)
-    @Published var isPTTProcessing = false  // When true, waiting for finalized text before sleep
-    private var pttSleepTimeoutTask: Task<Void, Never>?  // Fallback timeout for PTT sleep
+    @Published var isPTTProcessing = false  // When true, waiting for finalized text before PTT return
+    private var pttSleepTimeoutTask: Task<Void, Never>?  // Fallback timeout for PTT return
+    private var pttReturnMode: MicrophoneMode?  // Target mode after PTT finalization
+    private var pttPreviousBehavior: ActiveBehavior?  // Restore behavior after PTT session
+    private var pttPreviousLiveDictation: Bool?  // Restore live dictation after PTT session
     @Published var isPTMMuted = false  // Push-to-mute: temporarily mute when key held in On mode
     var lastPTTKeyDownTime: Date?  // For double-tap detection
 
@@ -664,7 +667,7 @@ class AppState: ObservableObject {
                     }
                     
                     // If we are currently listening, we need to restart to switch services
-                    if self.microphoneMode != .off {
+                    if self.microphoneMode == .on || self.microphoneMode == .sleep {
                         let currentMode = self.microphoneMode
                         self.logDebug("Restarting services due to network change")
                         self.stopListening()
@@ -700,7 +703,7 @@ class AppState: ObservableObject {
             .sink { [weak self] _ in
                 guard let self = self else { return }
                 self.logDebug("System wake detected - reconnecting speech services")
-                if self.microphoneMode != .off {
+                if self.microphoneMode == .on || self.microphoneMode == .sleep {
                     self.reconnect()
                 }
             }
@@ -1066,13 +1069,13 @@ class AppState: ObservableObject {
         restartServicesIfActive()
     }
 
-    func setMode(_ mode: MicrophoneMode, caller: String = #function, file: String = #file, line: Int = #line) {
+    func setMode(_ mode: MicrophoneMode, persist: Bool = true, caller: String = #function, file: String = #file, line: Int = #line) {
         let fileName = (file as NSString).lastPathComponent
         NSLog("[VoiceFlow] setMode called: %@ from %@:%d (%@)", mode.rawValue, fileName, line, caller)
         NSLog("[VoiceFlow] Permissions - a11y: %d, mic: %d, speech: %d", isAccessibilityGranted, isMicrophoneGranted, isSpeechGranted)
 
         // Check and request permissions before enabling active modes
-        if mode == .on || mode == .sleep {
+        if mode == .on || mode == .sleep || mode == .ptt {
             if !isAccessibilityGranted {
                 NSLog("[VoiceFlow] Requesting accessibility permission...")
                 checkAccessibilityPermission(silent: false)
@@ -1090,13 +1093,15 @@ class AppState: ObservableObject {
         let previousMode = microphoneMode
         microphoneMode = mode
         // Persist current mode so it survives restarts/crashes
-        let rawValue = mode.rawValue
-        UserDefaults.standard.set(rawValue, forKey: "last_mode")
-        UserDefaults.standard.synchronize()  // Force immediate write
-        // Debug: verify the save worked
-        let savedValue = UserDefaults.standard.string(forKey: "last_mode")
-        NSLog("[VoiceFlow] Saved last_mode: \"%@\" (verified: \"%@\"), domain: %@",
-              rawValue, savedValue ?? "nil", Bundle.main.bundleIdentifier ?? "unknown")
+        if persist {
+            let rawValue = mode.rawValue
+            UserDefaults.standard.set(rawValue, forKey: "last_mode")
+            UserDefaults.standard.synchronize()  // Force immediate write
+            // Debug: verify the save worked
+            let savedValue = UserDefaults.standard.string(forKey: "last_mode")
+            NSLog("[VoiceFlow] Saved last_mode: \"%@\" (verified: \"%@\"), domain: %@",
+                  rawValue, savedValue ?? "nil", Bundle.main.bundleIdentifier ?? "unknown")
+        }
         logDebug("Mode changed: \(previousMode.rawValue) -> \(mode.rawValue)")
         NSLog("[VoiceFlow] Mode changed: %@ -> %@", previousMode.rawValue, mode.rawValue)
 
@@ -1106,8 +1111,8 @@ class AppState: ObservableObject {
             stopSleepTimer()
         }
 
-        // Auto-off timer runs in both On and Sleep modes
-        if mode == .off {
+        // Auto-off timer runs in On and Sleep modes
+        if mode == .off || mode == .ptt {
             stopAutoOffTimer()
         } else {
             resetAutoOffTimer()
@@ -1125,7 +1130,7 @@ class AppState: ObservableObject {
             wakeUpTime = Date()  // Grace period to ignore residual wake word audio
         }
 
-        if (previousMode == .off || previousMode == .sleep) && mode == .on {
+        if (previousMode == .off || previousMode == .sleep || previousMode == .ptt) && mode == .on {
             recentTurns = []
             isolatedSpeakerId = nil
         }
@@ -1142,6 +1147,10 @@ class AppState: ObservableObject {
             hasTypedInSession = false
         }
 
+        if mode != .on {
+            restorePTTOverridesIfNeeded()
+        }
+
         switch mode {
         case .off:
             // If we are currently in an utterance, we might want to wait a bit
@@ -1149,19 +1158,21 @@ class AppState: ObservableObject {
             // IMPROVEMENT: The system command caller will handle the delay if needed.
             stopListening()
         case .on:
-            if previousMode == .off {
+            if previousMode == .off || previousMode == .ptt {
                 startListening(transcribeMode: true)
             } else {
                 assemblyAIService?.setTranscribeMode(true)
                 appleSpeechService?.setTranscribeMode(true)
             }
         case .sleep:
-            if previousMode == .off {
+            if previousMode == .off || previousMode == .ptt {
                 startListening(transcribeMode: false)
             } else {
                 assemblyAIService?.setTranscribeMode(false)
                 appleSpeechService?.setTranscribeMode(false)
             }
+        case .ptt:
+            stopListening()
         }
     }
 
@@ -1451,7 +1462,7 @@ class AppState: ObservableObject {
             resetSleepTimer()
         }
         // Reset auto-off timer on speech (runs in both On and Sleep modes)
-        if microphoneMode != .off {
+        if microphoneMode == .on || microphoneMode == .sleep {
             resetAutoOffTimer()
         }
         // Cancel auto-submit timer when new speech arrives
@@ -1542,13 +1553,15 @@ class AppState: ObservableObject {
                 startAutoSubmitTimer()
             }
 
-            // Handle pending PTT sleep - switch to sleep after finalized text is received
+            // Handle pending PTT return - switch to target mode after finalized text is received
             if isPTTProcessing {
-                logDebug("PTT: Received finalized text, switching to sleep")
+                let returnMode = pttReturnMode ?? .sleep
+                logDebug("PTT: Received finalized text, switching to \(returnMode.rawValue)")
                 isPTTProcessing = false
+                pttReturnMode = nil
                 pttSleepTimeoutTask?.cancel()
                 pttSleepTimeoutTask = nil
-                setMode(.sleep)
+                setMode(returnMode)
             }
         }
     }
@@ -4353,6 +4366,8 @@ class AppState: ObservableObject {
         switch microphoneMode {
         case .on:
             statusText = "Listening ✓"
+        case .ptt:
+            statusText = "Push-to-Talk"
         case .sleep:
             statusText = "Sleep Mode"
         case .off:
@@ -5517,7 +5532,7 @@ class AppState: ObservableObject {
         apiKey = key
         UserDefaults.standard.set(key, forKey: "assemblyai_api_key")
         
-        if previous != key && microphoneMode != .off && (dictationProvider == .online || dictationProvider == .auto) {
+        if previous != key && (microphoneMode == .on || microphoneMode == .sleep) && (dictationProvider == .online || dictationProvider == .auto) {
             logDebug("API Key changed: Restarting services")
             restartServicesIfActive()
         }
@@ -5528,7 +5543,7 @@ class AppState: ObservableObject {
         deepgramApiKey = key
         UserDefaults.standard.set(key, forKey: "deepgram_api_key")
         
-        if previous != key && microphoneMode != .off && dictationProvider == .deepgram {
+        if previous != key && (microphoneMode == .on || microphoneMode == .sleep) && dictationProvider == .deepgram {
             logDebug("Deepgram API Key changed: Restarting services")
             restartServicesIfActive()
         }
@@ -5561,7 +5576,7 @@ class AppState: ObservableObject {
         loadCustomVocabulary()
         loadVocabularyPrompt()
         // Reconnect to apply new vocabulary to AssemblyAI
-        if microphoneMode != .off && !effectiveIsOffline {
+        if (microphoneMode == .on || microphoneMode == .sleep) && !effectiveIsOffline {
             reconnect()
         }
     }
@@ -5684,7 +5699,7 @@ class AppState: ObservableObject {
         liveDictationEnabled = value
         UserDefaults.standard.set(value, forKey: "live_dictation_enabled")
 
-        if previousValue != value && microphoneMode != .off {
+        if previousValue != value && (microphoneMode == .on || microphoneMode == .sleep) {
             logDebug("Live dictation changed: Restarting services")
             restartServicesIfActive()
         }
@@ -5713,7 +5728,7 @@ class AppState: ObservableObject {
     }
 
     private func restartServicesIfActive() {
-        guard microphoneMode != .off else { return }
+        guard microphoneMode == .on || microphoneMode == .sleep else { return }
         let currentMode = microphoneMode
         stopListening()
         startListening(transcribeMode: currentMode == .on)
@@ -5851,7 +5866,7 @@ class AppState: ObservableObject {
         dictationProvider = provider
         UserDefaults.standard.set(provider.rawValue, forKey: "dictation_provider")
         
-        if previous != provider && microphoneMode != .off {
+        if previous != provider && (microphoneMode == .on || microphoneMode == .sleep) {
             logDebug("Dictation provider changed: \(previous.rawValue) -> \(provider.rawValue)")
             restartServicesIfActive()
         }
@@ -5965,8 +5980,8 @@ class AppState: ObservableObject {
 
     private func resetAutoOffTimer() {
         stopAutoOffTimer()
-        // Auto-off runs when mic is On or Sleep (not Off)
-        guard autoOffEnabled && microphoneMode != .off else { return }
+        // Auto-off runs when mic is On or Sleep
+        guard autoOffEnabled && (microphoneMode == .on || microphoneMode == .sleep) else { return }
 
         let seconds = autoOffMinutes * 60
         autoOffTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
@@ -5982,7 +5997,7 @@ class AppState: ObservableObject {
     }
 
     private func handleAutoOffTimeout() {
-        guard microphoneMode != .off else { return }
+        guard microphoneMode == .on || microphoneMode == .sleep else { return }
         logDebug("Auto-off timeout: Turning microphone completely Off after \(Int(autoOffMinutes)) minutes")
         setMode(.off)
     }
@@ -6068,7 +6083,7 @@ class AppState: ObservableObject {
         vocabularyPrompt = value
         UserDefaults.standard.set(value, forKey: "vocabulary_prompt")
 
-        if previous != value && microphoneMode != .off && !effectiveIsOffline {
+        if previous != value && (microphoneMode == .on || microphoneMode == .sleep) && !effectiveIsOffline {
             logDebug("Vocabulary prompt changed: Restarting services")
             restartServicesIfActive()
         }
@@ -6206,6 +6221,7 @@ class AppState: ObservableObject {
             case "on": launchMode = .on
             case "off": launchMode = .off
             case "sleep": launchMode = .sleep
+            case "ptt": launchMode = .ptt
             default: break // Fall through to last_mode
             }
             if launchMode != .sleep || normalized == "sleep" {
@@ -6224,6 +6240,7 @@ class AppState: ObservableObject {
             case "on": launchMode = .on
             case "off": launchMode = .off
             case "sleep": launchMode = .sleep
+            case "ptt": launchMode = .ptt
             default: launchMode = .sleep
             }
             NSLog("[VoiceFlow] loadLaunchMode: Restoring last_mode=%@", launchMode.rawValue)
@@ -6288,7 +6305,7 @@ class AppState: ObservableObject {
         }
         
         // Restart services if active to pick up the new device
-        if microphoneMode != .off {
+        if microphoneMode == .on || microphoneMode == .sleep {
             logDebug("Input device changed: Restarting services")
             restartServicesIfActive()
         }
@@ -6324,38 +6341,76 @@ class AppState: ObservableObject {
         }
     }
 
+    private func applyPTTOverridesIfNeeded() {
+        guard microphoneMode == .ptt else { return }
+        if pttPreviousBehavior == nil {
+            pttPreviousBehavior = activeBehavior
+        }
+        if pttPreviousLiveDictation == nil {
+            pttPreviousLiveDictation = liveDictationEnabled
+        }
+        activeBehavior = .dictation
+        liveDictationEnabled = false
+    }
+
+    private func restorePTTOverridesIfNeeded() {
+        if let previousBehavior = pttPreviousBehavior {
+            activeBehavior = previousBehavior
+            pttPreviousBehavior = nil
+        }
+        if let previousLiveDictation = pttPreviousLiveDictation {
+            liveDictationEnabled = previousLiveDictation
+            pttPreviousLiveDictation = nil
+        }
+    }
+
     /// Request graceful transition to sleep mode - waits for finalized text before switching
     /// Called when PTT is released so we don't cut off mid-word
     func requestGracefulSleep() {
+        requestPTTReturn(to: .sleep)
+    }
+
+    /// Request graceful transition to a target mode after PTT release
+    func requestPTTReturn(to mode: MicrophoneMode) {
         guard microphoneMode == .on else { return }
 
-        logDebug("PTT: Requesting graceful sleep, waiting for finalized text")
+        pttReturnMode = mode
+        logDebug("PTT: Requesting graceful return to \(mode.rawValue), waiting for finalized text")
         isPTTProcessing = true
 
         // Tell the speech service to finalize current utterance
         assemblyAIService?.forceEndUtterance()
         appleSpeechService?.forceEndUtterance()
 
-        // Set a timeout - if we don't get a final turn within 2 seconds, force sleep
+        // Set a timeout - if we don't get a final turn within 2 seconds, force return
         pttSleepTimeoutTask?.cancel()
         pttSleepTimeoutTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
             if self.isPTTProcessing {
-                self.logDebug("PTT: Timeout waiting for finalized text, forcing sleep")
+                let returnMode = self.pttReturnMode ?? .sleep
+                self.logDebug("PTT: Timeout waiting for finalized text, forcing \(returnMode.rawValue)")
                 self.isPTTProcessing = false
-                self.setMode(.sleep)
+                self.pttReturnMode = nil
+                self.setMode(returnMode)
             }
         }
     }
 
-    /// Cancel pending PTT sleep (e.g., if PTT is pressed again)
+    /// Cancel pending PTT return (e.g., if PTT is pressed again)
     func cancelPendingPTTSleep() {
         if isPTTProcessing {
-            logDebug("PTT: Cancelling pending sleep")
+            logDebug("PTT: Cancelling pending return")
             isPTTProcessing = false
+            pttReturnMode = nil
             pttSleepTimeoutTask?.cancel()
             pttSleepTimeoutTask = nil
         }
+    }
+
+    /// Start a PTT session (applies Wispr-style overrides in PTT mode)
+    func beginPTTSession(persistOnMode: Bool = true) {
+        applyPTTOverridesIfNeeded()
+        setMode(.on, persist: persistOnMode)
     }
 
     /// Called when PTT key is pressed - records the stream-relative timestamp
@@ -6459,6 +6514,7 @@ class AppState: ObservableObject {
         case .off: return modeOffShortcut
         case .sleep: return modeSleepShortcut
         case .on: return modeOnShortcut
+        case .ptt: return pttShortcut
         }
     }
 

@@ -603,7 +603,7 @@ struct GeneralSettingsView: View {
                             onChange: { appState.saveModeToggleShortcut($0) }
                         )
                         
-                        Text("Toggle switch or hold to talk.")
+                        Text("Toggle switch or hold to talk (PTT mode).")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                             .padding(.bottom, 4)

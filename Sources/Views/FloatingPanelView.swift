@@ -34,7 +34,7 @@ struct FloatingPanelView: View {
             CompactModeButtons()
 
             // Audio pulse indicator when active
-            if appState.microphoneMode != .off {
+            if appState.microphoneMode == .on || appState.microphoneMode == .sleep {
                 AudioPulseIndicator(level: appState.audioLevel, mode: appState.microphoneMode, isMuted: appState.isPTMMuted)
             }
 
@@ -117,7 +117,7 @@ struct FloatingPanelView: View {
                 Spacer()
 
                 // VOLUME METER - Large & Dramatic
-                if appState.microphoneMode != .off {
+                if appState.microphoneMode == .on || appState.microphoneMode == .sleep {
                     Menu {
                         InputDeviceMenuItems()
                     } label: {
@@ -723,6 +723,7 @@ private struct UnifiedModeButton: View {
     private var modeColor: Color {
         switch mode {
         case .off: return .gray
+        case .ptt: return .blue
         case .on: return .green
         case .sleep: return .orange
         }
@@ -823,6 +824,8 @@ private struct UnifiedModeButton: View {
         switch mode {
         case .off:
             appState.setMode(.on)
+        case .ptt:
+            appState.setMode(.on)
         case .on:
             appState.setMode(.sleep)
         case .sleep:
@@ -833,6 +836,8 @@ private struct UnifiedModeButton: View {
     private var toggleHelpText: String {
         switch mode {
         case .off:
+            return modeToggleHelpText(action: "Click to turn On", shortcut: appState.shortcutString(for: .on))
+        case .ptt:
             return modeToggleHelpText(action: "Click to turn On", shortcut: appState.shortcutString(for: .on))
         case .on:
             return modeToggleHelpText(action: "Click to Sleep", shortcut: appState.shortcutString(for: .sleep))
@@ -968,7 +973,7 @@ private struct CompactModeButtons: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach([MicrophoneMode.off, .sleep, .on], id: \.self) { mode in
+            ForEach([MicrophoneMode.off, .ptt, .sleep, .on], id: \.self) { mode in
                 Button(action: { appState.setMode(mode) }) {
                     ZStack {
                         // PTM: Show red circle with mic.slash for On mode when muted
@@ -1002,7 +1007,7 @@ private struct CompactModeButtons: View {
         if mode == .on && isOnAndMuted {
             return "Muted (release key to unmute)"
         }
-        let base = mode.rawValue.capitalized
+        let base = mode.rawValue
         guard let shortcut = appState.shortcutString(for: mode) else { return base }
         return "\(base) (\(shortcut))"
     }
@@ -1012,6 +1017,7 @@ private struct CompactModeButtons: View {
         case .off: return .gray
         case .sleep: return .orange
         case .on: return .green
+        case .ptt: return .blue
         }
     }
 }
@@ -1060,6 +1066,7 @@ private struct AudioPulseIndicator: View {
         case .on: return amplifiedLevel > 0.5 ? .orange : .green
         case .sleep: return .orange
         case .off: return .gray
+        case .ptt: return .blue
         }
     }
 }
@@ -1143,6 +1150,9 @@ private struct TranscriptContentView: View {
         switch appState.microphoneMode {
         case .off:
             return "Microphone off"
+        case .ptt:
+            let shortcut = appState.shortcutString(for: .ptt) ?? "⌃⌥Space"
+            return "Push-to-talk mode (hold \(shortcut))"
         case .on:
             if appState.effectiveIsOffline {
                 return appState.isConnected ? "Listening (Mac Speech)…" : "Starting Mac Speech…"

@@ -39,6 +39,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var appState: AppState = AppState() // Instantiated here
     var offMenuItem: NSMenuItem?
+    var pttMenuItem: NSMenuItem?
     var onMenuItem: NSMenuItem?
     var sleepMenuItem: NSMenuItem?
     var showHideMenuItem: NSMenuItem?
@@ -56,6 +57,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var pttMonitor: Any?
     private var pttActivatedOnMode: Bool = false  // Track if On mode was activated via PTT
+    private var pttReleaseReturnMode: MicrophoneMode = .sleep  // Target mode after PTT release
+    private var pttHandsFreeReturnMode: MicrophoneMode?  // Target mode after hands-free (double-tap) exit
     private var isPTTKeyPhysicallyDown: Bool = false  // Track physical key state to ignore macOS key repeat events
     private var panelTopEdgeY: CGFloat?  // Track desired top-edge position for panel (fixes recurring banner-push-off bug)
     private var isRepositioningPanel: Bool = false  // Prevent didMove from updating anchor during programmatic repositioning
@@ -106,6 +109,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         offMenuItem?.keyEquivalentModifierMask = [.control, .option, .command]
         offMenuItem?.target = self
         menu.addItem(offMenuItem!)
+
+        pttMenuItem = NSMenuItem(title: "PTT", action: #selector(setModePTT), keyEquivalent: "")
+        pttMenuItem?.target = self
+        menu.addItem(pttMenuItem!)
 
         onMenuItem = NSMenuItem(title: "On", action: #selector(setModeOn), keyEquivalent: "1")
         onMenuItem?.keyEquivalentModifierMask = [.control, .option, .command]
@@ -290,6 +297,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 case "sleep":
                     self.appState.setMode(.sleep)
                     self.appState.logDebug("CLI: Mode set to Sleep")
+                case "ptt":
+                    self.appState.setMode(.ptt)
+                    self.appState.logDebug("CLI: Mode set to PTT")
                 default:
                     break
                 }
@@ -985,6 +995,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func setModePTT() {
+        print("[VoiceFlow] Setting mode: PTT")
+        Task { @MainActor in
+            appState.setMode(.ptt)
+        }
+    }
+
     @objc func setModeSleep() {
         print("[VoiceFlow] Setting mode: Sleep")
         Task { @MainActor in
@@ -1158,6 +1175,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             let mode = appState.microphoneMode
             offMenuItem?.state = mode == .off ? .on : .off
+            pttMenuItem?.state = mode == .ptt ? .on : .off
             onMenuItem?.state = mode == .on ? .on : .off
             sleepMenuItem?.state = mode == .sleep ? .on : .off
             // Update panel menu items
@@ -1266,12 +1284,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     // Check if we're in graceful sleep period (PTT release just triggered)
                     // If so, double-tap should cancel sleep and stay ON (Persistent)
                     if self.appState.microphoneMode == .on && !self.appState.isPTTProcessing {
-                        self.appState.logDebug("PTT: Double-tap → OFF")
-                        self.appState.setMode(.off)
+                        let returnMode = self.pttHandsFreeReturnMode ?? .off
+                        self.appState.logDebug("PTT: Double-tap → \(returnMode.rawValue)")
+                        self.appState.setMode(returnMode)
+                        self.pttHandsFreeReturnMode = nil
                     } else {
                         self.appState.logDebug("PTT: Double-tap → ON (persistent)")
                         self.appState.cancelPendingPTTSleep()
-                        self.appState.setMode(.on)
+                        if self.appState.microphoneMode == .ptt {
+                            self.pttHandsFreeReturnMode = .ptt
+                            self.appState.setMode(.on, persist: false)
+                        } else {
+                            self.pttHandsFreeReturnMode = nil
+                            self.appState.setMode(.on)
+                        }
                     }
                     self.pttActivatedOnMode = false  // Persistent mode, not PTT-activated
                     return
@@ -1289,7 +1315,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.appState.logDebug("PTM: Muted (key held)")
                 } else if self.appState.microphoneMode != .on {
                     // Off or Sleep mode → Push-to-Talk
-                    self.appState.setMode(.on)
+                    let isFromPTTMode = self.appState.microphoneMode == .ptt
+                    self.pttReleaseReturnMode = isFromPTTMode ? .ptt : .sleep
+                    self.appState.beginPTTSession(persistOnMode: !isFromPTTMode)
                     self.pttActivatedOnMode = true
                     self.appState.logDebug("PTT: ON (key consumed)")
                 }
@@ -1315,7 +1343,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.appState.recordPTTRelease()
                 if self.appState.microphoneMode == .on && self.pttActivatedOnMode {
                     self.pttActivatedOnMode = false
-                    self.appState.requestGracefulSleep()
+                    self.appState.requestPTTReturn(to: self.pttReleaseReturnMode)
                 }
             }
         }
