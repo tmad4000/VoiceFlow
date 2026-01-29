@@ -9,8 +9,8 @@ struct NotesPanelView: View {
     @State private var viewingNote: NoteFile?  // Note being viewed in popup
     @State private var searchText: String = ""
     @State private var isLoading: Bool = true
-    @State private var isCreatingNote: Bool = false
-    @State private var newNoteText: String = ""
+    @State private var editingNoteId: UUID?
+    @FocusState private var editingNoteFocused: Bool
     @AppStorage("notesFullTextMode") private var fullTextMode: Bool = false
     @AppStorage("noteCollapseStatesData") private var collapseStatesData: Data = Data()
 
@@ -89,45 +89,14 @@ struct NotesPanelView: View {
         .onAppear {
             loadNotes()
         }
-        .sheet(isPresented: $isCreatingNote) {
-            newNoteSheet
-        }
         .sheet(item: $viewingNote) { note in
             noteViewSheet(note: note)
         }
-    }
-
-    // MARK: - New Note Sheet
-
-    private var newNoteSheet: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Text("New Note")
-                    .font(.system(size: 14, weight: .semibold))
-                Spacer()
-                Button("Cancel") {
-                    isCreatingNote = false
-                    newNoteText = ""
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.secondary)
-
-                Button("Save") {
-                    saveNewNote()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(newNoteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .onChange(of: editingNoteFocused) { _, focused in
+            if !focused && editingNoteId != nil {
+                endEditing()
             }
-
-            TextEditor(text: $newNoteText)
-                .font(.system(size: 13))
-                .frame(minHeight: 150)
-                .scrollContentBackground(.hidden)
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.3))
-                .cornerRadius(8)
         }
-        .padding()
-        .frame(width: 350, height: 250)
     }
 
     // MARK: - Note View Sheet
@@ -210,7 +179,7 @@ struct NotesPanelView: View {
                     .foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
-            .help("Create new note (⌘N)")
+            .help("Create new note")
 
             Button(action: { loadNotes() }) {
                 Image(systemName: "arrow.clockwise")
@@ -266,40 +235,86 @@ struct NotesPanelView: View {
         ScrollView {
             LazyVStack(spacing: fullTextMode ? 12 : 8) {
                 ForEach(filteredNotes) { note in
-                    NoteRowView(
-                        note: note,
-                        isSelected: selectedNote?.id == note.id,
-                        fullTextMode: fullTextMode,
-                        isCollapsed: isNoteCollapsed(note),
-                        collapseThreshold: collapseThreshold,
-                        onToggleCollapse: { toggleNoteCollapsed(note) }
-                    )
-                    .onTapGesture {
-                        selectedNote = note
-                        // In compact mode, open the view sheet
-                        if !fullTextMode {
-                            viewingNote = note
+                    let isEditing = editingNoteId == note.id
+
+                    if isEditing, let idx = notes.firstIndex(where: { $0.id == note.id }) {
+                        inlineNoteEditor(noteIndex: idx)
+                    } else {
+                        NoteRowView(
+                            note: note,
+                            isSelected: selectedNote?.id == note.id,
+                            fullTextMode: fullTextMode,
+                            isCollapsed: isNoteCollapsed(note),
+                            collapseThreshold: collapseThreshold,
+                            onToggleCollapse: { toggleNoteCollapsed(note) }
+                        )
+                        .onTapGesture {
+                            guard editingNoteId == nil else {
+                                endEditing()
+                                return
+                            }
+                            selectedNote = note
+                            // In compact mode, open the view sheet
+                            if !fullTextMode {
+                                viewingNote = note
+                            }
                         }
-                    }
-                    .contextMenu {
-                        Button("View Note") {
-                            viewingNote = note
-                        }
-                        Button("Copy to Clipboard") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(note.content, forType: .string)
-                        }
-                        Button("Reveal in Finder") {
-                            NSWorkspace.shared.selectFile(note.url.path, inFileViewerRootedAtPath: "")
-                        }
-                        Divider()
-                        Button("Delete", role: .destructive) {
-                            deleteNote(note)
+                        .contextMenu {
+                            Button("View Note") {
+                                viewingNote = note
+                            }
+                            Button("Edit Note") {
+                                editingNoteId = note.id
+                                DispatchQueue.main.async {
+                                    editingNoteFocused = true
+                                }
+                            }
+                            Button("Copy to Clipboard") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(note.content, forType: .string)
+                            }
+                            Button("Reveal in Finder") {
+                                NSWorkspace.shared.selectFile(note.url.path, inFileViewerRootedAtPath: "")
+                            }
+                            Divider()
+                            Button("Delete", role: .destructive) {
+                                deleteNote(note)
+                            }
                         }
                     }
                 }
             }
             .padding(12)
+        }
+    }
+
+    // MARK: - Inline Note Editor
+
+    private func inlineNoteEditor(noteIndex: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            TextEditor(text: $notes[noteIndex].content)
+                .font(.system(size: 13))
+                .focused($editingNoteFocused)
+                .frame(minHeight: 60)
+                .scrollContentBackground(.hidden)
+
+            Text(notes[noteIndex].formattedDate)
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.accentColor.opacity(0.2))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.accentColor.opacity(0.4), lineWidth: 1)
+        )
+        .onExitCommand {
+            editingNoteFocused = false
         }
     }
 
@@ -345,34 +360,63 @@ struct NotesPanelView: View {
     // MARK: - Actions
 
     private func startCreatingNote() {
-        newNoteText = ""
-        isCreatingNote = true
-    }
+        // End any existing edit
+        if editingNoteId != nil {
+            endEditing()
+        }
 
-    private func saveNewNote() {
-        let trimmedText = newNoteText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedText.isEmpty else { return }
+        // Clear search so new note is visible
+        searchText = ""
 
-        // Create notes directory if needed
+        // Ensure notes directory exists
         if !FileManager.default.fileExists(atPath: notesDirectory.path) {
             try? FileManager.default.createDirectory(at: notesDirectory, withIntermediateDirectories: true)
         }
 
-        // Generate filename with timestamp
+        // Create empty file on disk
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let filename = "Note_\(formatter.string(from: Date())).txt"
         let fileURL = notesDirectory.appendingPathComponent(filename)
+        FileManager.default.createFile(atPath: fileURL.path, contents: nil)
 
-        do {
-            try trimmedText.write(to: fileURL, atomically: true, encoding: .utf8)
-            NSLog("[VoiceFlow] Created new note: \(filename)")
-            isCreatingNote = false
-            newNoteText = ""
-            loadNotes() // Refresh the list
-        } catch {
-            NSLog("[VoiceFlow] Error saving note: \(error)")
+        // Prepend new note to array
+        let newNote = NoteFile(url: fileURL, name: filename, content: "", date: Date())
+        notes.insert(newNote, at: 0)
+
+        // Enter editing mode
+        editingNoteId = newNote.id
+        DispatchQueue.main.async {
+            editingNoteFocused = true
         }
+    }
+
+    private func endEditing() {
+        guard let editId = editingNoteId else { return }
+        guard let idx = notes.firstIndex(where: { $0.id == editId }) else {
+            editingNoteId = nil
+            return
+        }
+
+        let note = notes[idx]
+        let trimmed = note.content.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if trimmed.isEmpty {
+            // Delete empty note file and remove from array
+            try? FileManager.default.removeItem(at: note.url)
+            notes.remove(at: idx)
+            NSLog("[VoiceFlow] Removed empty note: \(note.name)")
+        } else {
+            // Write content to disk
+            do {
+                try note.content.write(to: note.url, atomically: true, encoding: .utf8)
+                NSLog("[VoiceFlow] Saved note: \(note.name)")
+            } catch {
+                NSLog("[VoiceFlow] Error saving note: \(error)")
+            }
+        }
+
+        editingNoteId = nil
     }
 
     private func loadNotes() {
@@ -444,7 +488,7 @@ struct NoteFile: Identifiable {
     let id = UUID()
     let url: URL
     let name: String
-    let content: String
+    var content: String
     let date: Date
 
     var preview: String {
