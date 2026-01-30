@@ -60,6 +60,7 @@ targets:
     info:
       path: Sources/KeyboardExtension/Info.plist
       properties:
+        CFBundleDisplayName: "VoiceFlow Keyboard"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.keyboard-service
           NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).KeyboardViewController"
