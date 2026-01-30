@@ -72,7 +72,6 @@ struct ModeButton: View {
         guard isSelected && !plain else { return Color.clear }
         switch mode {
         case .off: return Color.gray.opacity(0.3)
-        case .ptt: return Color.blue.opacity(0.3)
         case .on: return Color.green.opacity(0.3)
         case .sleep: return Color.orange.opacity(0.3)
         }
@@ -81,7 +80,6 @@ struct ModeButton: View {
     var iconColor: Color {
         switch mode {
         case .off: return isSelected ? .gray : .secondary
-        case .ptt: return isSelected ? .blue : .secondary
         case .on: return isSelected ? .green : .secondary
         case .sleep: return isSelected ? .orange : .secondary
         }
@@ -171,10 +169,7 @@ struct PlaceholderView: View {
     var placeholderText: String {
         switch appState.microphoneMode {
         case .off:
-            return "Microphone is off\nClick \"On\" to start dictating, \"Sleep\" for voice commands, or \"PTT\" to hold-to-talk"
-        case .ptt:
-            let shortcut = appState.shortcutString(for: .ptt) ?? "⌃⌥Space"
-            return "Push-to-talk mode\nHold \(shortcut) to dictate"
+            return "Microphone is off\nClick \"On\" to start dictating or \"Sleep\" for voice commands"
         case .on:
             if appState.effectiveIsOffline {
                 return appState.isConnected ? "Listening (Mac Speech)..." : "Starting Mac Speech..."
@@ -242,7 +237,6 @@ struct StatusBar: View {
         }
         switch appState.microphoneMode {
         case .off: return .gray
-        case .ptt: return .blue
         case .on, .sleep: return appState.isConnected ? .green : .orange
         }
     }
@@ -253,7 +247,6 @@ struct StatusBar: View {
         }
         switch appState.microphoneMode {
         case .off: return "Microphone off"
-        case .ptt: return "Push-to-talk idle"
         case .on: return appState.isConnected ? "Transcribing" : "Connecting..."
         case .sleep: return appState.isConnected ? "Listening for 'Speech on'" : "Connecting..."
         }

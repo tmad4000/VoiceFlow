@@ -1,12 +1,9 @@
 import Foundation
 
-/// The microphone modes for RSI-friendly voice control
+/// The three microphone modes for RSI-friendly voice control
 enum MicrophoneMode: String, CaseIterable, Identifiable {
     /// Microphone is completely off - no listening, no response to anything
     case off = "Off"
-
-    /// Push-to-talk - microphone only listens while the PTT key is held
-    case ptt = "PTT"
 
     /// Microphone is listening for wake word only
     case sleep = "Sleep"
@@ -19,7 +16,6 @@ enum MicrophoneMode: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .off: return "waveform.slash"
-        case .ptt: return "waveform.circle"
         case .sleep: return "waveform"
         case .on: return "waveform"
         }
@@ -28,7 +24,6 @@ enum MicrophoneMode: String, CaseIterable, Identifiable {
     var color: String {
         switch self {
         case .off: return "gray"
-        case .ptt: return "blue"
         case .sleep: return "orange"
         case .on: return "green"
         }
@@ -37,17 +32,15 @@ enum MicrophoneMode: String, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .off: return "Microphone off"
-        case .ptt: return "Hold push-to-talk key to dictate"
         case .sleep: return "Listening for 'Speech on'"
         case .on: return "Active"
         }
     }
 
     /// Voice command hint shown in dropdown
-    var voiceCommandHint: String? {
+    var voiceCommandHint: String {
         switch self {
         case .off: return "\"microphone off\""
-        case .ptt: return nil
         case .sleep: return "\"go to sleep\""
         case .on: return "\"speech on\""
         }
@@ -59,7 +52,6 @@ enum MicrophoneMode: String, CaseIterable, Identifiable {
         case .off: return "⌃⌥⌘0"
         case .on: return "⌃⌥⌘1"
         case .sleep: return "⌃⌥⌘2"
-        case .ptt: return "⌃⌥Space"
         }
     }
 }

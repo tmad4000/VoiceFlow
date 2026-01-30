@@ -577,10 +577,16 @@ class AppState: ObservableObject {
     private var lastTypedPartialWords: [String] = []  // Words we've typed from partials
     private var lastTypedPartialText: String = ""  // Full text typed (for backspace calculation)
     @Published var isPTTProcessing = false  // When true, waiting for finalized text before PTT return
+    @Published var isPTTSessionActive = false  // True while buffering a PTT session
+    @Published var isPTTSticky = false  // True when PTT is latched (double-tap)
+    @Published var isPTTPreviewVisible = false  // Controls PTT preview bubble visibility
+    @Published var pttBufferedText: String = ""  // Buffered dictation for PTT commit
+    @Published var pttBufferedOutputEnabled = true  // Wispr-style: buffer and send on release
+    @Published var pttPreviewEnabled = true  // Show PTT popup during dictation
+    @Published var pttStreamWhilePopupEnabled = false  // Stream while popup visible
+    @Published var pttCommitDelayMs: Double = 0  // Delay before typing buffered text
     private var pttSleepTimeoutTask: Task<Void, Never>?  // Fallback timeout for PTT return
     private var pttReturnMode: MicrophoneMode?  // Target mode after PTT finalization
-    private var pttPreviousBehavior: ActiveBehavior?  // Restore behavior after PTT session
-    private var pttPreviousLiveDictation: Bool?  // Restore live dictation after PTT session
     @Published var isPTMMuted = false  // Push-to-mute: temporarily mute when key held in On mode
     var lastPTTKeyDownTime: Date?  // For double-tap detection
 
@@ -602,6 +608,14 @@ class AppState: ObservableObject {
     private var pendingCrossUtteranceKeyword: String? = nil
     private var pendingCrossUtteranceTime: Date? = nil
     private let crossUtteranceKeywordWindowSeconds: TimeInterval = 2.0  // Max time to wait for continuation
+
+    private var shouldUseLegacyPTT: Bool {
+        !pttPreviewEnabled
+    }
+
+    private var shouldBufferPTTOutput: Bool {
+        pttPreviewEnabled && pttBufferedOutputEnabled && !pttStreamWhilePopupEnabled
+    }
 
     /// Effective confidence threshold based on mode
     var effectiveConfidenceThreshold: Double {
@@ -636,6 +650,7 @@ class AppState: ObservableObject {
         loadLaunchAtLogin()
         loadInputDevice()
         loadShortcuts()
+        loadPTTSettings()
         loadDictationProvider()
         loadDictationHistory()
         loadVocabularyPrompt()
@@ -1046,8 +1061,8 @@ class AppState: ObservableObject {
     }
 
     func restartApp() {
-        // Save current mode to restore after restart
-        UserDefaults.standard.set(microphoneMode.rawValue, forKey: "resume_mode")
+        // Always restart into Sleep to avoid surprising hot mic after relaunch
+        UserDefaults.standard.set(MicrophoneMode.sleep.rawValue, forKey: "resume_mode")
         UserDefaults.standard.synchronize()
 
         let executablePath = Bundle.main.executablePath!
@@ -1075,7 +1090,7 @@ class AppState: ObservableObject {
         NSLog("[VoiceFlow] Permissions - a11y: %d, mic: %d, speech: %d", isAccessibilityGranted, isMicrophoneGranted, isSpeechGranted)
 
         // Check and request permissions before enabling active modes
-        if mode == .on || mode == .sleep || mode == .ptt {
+        if mode == .on || mode == .sleep {
             if !isAccessibilityGranted {
                 NSLog("[VoiceFlow] Requesting accessibility permission...")
                 checkAccessibilityPermission(silent: false)
@@ -1112,7 +1127,7 @@ class AppState: ObservableObject {
         }
 
         // Auto-off timer runs in On and Sleep modes
-        if mode == .off || mode == .ptt {
+        if mode == .off {
             stopAutoOffTimer()
         } else {
             resetAutoOffTimer()
@@ -1130,7 +1145,7 @@ class AppState: ObservableObject {
             wakeUpTime = Date()  // Grace period to ignore residual wake word audio
         }
 
-        if (previousMode == .off || previousMode == .sleep || previousMode == .ptt) && mode == .on {
+        if (previousMode == .off || previousMode == .sleep) && mode == .on {
             recentTurns = []
             isolatedSpeakerId = nil
         }
@@ -1147,10 +1162,6 @@ class AppState: ObservableObject {
             hasTypedInSession = false
         }
 
-        if mode != .on {
-            restorePTTOverridesIfNeeded()
-        }
-
         switch mode {
         case .off:
             // If we are currently in an utterance, we might want to wait a bit
@@ -1158,21 +1169,19 @@ class AppState: ObservableObject {
             // IMPROVEMENT: The system command caller will handle the delay if needed.
             stopListening()
         case .on:
-            if previousMode == .off || previousMode == .ptt {
+            if previousMode == .off {
                 startListening(transcribeMode: true)
             } else {
                 assemblyAIService?.setTranscribeMode(true)
                 appleSpeechService?.setTranscribeMode(true)
             }
         case .sleep:
-            if previousMode == .off || previousMode == .ptt {
+            if previousMode == .off {
                 startListening(transcribeMode: false)
             } else {
                 assemblyAIService?.setTranscribeMode(false)
                 appleSpeechService?.setTranscribeMode(false)
             }
-        case .ptt:
-            stopListening()
         }
     }
 
@@ -1510,7 +1519,9 @@ class AppState: ObservableObject {
         }
 
         if microphoneMode == .on && activeBehavior != .command {
-            if liveDictationEnabled {
+            if (isPTTSessionActive || isPTTProcessing) && shouldBufferPTTOutput {
+                handleDictationTurn(turn, isForceEnd: isForceEndTurn)
+            } else if liveDictationEnabled {
                 handleLiveDictationTurn(turn, isForceEnd: isForceEndTurn)
             } else {
                 handleDictationTurn(turn, isForceEnd: isForceEndTurn)
@@ -1555,13 +1566,27 @@ class AppState: ObservableObject {
 
             // Handle pending PTT return - switch to target mode after finalized text is received
             if isPTTProcessing {
-                let returnMode = pttReturnMode ?? .sleep
-                logDebug("PTT: Received finalized text, switching to \(returnMode.rawValue)")
-                isPTTProcessing = false
-                pttReturnMode = nil
-                pttSleepTimeoutTask?.cancel()
-                pttSleepTimeoutTask = nil
-                setMode(returnMode)
+                if shouldAddToHistory {
+                    let returnMode = pttReturnMode ?? .sleep
+                    logDebug("PTT: Received finalized text, switching to \(returnMode.rawValue)")
+                    isPTTProcessing = false
+                    pttReturnMode = nil
+                    pttSleepTimeoutTask?.cancel()
+                    pttSleepTimeoutTask = nil
+                    let delayNs = UInt64(max(0, pttCommitDelayMs)) * 1_000_000
+                    Task { @MainActor in
+                        if delayNs > 0 {
+                            try? await Task.sleep(nanoseconds: delayNs)
+                        }
+                        if self.shouldBufferPTTOutput {
+                            self.commitPTTBufferIfNeeded()
+                        }
+                        self.isPTTPreviewVisible = false
+                        self.setMode(returnMode)
+                    }
+                } else {
+                    logDebug("PTT: End-of-turn received, waiting for formatted text")
+                }
             }
         }
     }
@@ -1701,6 +1726,18 @@ class AppState: ObservableObject {
         }
         if isTranscribing {
             appendToTranscript(trimmedProcessed)
+        }
+
+        if (isPTTSessionActive || isPTTProcessing) && shouldBufferPTTOutput {
+            appendPTTBuffer(processedText)
+            if let turnOrder = turn.turnOrder {
+                lastTypedTurnOrder = turnOrder
+            }
+            if isForceEnd {
+                forceEndPending = false
+                forceEndRequestedAt = nil
+            }
+            return
         }
 
         typeText(processedText, appendSpace: true)
@@ -4366,8 +4403,6 @@ class AppState: ObservableObject {
         switch microphoneMode {
         case .on:
             statusText = "Listening ✓"
-        case .ptt:
-            statusText = "Push-to-Talk"
         case .sleep:
             statusText = "Sleep Mode"
         case .off:
@@ -6221,7 +6256,6 @@ class AppState: ObservableObject {
             case "on": launchMode = .on
             case "off": launchMode = .off
             case "sleep": launchMode = .sleep
-            case "ptt": launchMode = .ptt
             default: break // Fall through to last_mode
             }
             if launchMode != .sleep || normalized == "sleep" {
@@ -6240,7 +6274,6 @@ class AppState: ObservableObject {
             case "on": launchMode = .on
             case "off": launchMode = .off
             case "sleep": launchMode = .sleep
-            case "ptt": launchMode = .ptt
             default: launchMode = .sleep
             }
             NSLog("[VoiceFlow] loadLaunchMode: Restoring last_mode=%@", launchMode.rawValue)
@@ -6334,33 +6367,58 @@ class AppState: ObservableObject {
         }
     }
 
+    private func loadPTTSettings() {
+        pttBufferedOutputEnabled = UserDefaults.standard.object(forKey: "ptt_buffered_output_enabled") as? Bool ?? true
+        pttPreviewEnabled = UserDefaults.standard.object(forKey: "ptt_preview_enabled") as? Bool ?? true
+        pttStreamWhilePopupEnabled = UserDefaults.standard.object(forKey: "ptt_stream_while_popup_enabled") as? Bool ?? false
+        pttCommitDelayMs = UserDefaults.standard.double(forKey: "ptt_commit_delay_ms")
+    }
+
+    func savePTTBufferedOutputEnabled(_ value: Bool) {
+        pttBufferedOutputEnabled = value
+        UserDefaults.standard.set(value, forKey: "ptt_buffered_output_enabled")
+    }
+
+    func savePTTPreviewEnabled(_ value: Bool) {
+        pttPreviewEnabled = value
+        UserDefaults.standard.set(value, forKey: "ptt_preview_enabled")
+        if value && (isPTTSessionActive || isPTTProcessing) {
+            isPTTPreviewVisible = true
+        }
+        if !value {
+            isPTTPreviewVisible = false
+        }
+    }
+
+    func savePTTStreamWhilePopupEnabled(_ value: Bool) {
+        pttStreamWhilePopupEnabled = value
+        UserDefaults.standard.set(value, forKey: "ptt_stream_while_popup_enabled")
+    }
+
+    func savePTTCommitDelayMs(_ value: Double) {
+        pttCommitDelayMs = value
+        UserDefaults.standard.set(value, forKey: "ptt_commit_delay_ms")
+    }
+
+    func applyPTTPresetWispr() {
+        savePTTPreviewEnabled(true)
+        savePTTBufferedOutputEnabled(true)
+        savePTTStreamWhilePopupEnabled(false)
+        savePTTCommitDelayMs(0)
+    }
+
+    func applyPTTPresetHandsFree() {
+        savePTTPreviewEnabled(false)
+        savePTTBufferedOutputEnabled(false)
+        savePTTStreamWhilePopupEnabled(false)
+        savePTTCommitDelayMs(0)
+        saveLiveDictationEnabled(true)
+    }
+
     func savePTTShortcut(_ shortcut: KeyboardShortcut) {
         pttShortcut = shortcut
         if let data = try? JSONEncoder().encode(shortcut) {
             UserDefaults.standard.set(data, forKey: "shortcut_ptt")
-        }
-    }
-
-    private func applyPTTOverridesIfNeeded() {
-        guard microphoneMode == .ptt else { return }
-        if pttPreviousBehavior == nil {
-            pttPreviousBehavior = activeBehavior
-        }
-        if pttPreviousLiveDictation == nil {
-            pttPreviousLiveDictation = liveDictationEnabled
-        }
-        activeBehavior = .dictation
-        liveDictationEnabled = false
-    }
-
-    private func restorePTTOverridesIfNeeded() {
-        if let previousBehavior = pttPreviousBehavior {
-            activeBehavior = previousBehavior
-            pttPreviousBehavior = nil
-        }
-        if let previousLiveDictation = pttPreviousLiveDictation {
-            liveDictationEnabled = previousLiveDictation
-            pttPreviousLiveDictation = nil
         }
     }
 
@@ -6382,15 +6440,19 @@ class AppState: ObservableObject {
         assemblyAIService?.forceEndUtterance()
         appleSpeechService?.forceEndUtterance()
 
-        // Set a timeout - if we don't get a final turn within 2 seconds, force return
+        // Set a timeout - if we don't get a final turn within 4 seconds, force return
         pttSleepTimeoutTask?.cancel()
         pttSleepTimeoutTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
+            try? await Task.sleep(nanoseconds: 4_000_000_000)  // 4 seconds
             if self.isPTTProcessing {
                 let returnMode = self.pttReturnMode ?? .sleep
                 self.logDebug("PTT: Timeout waiting for finalized text, forcing \(returnMode.rawValue)")
                 self.isPTTProcessing = false
                 self.pttReturnMode = nil
+                if self.shouldBufferPTTOutput {
+                    self.commitPTTBufferIfNeeded()
+                }
+                self.isPTTPreviewVisible = false
                 self.setMode(returnMode)
             }
         }
@@ -6404,13 +6466,47 @@ class AppState: ObservableObject {
             pttReturnMode = nil
             pttSleepTimeoutTask?.cancel()
             pttSleepTimeoutTask = nil
+            pttBufferedText = ""
         }
     }
+    
+    func startPTTSession(returnMode: MicrophoneMode, sticky: Bool) {
+        pttReturnMode = shouldUseLegacyPTT ? .sleep : returnMode
+        isPTTSticky = sticky
+        isPTTSessionActive = true
+        pttBufferedText = ""
+        currentTranscript = ""
+        currentWords = []
+        isPTTPreviewVisible = pttPreviewEnabled
+        setMode(.on, persist: shouldUseLegacyPTT)
+    }
 
-    /// Start a PTT session (applies Wispr-style overrides in PTT mode)
-    func beginPTTSession(persistOnMode: Bool = true) {
-        applyPTTOverridesIfNeeded()
-        setMode(.on, persist: persistOnMode)
+    func endPTTSession() {
+        guard microphoneMode == .on else { return }
+        isPTTSessionActive = false
+        isPTTSticky = false
+        requestPTTReturn(to: pttReturnMode ?? .sleep)
+    }
+
+    private func appendPTTBuffer(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if pttBufferedText.isEmpty {
+            pttBufferedText = text
+            return
+        }
+        let needsSpace = !pttBufferedText.hasSuffix(" ") && !pttBufferedText.hasSuffix("\n") && !text.hasPrefix(" ")
+        pttBufferedText += needsSpace ? " " + text : text
+    }
+
+    private func commitPTTBufferIfNeeded() {
+        let trimmed = pttBufferedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            pttBufferedText = ""
+            return
+        }
+        typeText(pttBufferedText, appendSpace: true)
+        pttBufferedText = ""
     }
 
     /// Called when PTT key is pressed - records the stream-relative timestamp
@@ -6514,7 +6610,6 @@ class AppState: ObservableObject {
         case .off: return modeOffShortcut
         case .sleep: return modeSleepShortcut
         case .on: return modeOnShortcut
-        case .ptt: return pttShortcut
         }
     }
 
@@ -6534,13 +6629,21 @@ class AppState: ObservableObject {
     private func flushDictationBuffer(isForceEnd: Bool) {
         logDebug("flushDictationBuffer called: transcript=\"\(currentTranscript.prefix(50))\", mode=\(microphoneMode.rawValue), isForceEnd=\(isForceEnd)")
 
+        func emitPTTBufferOrType(_ text: String) {
+            if (isPTTSessionActive || isPTTProcessing) && shouldBufferPTTOutput {
+                appendPTTBuffer(text)
+            } else {
+                typeText(text, appendSpace: true)
+            }
+        }
+
         // If buffer is empty but force end requested, try to use preserved Sleep mode transcript or last utterance
         if currentTranscript.isEmpty {
             if isForceEnd {
                 // First, try to use the preserved Sleep mode transcript
                 if !lastSleepModeTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     logDebug("flushDictationBuffer: buffer empty, using preserved Sleep mode transcript: \"\(lastSleepModeTranscript.prefix(50))\"")
-                    typeText(lastSleepModeTranscript, appendSpace: true)
+                    emitPTTBufferOrType(lastSleepModeTranscript)
                     lastSleepModeTranscript = ""
                     return
                 }
@@ -6569,7 +6672,7 @@ class AppState: ObservableObject {
                         }
                     }
                     logDebug("flushDictationBuffer: buffer empty, resending utterance: \"\(longestUtterance.prefix(50))\" (found longest among \(recentUtterances.count) recent)")
-                    typeText(longestUtterance, appendSpace: true)
+                    emitPTTBufferOrType(longestUtterance)
                     return
                 }
             }

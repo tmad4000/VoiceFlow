@@ -3,9 +3,8 @@ A native macOS speech recognition app designed for users with Repetitive Strain 
 ## Features
 - **Real-time Speech-to-Text**: Dictate text directly into any application
 - **Live Dictation (Optional)**: Type words as they become final for lower latency
-- **Four Microphone Modes**:
+- **Three Microphone Modes**:
 - **Off**: Microphone completely disabled
-- **PTT**: Push-to-talk mode - hold shortcut to dictate
 - **On**: Active transcription mode - speak and text appears
 - **Sleep**: Listen for voice commands only
 - **Voice Commands**: Map spoken phrases to keyboard shortcuts (e.g., "tab back" → Ctrl+Shift+Tab)
@@ -40,7 +39,6 @@ in Settings → General → Keyboard → Keyboards and turn on Full Access.
 ## Usage
 ### Microphone Modes
 - **Off**: Click when you don't want the app listening at all
-- **PTT**: Click to enter push-to-talk mode. Hold the PTT shortcut to dictate
 - **On**: Click to start dictating. Speech will be typed into the currently focused app
 - **Sleep**: Click to listen for voice commands only. Say "microphone on" to start dictating
 ### Voice Commands

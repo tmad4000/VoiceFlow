@@ -6,7 +6,7 @@ import AppKit
 ///   VoiceFlow config list              - List all settings
 ///   VoiceFlow config get <key>         - Get a specific setting
 ///   VoiceFlow config set <key> <value> - Set a setting
-///   VoiceFlow mode <on|off|sleep|ptt>  - Set mode (sends to running app)
+///   VoiceFlow mode <on|off|sleep>      - Set mode (sends to running app)
 ///   VoiceFlow status                   - Get status from running app
 ///   VoiceFlow help                     - Show help
 enum VoiceFlowCLI {
@@ -28,7 +28,7 @@ enum VoiceFlowCLI {
         ("assemblyai_api_key", "AssemblyAI API key", "string"),
         ("deepgram_api_key", "Deepgram API key", "string"),
         ("dictation_provider", "Dictation provider (auto/online/deepgram/offline)", "string"),
-        ("launch_mode", "Initial mode on launch (On/Off/Sleep/PTT)", "string"),
+        ("launch_mode", "Initial mode on launch (On/Off/Sleep)", "string"),
         ("utterance_mode", "Utterance detection mode (quick/balanced/patient/dictation/extra_long/custom)", "string"),
         ("live_dictation_enabled", "Enable live dictation mode", "bool"),
         ("command_delay_ms", "Delay before executing commands (ms)", "number"),
@@ -41,6 +41,10 @@ enum VoiceFlowCLI {
         ("active_behavior", "Active mode behavior (mixed/dictation/command)", "string"),
         ("auto_submit_enabled", "Auto-press Enter after utterance + silence (vibe coding)", "bool"),
         ("auto_submit_delay_seconds", "Seconds of silence before auto-submit (default 2.0)", "number"),
+        ("ptt_buffered_output_enabled", "PTT: buffer output until release (Wispr-style)", "bool"),
+        ("ptt_preview_enabled", "PTT: show popup while speaking", "bool"),
+        ("ptt_stream_while_popup_enabled", "PTT: stream while popup is visible", "bool"),
+        ("ptt_commit_delay_ms", "PTT: delay before inserting text after release (ms)", "number"),
     ]
 
     // MARK: - Distributed Notification Names
@@ -238,13 +242,13 @@ enum VoiceFlowCLI {
 
     private static func handleMode(_ args: [String]) {
         guard let mode = args.first?.lowercased() else {
-            print("Usage: VoiceFlow mode <on|off|sleep|ptt>")
+            print("Usage: VoiceFlow mode <on|off|sleep>")
             exit(1)
         }
 
-        guard ["on", "off", "sleep", "ptt"].contains(mode) else {
+        guard ["on", "off", "sleep"].contains(mode) else {
             print("Invalid mode: \(mode)")
-            print("Valid modes: on, off, sleep, ptt")
+            print("Valid modes: on, off, sleep")
             exit(1)
         }
 
@@ -712,7 +716,7 @@ enum VoiceFlowCLI {
             VoiceFlow config list               List all settings with values
             VoiceFlow config get <key>          Get a specific setting value
             VoiceFlow config set <key> <value>  Set a setting value
-            VoiceFlow mode <on|off|sleep|ptt>   Set mode (controls running app)
+            VoiceFlow mode <on|off|sleep>       Set mode (controls running app)
             VoiceFlow status                    Get status from running app
             VoiceFlow force-send                Force send partial text or last utterance
             VoiceFlow log [N] [-f]              Show last N log lines (default 50), -f to follow

@@ -19,11 +19,10 @@ ENTITLEMENTS="VoiceFlow-Dev.entitlements"
 
 # Signing identity options:
 # 1. Ad-hoc ("-") - Works but permissions reset on each rebuild
-# 2. "Apple Development: jacob@ideapad.io (3A8J2544R7)" - Persistent permissions but needs investigation
+# 2. "Apple Development: Jacob Cole (4XF5KJRWL2)" - Persistent permissions
 #
-# Using ad-hoc for now since developer signing causes launch failures
-# TODO: Investigate why developer signing causes "Launchd job spawn failed" error
-SIGNING_IDENTITY="-"
+# Using Apple Development to keep TCC permissions stable across rebuilds.
+SIGNING_IDENTITY="Apple Development: Jacob Cole (4XF5KJRWL2)"
 
 # ... (omitted)
 
@@ -40,5 +39,5 @@ codesign -dv "${APP_BUNDLE}" 2>&1 | grep -E "Identifier|TeamIdentifier|Signature
 echo ""
 echo "✅ Development build complete: ${APP_BUNDLE}"
 echo ""
-echo "Note: Using ad-hoc signing. Permissions may need to be re-granted after rebuild."
+echo "Note: Using Apple Development signing. TCC permissions should persist across rebuilds."
 echo "To run: open ${APP_BUNDLE}"

@@ -17,6 +17,7 @@ struct FloatingPanelView: View {
     @State private var autoScrollEnabled = true
     @State private var lastScrollOffset: CGFloat = 0
     @State private var isUserScrolling = false
+    @State private var isMicSelectorPresented = false
 
     var body: some View {
         Group {
@@ -118,18 +119,34 @@ struct FloatingPanelView: View {
 
                 // VOLUME METER - Large & Dramatic
                 if appState.microphoneMode == .on || appState.microphoneMode == .sleep {
-                    Menu {
-                        InputDeviceMenuItems()
-                    } label: {
-                        MicLevelIndicator(level: appState.audioLevel)
-                            .frame(width: 100, height: 12)
-                            .background(Color.white.opacity(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    Button(action: { isMicSelectorPresented.toggle() }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.secondary)
+                            MicLevelIndicator(level: appState.audioLevel)
+                                .frame(width: 90, height: 8)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                        .contentShape(Rectangle())
                     }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
+                    .buttonStyle(.plain)
                     .fixedSize()
                     .instantTooltip("Click to change microphone")
+                    .popover(isPresented: $isMicSelectorPresented, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            InputDeviceMenuItems()
+                        }
+                        .padding(12)
+                        .frame(minWidth: 200)
+                    }
 
                     // Force end button
                     if appState.isConnected {
@@ -288,6 +305,8 @@ struct FloatingPanelView: View {
                         Image(systemName: "ellipsis.circle")
                             .font(.system(size: 16, weight: .bold))
                             .foregroundColor(.secondary)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
                     }
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
@@ -723,7 +742,6 @@ private struct UnifiedModeButton: View {
     private var modeColor: Color {
         switch mode {
         case .off: return .gray
-        case .ptt: return .blue
         case .on: return .green
         case .sleep: return .orange
         }
@@ -824,8 +842,6 @@ private struct UnifiedModeButton: View {
         switch mode {
         case .off:
             appState.setMode(.on)
-        case .ptt:
-            appState.setMode(.on)
         case .on:
             appState.setMode(.sleep)
         case .sleep:
@@ -836,8 +852,6 @@ private struct UnifiedModeButton: View {
     private var toggleHelpText: String {
         switch mode {
         case .off:
-            return modeToggleHelpText(action: "Click to turn On", shortcut: appState.shortcutString(for: .on))
-        case .ptt:
             return modeToggleHelpText(action: "Click to turn On", shortcut: appState.shortcutString(for: .on))
         case .on:
             return modeToggleHelpText(action: "Click to Sleep", shortcut: appState.shortcutString(for: .sleep))
@@ -898,9 +912,14 @@ private struct MicLevelIndicator: View {
                     startPoint: .leading,
                     endPoint: .trailing
                 ))
-                .frame(width: max(4, CGFloat(level) * 120), height: 6)
+                .frame(width: calculateWidth(level), height: 6)
                 .shadow(color: levelColor.opacity(level > 0.05 ? 0.6 : 0), radius: 4)
         }
+    }
+
+    private func calculateWidth(_ level: Float) -> CGFloat {
+        if level.isNaN || level.isInfinite { return 4 }
+        return max(4, CGFloat(level) * 120)
     }
 
     private var levelColor: Color {
@@ -973,7 +992,7 @@ private struct CompactModeButtons: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach([MicrophoneMode.off, .ptt, .sleep, .on], id: \.self) { mode in
+            ForEach([MicrophoneMode.off, .sleep, .on], id: \.self) { mode in
                 Button(action: { appState.setMode(mode) }) {
                     ZStack {
                         // PTM: Show red circle with mic.slash for On mode when muted
@@ -1017,7 +1036,6 @@ private struct CompactModeButtons: View {
         case .off: return .gray
         case .sleep: return .orange
         case .on: return .green
-        case .ptt: return .blue
         }
     }
 }
@@ -1066,7 +1084,6 @@ private struct AudioPulseIndicator: View {
         case .on: return amplifiedLevel > 0.5 ? .orange : .green
         case .sleep: return .orange
         case .off: return .gray
-        case .ptt: return .blue
         }
     }
 }
@@ -1150,9 +1167,6 @@ private struct TranscriptContentView: View {
         switch appState.microphoneMode {
         case .off:
             return "Microphone off"
-        case .ptt:
-            let shortcut = appState.shortcutString(for: .ptt) ?? "⌃⌥Space"
-            return "Push-to-talk mode (hold \(shortcut))"
         case .on:
             if appState.effectiveIsOffline {
                 return appState.isConnected ? "Listening (Mac Speech)…" : "Starting Mac Speech…"
