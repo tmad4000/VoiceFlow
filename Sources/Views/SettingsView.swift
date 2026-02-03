@@ -354,6 +354,101 @@ struct GeneralSettingsView: View {
                     .padding(4)
                 }
 
+                // Dictation Settings (Moved near top per user request)
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Dictation")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        HStack {
+                            Text("Provider")
+                                .font(.system(size: 13))
+                            Spacer()
+                            Picker("", selection: dictationProviderBinding) {
+                                ForEach(DictationProvider.allCases) { provider in
+                                    Text(provider.displayName).tag(provider)
+                                }
+                            }
+                            .frame(width: 180)
+                        }
+
+                        Text("Choose between cloud-based (AssemblyAI, Deepgram) or local Mac speech recognition.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Text(vocabularyBiasProviderNote)
+                            .font(.system(size: 11))
+                            .foregroundColor(vocabularyBiasProviderNoteColor)
+
+                        Toggle("Auto-switch to offline if slow", isOn: autoSwitchOfflineBinding)
+                            .font(.system(size: 13))
+
+                        Text("Automatically use Mac Speech if network latency exceeds 500ms.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Divider()
+
+                        HStack {
+                            Text("Microphone")
+                                .font(.system(size: 13))
+                            Spacer()
+                            InputDevicePicker(selectedDeviceID: $appState.selectedInputDeviceId) {
+                                // On change, save (the binding updates the state, but we need to persist)
+                                appState.saveInputDevice($0)
+                            }
+                            .frame(width: 180)
+                        }
+                        
+                        Text("Select which microphone to use for dictation.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Divider()
+
+                        Toggle("Live Dictation", isOn: liveDictationBinding)
+                            .font(.system(size: 13))
+
+                        Text("Type words as they become final (lower latency, but disables punctuation).")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        if appState.liveDictationEnabled {
+                            Toggle("Aggressive Mode", isOn: aggressiveLiveModeBinding)
+                                .font(.system(size: 13))
+                                .padding(.leading, 16)
+
+                            Text("Type immediately from partials - fastest but may briefly show corrections.")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .padding(.leading, 16)
+
+                            if appState.aggressiveLiveMode {
+                                Toggle("Allow Corrections", isOn: aggressiveAllowCorrectionsBinding)
+                                    .font(.system(size: 13))
+                                    .padding(.leading, 32)
+
+                                Text("Use backspace to fix ASR changes. Disable for terminals (auto-detected).")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                                    .padding(.leading, 32)
+                            }
+                        }
+
+                        Divider()
+
+                        SliderRow(
+                            "Command Delay",
+                            subtitle: "Delay before triggering non-prefixed commands.",
+                            value: commandDelayBinding,
+                            range: 0...500,
+                            step: 50,
+                            unit: " ms"
+                        )
+                    }
+                    .padding(4)
+                }
+
                 // AI Formatter Section (Experimental) - Collapsible
                 GroupBox {
                     DisclosureGroup(isExpanded: $isAIFormatterExpanded) {
@@ -663,6 +758,21 @@ struct GeneralSettingsView: View {
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
 
+                        Toggle("Launch Dev Build at Login", isOn: devLaunchAtLoginBinding)
+                            .font(.system(size: 13))
+
+                        if appState.devLaunchAtLogin, let path = Bundle.main.executableURL?.path {
+                            Text("Will launch: \(path)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                        } else {
+                            Text("Start the current dev binary via LaunchAgent when you log in.")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+
                         Divider()
                         
                         VStack(alignment: .leading, spacing: 8) {
@@ -708,101 +818,6 @@ struct GeneralSettingsView: View {
                                 .padding(.leading, 16)
                             }
                         }
-                    }
-                    .padding(4)
-                }
-
-                // Dictation Settings
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Dictation")
-                            .font(.system(size: 13, weight: .semibold))
-
-                        HStack {
-                            Text("Provider")
-                                .font(.system(size: 13))
-                            Spacer()
-                            Picker("", selection: dictationProviderBinding) {
-                                ForEach(DictationProvider.allCases) { provider in
-                                    Text(provider.displayName).tag(provider)
-                                }
-                            }
-                            .frame(width: 180)
-                        }
-
-                        Text("Choose between cloud-based (AssemblyAI, Deepgram) or local Mac speech recognition.")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-
-                        Text(vocabularyBiasProviderNote)
-                            .font(.system(size: 11))
-                            .foregroundColor(vocabularyBiasProviderNoteColor)
-
-                        Toggle("Auto-switch to offline if slow", isOn: autoSwitchOfflineBinding)
-                            .font(.system(size: 13))
-
-                        Text("Automatically use Mac Speech if network latency exceeds 500ms.")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-
-                        Divider()
-
-                        HStack {
-                            Text("Microphone")
-                                .font(.system(size: 13))
-                            Spacer()
-                            InputDevicePicker(selectedDeviceID: $appState.selectedInputDeviceId) {
-                                // On change, save (the binding updates the state, but we need to persist)
-                                appState.saveInputDevice($0)
-                            }
-                            .frame(width: 180)
-                        }
-                        
-                        Text("Select which microphone to use for dictation.")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-
-                        Divider()
-
-                        Toggle("Live Dictation", isOn: liveDictationBinding)
-                            .font(.system(size: 13))
-
-                        Text("Type words as they become final (lower latency, but disables punctuation).")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-
-                        if appState.liveDictationEnabled {
-                            Toggle("Aggressive Mode", isOn: aggressiveLiveModeBinding)
-                                .font(.system(size: 13))
-                                .padding(.leading, 16)
-
-                            Text("Type immediately from partials - fastest but may briefly show corrections.")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                                .padding(.leading, 16)
-
-                            if appState.aggressiveLiveMode {
-                                Toggle("Allow Corrections", isOn: aggressiveAllowCorrectionsBinding)
-                                    .font(.system(size: 13))
-                                    .padding(.leading, 32)
-
-                                Text("Use backspace to fix ASR changes. Disable for terminals (auto-detected).")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
-                                    .padding(.leading, 32)
-                            }
-                        }
-
-                        Divider()
-
-                        SliderRow(
-                            "Command Delay",
-                            subtitle: "Delay before triggering non-prefixed commands.",
-                            value: commandDelayBinding,
-                            range: 0...500,
-                            step: 50,
-                            unit: " ms"
-                        )
                     }
                     .padding(4)
                 }
@@ -1115,6 +1130,13 @@ struct GeneralSettingsView: View {
         Binding(
             get: { appState.launchAtLogin },
             set: { appState.saveLaunchAtLogin($0) }
+        )
+    }
+
+    private var devLaunchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { appState.devLaunchAtLogin },
+            set: { appState.saveDevLaunchAtLogin($0) }
         )
     }
 

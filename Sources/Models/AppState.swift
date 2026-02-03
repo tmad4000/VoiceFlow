@@ -235,8 +235,9 @@ class AppState: ObservableObject {
     @Published var sleepTimerMinutes: Double = 15
     @Published var autoOffEnabled: Bool = true
     @Published var autoOffMinutes: Double = 30
-    @Published var launchMode: MicrophoneMode = .sleep
+    @Published var launchMode: MicrophoneMode = .off
     @Published var launchAtLogin: Bool = false
+    @Published var devLaunchAtLogin: Bool = false
     @Published var selectedInputDeviceId: String? = nil
     @Published var isNewerBuildAvailable: Bool = false
     @Published var settingsSearchText: String = ""
@@ -631,6 +632,7 @@ class AppState: ObservableObject {
         loadActiveBehavior()
         loadLaunchMode()
         loadLaunchAtLogin()
+        loadDevLaunchAtLogin()
         loadInputDevice()
         loadShortcuts()
         loadDictationProvider()
@@ -6273,6 +6275,62 @@ class AppState: ObservableObject {
                 launchAtLogin = SMAppService.mainApp.status == .enabled
             }
         }
+    }
+
+    // MARK: - Dev Launch at Login (LaunchAgent)
+
+    private static let devLaunchAgentLabel = "com.jacobcole.VoiceFlow.dev"
+
+    private static var devLaunchAgentPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/Library/LaunchAgents/\(devLaunchAgentLabel).plist"
+    }
+
+    private func loadDevLaunchAtLogin() {
+        devLaunchAtLogin = FileManager.default.fileExists(atPath: Self.devLaunchAgentPath)
+    }
+
+    func saveDevLaunchAtLogin(_ enabled: Bool) {
+        devLaunchAtLogin = enabled
+        if enabled {
+            installDevLaunchAgent()
+        } else {
+            removeDevLaunchAgent()
+        }
+    }
+
+    private func installDevLaunchAgent() {
+        guard let execPath = Bundle.main.executableURL?.path ?? ProcessInfo.processInfo.arguments.first else {
+            logDebug("Dev launch agent: could not determine executable path")
+            devLaunchAtLogin = false
+            return
+        }
+
+        let plist: [String: Any] = [
+            "Label": Self.devLaunchAgentLabel,
+            "ProgramArguments": [execPath],
+            "RunAtLoad": true,
+            "ProcessType": "Interactive",
+            "StandardOutPath": "/tmp/VoiceFlow-dev.log",
+            "StandardErrorPath": "/tmp/VoiceFlow-dev.log",
+        ]
+
+        let launchAgentsDir = (Self.devLaunchAgentPath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: launchAgentsDir, withIntermediateDirectories: true)
+
+        let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        if let data = data {
+            FileManager.default.createFile(atPath: Self.devLaunchAgentPath, contents: data)
+            logDebug("Dev launch agent installed: \(execPath)")
+        } else {
+            logDebug("Dev launch agent: failed to serialize plist")
+            devLaunchAtLogin = false
+        }
+    }
+
+    private func removeDevLaunchAgent() {
+        try? FileManager.default.removeItem(atPath: Self.devLaunchAgentPath)
+        logDebug("Dev launch agent removed")
     }
 
     private func loadInputDevice() {
