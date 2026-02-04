@@ -6,7 +6,7 @@ A native macOS speech recognition app designed for users with Repetitive Strain 
 - **Three Microphone Modes**:
 - **Off**: Microphone completely disabled
 - **On**: Active transcription mode - speak and text appears
-- **Wake**: Listen for voice commands only
+- **Sleep**: Listen for voice commands only
 - **Voice Commands**: Map spoken phrases to keyboard shortcuts (e.g., "tab back" → Ctrl+Shift+Tab)
 - **RSI-Friendly**: Designed to minimize keyboard and mouse usage
 ## Requirements
@@ -26,6 +26,11 @@ swift run
 open Package.swift
 ```
 Then build and run (⌘R).
+
+## iOS Keyboard (Experimental)
+An iOS custom keyboard extension with a live dictation mic button lives in `iOSKeyboard/`.
+Generate the Xcode project with `xcodegen`, run `VoiceFlowKeyboardHost`, then enable the keyboard
+in Settings → General → Keyboard → Keyboards and turn on Full Access.
 ## Setup
 - Launch VoiceFlow
 - Open Settings (⌘,)
@@ -35,7 +40,7 @@ Then build and run (⌘R).
 ### Microphone Modes
 - **Off**: Click when you don't want the app listening at all
 - **On**: Click to start dictating. Speech will be typed into the currently focused app
-- **Wake**: Click to listen for voice commands only. Say "microphone on" to start dictating
+- **Sleep**: Click to listen for voice commands only. Say "microphone on" to start dictating
 ### Voice Commands
 In Wake mode, you can use voice commands to control your computer:
 - "microphone on" / "start dictation" - Switch to On mode

@@ -1,6 +1,32 @@
 import SwiftUI
 import AVFoundation
 
+extension Notification.Name {
+    static let settingsScrollTo = Notification.Name("SettingsScrollTo")
+}
+
+enum SettingsAnchor {
+    static let assemblyAI = "settings_assemblyai"
+    static let deepgram = "settings_deepgram"
+    static let anthropic = "settings_anthropic"
+    static let microphone = "settings_microphone"
+    static let permissions = "settings_permissions"
+    static let resetAccessibility = "settings_reset_accessibility"
+    static let pttShortcut = "settings_ptt_shortcut"
+    static let toggleOnSleep = "settings_toggle_on_sleep"
+    static let autoSleep = "settings_auto_sleep"
+    static let autoOff = "settings_auto_off"
+    static let dictationProvider = "settings_dictation_provider"
+    static let liveDictation = "settings_live_dictation"
+    static let vocabulary = "settings_vocabulary"
+    static let ideaFlow = "settings_idea_flow"
+}
+
+struct SettingsDestination {
+    let tabIndex: Int
+    let anchor: String?
+}
+
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @AppStorage("settings_selected_tab") private var selectedTab: Int = 0
@@ -34,9 +60,18 @@ struct SettingsView: View {
                         .tag(3)
                 }
             } else {
-                SettingsSearchResultsView(searchText: appState.settingsSearchText) { tabIndex in
+                SettingsSearchResultsView(searchText: appState.settingsSearchText) { destination in
                     appState.settingsSearchText = ""
-                    selectedTab = tabIndex
+                    selectedTab = destination.tabIndex
+                    if let anchor = destination.anchor {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            NotificationCenter.default.post(
+                                name: .settingsScrollTo,
+                                object: nil,
+                                userInfo: ["anchor": anchor]
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -51,36 +86,38 @@ struct SettingsView: View {
     }
 }
 
+
 struct SettingsSearchResultsView: View {
     let searchText: String
-    let onNavigate: (Int) -> Void
+    let onNavigate: (SettingsDestination) -> Void
     
     struct SearchItem: Identifiable {
         let id = UUID()
         let title: String
         let description: String
         let tabIndex: Int
+        let anchor: String?
         let icon: String
     }
     
     var allItems: [SearchItem] = [
-        SearchItem(title: "AssemblyAI API Key", description: "Set your cloud transcription key", tabIndex: 0, icon: "key"),
-        SearchItem(title: "Deepgram API Key", description: "Secondary transcription provider", tabIndex: 0, icon: "key.fill"),
-        SearchItem(title: "Anthropic API Key", description: "Enable AI-powered formatting", tabIndex: 0, icon: "sparkles"),
-        SearchItem(title: "Microphone", description: "Select audio input device", tabIndex: 0, icon: "mic"),
-        SearchItem(title: "Permissions", description: "Microphone, Accessibility, Speech Recognition", tabIndex: 0, icon: "lock.shield"),
-        SearchItem(title: "Reset Accessibility", description: "Fix PTT and typing issues", tabIndex: 0, icon: "arrow.counterclockwise"),
-        SearchItem(title: "Push-to-Talk", description: "Custom PTT global shortcut", tabIndex: 0, icon: "keyboard"),
-        SearchItem(title: "Toggle ON/SLEEP", description: "Switch recording state with one key", tabIndex: 0, icon: "switch.2"),
-        SearchItem(title: "Auto-Sleep", description: "Inactivity timeout for Sleep mode", tabIndex: 0, icon: "moon"),
-        SearchItem(title: "Auto-Off", description: "Battery saving inactivity timeout", tabIndex: 0, icon: "power"),
-        SearchItem(title: "Dictation Provider", description: "Online vs Offline models", tabIndex: 0, icon: "waveform"),
-        SearchItem(title: "Live Dictation", description: "Lower latency transcription", tabIndex: 0, icon: "bolt.fill"),
-        SearchItem(title: "Vocabulary", description: "Custom words and technical terms", tabIndex: 0, icon: "text.book.closed"),
-        SearchItem(title: "Idea Flow", description: "Save notes to Idea Flow", tabIndex: 0, icon: "lightbulb"),
-        SearchItem(title: "Voice Commands", description: "Manage and add custom shortcuts", tabIndex: 1, icon: "command"),
-        SearchItem(title: "History", description: "View past transcriptions", tabIndex: 2, icon: "clock"),
-        SearchItem(title: "Debug Logs", description: "Technical logs and event trace", tabIndex: 3, icon: "terminal")
+        SearchItem(title: "AssemblyAI API Key", description: "Set your cloud transcription key", tabIndex: 0, anchor: SettingsAnchor.assemblyAI, icon: "key"),
+        SearchItem(title: "Deepgram API Key", description: "Secondary transcription provider", tabIndex: 0, anchor: SettingsAnchor.deepgram, icon: "key.fill"),
+        SearchItem(title: "Anthropic API Key", description: "Enable AI-powered formatting", tabIndex: 0, anchor: SettingsAnchor.anthropic, icon: "sparkles"),
+        SearchItem(title: "Microphone", description: "Select audio input device", tabIndex: 0, anchor: SettingsAnchor.microphone, icon: "mic"),
+        SearchItem(title: "Permissions", description: "Microphone, Accessibility, Speech Recognition", tabIndex: 0, anchor: SettingsAnchor.permissions, icon: "lock.shield"),
+        SearchItem(title: "Reset Accessibility", description: "Fix PTT and typing issues", tabIndex: 0, anchor: SettingsAnchor.resetAccessibility, icon: "arrow.counterclockwise"),
+        SearchItem(title: "Push-to-Talk", description: "Custom PTT global shortcut", tabIndex: 0, anchor: SettingsAnchor.pttShortcut, icon: "keyboard"),
+        SearchItem(title: "Toggle ON/SLEEP", description: "Switch recording state with one key", tabIndex: 0, anchor: SettingsAnchor.toggleOnSleep, icon: "switch.2"),
+        SearchItem(title: "Auto-Sleep", description: "Inactivity timeout for Sleep mode", tabIndex: 0, anchor: SettingsAnchor.autoSleep, icon: "moon"),
+        SearchItem(title: "Auto-Off", description: "Battery saving inactivity timeout", tabIndex: 0, anchor: SettingsAnchor.autoOff, icon: "power"),
+        SearchItem(title: "Dictation Provider", description: "Online vs Offline models", tabIndex: 0, anchor: SettingsAnchor.dictationProvider, icon: "waveform"),
+        SearchItem(title: "Live Dictation", description: "Lower latency transcription", tabIndex: 0, anchor: SettingsAnchor.liveDictation, icon: "bolt.fill"),
+        SearchItem(title: "Vocabulary", description: "Custom words and technical terms", tabIndex: 0, anchor: SettingsAnchor.vocabulary, icon: "text.book.closed"),
+        SearchItem(title: "Idea Flow", description: "Save notes to Idea Flow", tabIndex: 0, anchor: SettingsAnchor.ideaFlow, icon: "lightbulb"),
+        SearchItem(title: "Voice Commands", description: "Manage and add custom shortcuts", tabIndex: 1, anchor: nil, icon: "command"),
+        SearchItem(title: "History", description: "View past transcriptions", tabIndex: 2, anchor: nil, icon: "clock"),
+        SearchItem(title: "Debug Logs", description: "Technical logs and event trace", tabIndex: 3, anchor: nil, icon: "terminal")
     ]
     
     var filteredItems: [SearchItem] {
@@ -101,7 +138,7 @@ struct SettingsSearchResultsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(filteredItems) { item in
-                    Button(action: { onNavigate(item.tabIndex) }) {
+                    Button(action: { onNavigate(SettingsDestination(tabIndex: item.tabIndex, anchor: item.anchor)) }) {
                         HStack(spacing: 12) {
                             Image(systemName: item.icon)
                                 .foregroundColor(.accentColor)
@@ -239,9 +276,11 @@ struct GeneralSettingsView: View {
     @State private var deepgramTestStatus: TestStatus = .idle
     @State private var anthropicTestStatus: TestStatus = .idle
     
+    @State private var isSpeechProvidersExpanded = false
     @State private var isAssemblyExpanded = false  // Collapsed by default to reduce clutter
     @State private var isDeepgramExpanded = false
     @State private var isAIFormatterExpanded = false  // Collapsible API key section
+    @State private var isAnthropicExpanded = false
     @State private var isAppearanceExpanded = false
     @State private var isIdeaFlowExpanded = false
     @State private var isDebugExpanded = false
@@ -260,16 +299,72 @@ struct GeneralSettingsView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+
+                // Dictation Provider (top)
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Dictation Provider")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.dictationProvider)
+
+                        HStack {
+                            Text("Provider")
+                                .font(.system(size: 13))
+                            Spacer()
+                            Picker("", selection: dictationProviderBinding) {
+                                ForEach(DictationProvider.allCases) { provider in
+                                    Text(provider.displayName).tag(provider)
+                                }
+                            }
+                            .frame(width: 180)
+                        }
+
+                        Text("Choose between cloud-based (AssemblyAI, Deepgram) or local Mac speech recognition.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Text(vocabularyBiasProviderNote)
+                            .font(.system(size: 11))
+                            .foregroundColor(vocabularyBiasProviderNoteColor)
+
+                        Divider()
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.microphone)
+                        HStack {
+                            Text("Microphone")
+                                .font(.system(size: 13))
+                            Spacer()
+                            InputDevicePicker(selectedDeviceID: $appState.selectedInputDeviceId) {
+                                // On change, save (the binding updates the state, but we need to persist)
+                                appState.saveInputDevice($0)
+                            }
+                            .frame(width: 180)
+                        }
+
+                        Text("Select which microphone to use for dictation.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(4)
+                }
 
                 // Speech Providers Section
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Speech Providers")
-                            .font(.system(size: 13, weight: .semibold))
+                    DisclosureGroup(isExpanded: $isSpeechProvidersExpanded) {
+                        VStack(alignment: .leading, spacing: 10) {
                         
                         // AssemblyAI
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.assemblyAI)
                         DisclosureGroup(isExpanded: $isAssemblyExpanded) {
                             VStack(alignment: .leading, spacing: 10) {
                                 SecureField("API Key", text: $apiKeyInput)
@@ -312,6 +407,9 @@ struct GeneralSettingsView: View {
                         Divider()
 
                         // Deepgram
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.deepgram)
                         DisclosureGroup(isExpanded: $isDeepgramExpanded) {
                             VStack(alignment: .leading, spacing: 10) {
                                 SecureField("API Key", text: $deepgramApiKeyInput)
@@ -350,6 +448,10 @@ struct GeneralSettingsView: View {
                                 Spacer()
                             }
                         }
+                        }
+                    } label: {
+                        Text("Speech Providers")
+                            .font(.system(size: 13, weight: .semibold))
                     }
                     .padding(4)
                 }
@@ -480,49 +582,58 @@ struct GeneralSettingsView: View {
 
                                 Divider()
 
-                                HStack {
-                                    Text("Anthropic API Key")
-                                        .font(.system(size: 12, weight: .medium))
-                                    if !appState.anthropicApiKey.isEmpty {
-                                        Text("(saved)")
-                                            .font(.system(size: 10))
-                                            .foregroundColor(.green)
-                                    }
-                                }
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id(SettingsAnchor.anthropic)
+                                DisclosureGroup(isExpanded: $isAnthropicExpanded) {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        SecureField("Enter your Anthropic API key", text: $anthropicApiKeyInput)
+                                            .textFieldStyle(.roundedBorder)
+                                            .font(.system(size: 12))
+                                            .onAppear { anthropicApiKeyInput = appState.anthropicApiKey }
 
-                                SecureField("Enter your Anthropic API key", text: $anthropicApiKeyInput)
-                                    .textFieldStyle(.roundedBorder)
-                                    .font(.system(size: 12))
-                                    .onAppear { anthropicApiKeyInput = appState.anthropicApiKey }
+                                        HStack {
+                                            Button("Save") {
+                                                appState.saveAnthropicApiKey(anthropicApiKeyInput)
+                                            }
+                                            .disabled(anthropicApiKeyInput.isEmpty)
+                                            .font(.system(size: 11))
 
-                                HStack {
-                                    Button("Save") {
-                                        appState.saveAnthropicApiKey(anthropicApiKeyInput)
-                                    }
-                                    .disabled(anthropicApiKeyInput.isEmpty)
-                                    .font(.system(size: 11))
+                                            Button("Test") {
+                                                testAnthropicKey()
+                                            }
+                                            .disabled(anthropicApiKeyInput.isEmpty)
+                                            .font(.system(size: 11))
 
-                                    Button("Test") {
-                                        testAnthropicKey()
-                                    }
-                                    .disabled(anthropicApiKeyInput.isEmpty)
-                                    .font(.system(size: 11))
+                                            testStatusView(anthropicTestStatus)
 
-                                    testStatusView(anthropicTestStatus)
+                                            if !appState.anthropicApiKey.isEmpty {
+                                                Button("Clear") {
+                                                    appState.saveAnthropicApiKey("")
+                                                    anthropicApiKeyInput = ""
+                                                }
+                                                .foregroundColor(.red)
+                                                .font(.system(size: 11))
+                                            }
 
-                                    if !appState.anthropicApiKey.isEmpty {
-                                        Button("Clear") {
-                                            appState.saveAnthropicApiKey("")
-                                            anthropicApiKeyInput = ""
+                                            Spacer()
+
+                                            Link("Get API Key", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
+                                                .font(.system(size: 11))
                                         }
-                                        .foregroundColor(.red)
-                                        .font(.system(size: 11))
                                     }
-
-                                    Spacer()
-
-                                    Link("Get API Key", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
-                                        .font(.system(size: 11))
+                                    .padding(.top, 4)
+                                } label: {
+                                    HStack {
+                                        Text("Anthropic API Key")
+                                            .font(.system(size: 12, weight: .medium))
+                                        if !appState.anthropicApiKey.isEmpty {
+                                            Text("(saved)")
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.green)
+                                        }
+                                        Spacer()
+                                    }
                                 }
                             }
                         }
@@ -566,6 +677,9 @@ struct GeneralSettingsView: View {
                 // Permissions Section
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.permissions)
                         let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "VoiceFlow"
 
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -642,6 +756,9 @@ struct GeneralSettingsView: View {
                         
                         Divider()
                         
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.resetAccessibility)
                         HStack {
                             Button("Refresh") {
                                 appState.checkMicrophonePermission()
@@ -686,12 +803,18 @@ struct GeneralSettingsView: View {
                         Text("Shortcuts")
                             .font(.system(size: 13, weight: .semibold))
 
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.pttShortcut)
                         ShortcutRecorder(
                             shortcut: $appState.pttShortcut,
                             label: "Push-to-Talk",
                             onChange: { appState.savePTTShortcut($0) }
                         )
                         
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.toggleOnSleep)
                         ShortcutRecorder(
                             shortcut: $appState.modeToggleShortcut,
                             label: "Toggle ON/SLEEP",
@@ -722,6 +845,61 @@ struct GeneralSettingsView: View {
                             label: "Switch to OFF",
                             onChange: { appState.saveModeOffShortcut($0) }
                         )
+                    }
+                    .padding(4)
+                }
+
+                // Push-to-Talk Behavior
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Push-to-Talk")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        HStack(spacing: 8) {
+                            Button("Wispr Flow Preset") {
+                                appState.applyPTTPresetWispr()
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button("Hands-Free (Live)") {
+                                appState.applyPTTPresetHandsFree()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        Text("Quickly apply PTT presets. Hands-Free enables live dictation.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Toggle("Show PTT popup", isOn: pttPreviewEnabledBinding)
+                            .font(.system(size: 13))
+
+                        Toggle("Buffer output until release (Wispr-style)", isOn: pttBufferedOutputEnabledBinding)
+                            .font(.system(size: 13))
+                            .disabled(!appState.pttPreviewEnabled)
+
+                        Toggle("Stream while popup is visible", isOn: pttStreamWhilePopupEnabledBinding)
+                            .font(.system(size: 13))
+                            .disabled(!appState.pttPreviewEnabled)
+
+                        SliderRow(
+                            "Popup Send Delay",
+                            subtitle: "Delay before inserting text after release (popup only).",
+                            value: pttCommitDelayMsBinding,
+                            range: 0...1000,
+                            step: 50,
+                            unit: " ms"
+                        )
+                        .opacity(appState.pttPreviewEnabled ? 1 : 0.6)
+                        .disabled(!appState.pttPreviewEnabled)
+
+                        Text("If the popup is off, PTT behaves like legacy (streams and returns to Sleep).")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Text("Double-tap the PTT shortcut to latch dictation; press again to send.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
                     }
                     .padding(4)
                 }
@@ -775,6 +953,9 @@ struct GeneralSettingsView: View {
 
                         Divider()
                         
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.autoSleep)
                         VStack(alignment: .leading, spacing: 8) {
                             Toggle("Auto-Sleep", isOn: sleepTimerEnabledBinding)
                                 .font(.system(size: 13))
@@ -798,6 +979,9 @@ struct GeneralSettingsView: View {
 
                         Divider()
 
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.autoOff)
                         VStack(alignment: .leading, spacing: 8) {
                             Toggle("Auto-Off", isOn: autoOffEnabledBinding)
                                 .font(.system(size: 13))
@@ -825,6 +1009,9 @@ struct GeneralSettingsView: View {
                 // Vocabulary Section
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.vocabulary)
                         Text("Vocabulary")
                             .font(.system(size: 13, weight: .semibold))
 
@@ -841,6 +1028,9 @@ struct GeneralSettingsView: View {
                 // Idea Flow Section
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
+                        Color.clear
+                            .frame(height: 1)
+                            .id(SettingsAnchor.ideaFlow)
                         Text("Idea Flow Integration")
                             .font(.system(size: 13, weight: .semibold))
 
@@ -1089,6 +1279,44 @@ struct GeneralSettingsView: View {
                 .padding(.top, 8)
             }
             .padding(16)
+            .onReceive(NotificationCenter.default.publisher(for: .settingsScrollTo)) { notification in
+                guard let anchor = notification.userInfo?["anchor"] as? String else { return }
+                handleScrollRequest(anchor, proxy: proxy)
+            }
+            .onAppear {
+                isSpeechProvidersExpanded = false
+                isAssemblyExpanded = false
+                isDeepgramExpanded = false
+                isAIFormatterExpanded = false
+                isAnthropicExpanded = false
+            }
+        }
+    }
+    }
+
+    private func handleScrollRequest(_ anchor: String, proxy: ScrollViewProxy) {
+        switch anchor {
+        case SettingsAnchor.assemblyAI:
+            isSpeechProvidersExpanded = true
+            isAssemblyExpanded = true
+        case SettingsAnchor.deepgram:
+            isSpeechProvidersExpanded = true
+            isDeepgramExpanded = true
+        case SettingsAnchor.anthropic:
+            isSpeechProvidersExpanded = true
+            isAIFormatterExpanded = true
+            isAnthropicExpanded = true
+            if !appState.aiFormatterEnabled {
+                appState.saveAIFormatterEnabled(true)
+            }
+        default:
+            break
+        }
+
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo(anchor, anchor: .top)
+            }
         }
     }
 
@@ -1165,6 +1393,34 @@ struct GeneralSettingsView: View {
         Binding(
             get: { appState.autoOffMinutes },
             set: { appState.saveAutoOffMinutes($0) }
+        )
+    }
+
+    private var pttBufferedOutputEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { appState.pttBufferedOutputEnabled },
+            set: { appState.savePTTBufferedOutputEnabled($0) }
+        )
+    }
+
+    private var pttPreviewEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { appState.pttPreviewEnabled },
+            set: { appState.savePTTPreviewEnabled($0) }
+        )
+    }
+
+    private var pttStreamWhilePopupEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { appState.pttStreamWhilePopupEnabled },
+            set: { appState.savePTTStreamWhilePopupEnabled($0) }
+        )
+    }
+
+    private var pttCommitDelayMsBinding: Binding<Double> {
+        Binding(
+            get: { appState.pttCommitDelayMs },
+            set: { appState.savePTTCommitDelayMs($0) }
         )
     }
 
@@ -2608,13 +2864,9 @@ struct ShortcutRecorder: View {
 
             // Handle Escape key - cancel and restore previous shortcut
             if event.type == .keyDown && keyCode == 53 {  // 53 = Escape key
-                cancelRecording()
-                return nil
-            }
-
-            // Handle pure modifier release (Stop recording)
-            if event.type == .flagsChanged && flags.isEmpty {
-                stopRecording()
+                DispatchQueue.main.async {
+                    cancelRecording()
+                }
                 return nil
             }
 
@@ -2625,16 +2877,22 @@ struct ShortcutRecorder: View {
             if flags.contains(.shift) { modifiers.insert(.shift) }
             if flags.contains(.command) { modifiers.insert(.command) }
 
-            let newShortcut = KeyboardShortcut(keyCode: keyCode, modifiers: modifiers)
-
-            // Only update shortcut if it's a KeyDown OR if it's a modifier press (flags not empty)
-            if event.type == .keyDown || !flags.isEmpty {
-                shortcut = newShortcut
-                onChange?(newShortcut)
+            if event.type == .keyDown {
+                let newShortcut = KeyboardShortcut(keyCode: keyCode, modifiers: modifiers)
+                DispatchQueue.main.async {
+                    shortcut = newShortcut
+                    onChange?(newShortcut)
+                    stopRecording()
+                }
+                return nil
             }
 
-            if event.type == .keyDown {
-                stopRecording()
+            // Handle pure modifier release (stop recording)
+            if event.type == .flagsChanged && flags.isEmpty {
+                DispatchQueue.main.async {
+                    stopRecording()
+                }
+                return nil
             }
 
             return nil // Consume event

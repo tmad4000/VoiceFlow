@@ -232,7 +232,7 @@ struct StatusBar: View {
     }
 
     var statusColor: Color {
-        if appState.effectiveIsOffline && appState.microphoneMode != .off {
+        if appState.effectiveIsOffline && (appState.microphoneMode == .on || appState.microphoneMode == .sleep) {
             return .orange
         }
         switch appState.microphoneMode {
@@ -242,7 +242,7 @@ struct StatusBar: View {
     }
 
     var statusText: String {
-        if appState.effectiveIsOffline && appState.microphoneMode != .off {
+        if appState.effectiveIsOffline && (appState.microphoneMode == .on || appState.microphoneMode == .sleep) {
             return "Offline (Mac Speech)"
         }
         switch appState.microphoneMode {

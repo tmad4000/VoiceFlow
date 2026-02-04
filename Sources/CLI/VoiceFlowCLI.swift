@@ -41,6 +41,10 @@ enum VoiceFlowCLI {
         ("active_behavior", "Active mode behavior (mixed/dictation/command)", "string"),
         ("auto_submit_enabled", "Auto-press Enter after utterance + silence (vibe coding)", "bool"),
         ("auto_submit_delay_seconds", "Seconds of silence before auto-submit (default 2.0)", "number"),
+        ("ptt_buffered_output_enabled", "PTT: buffer output until release (Wispr-style)", "bool"),
+        ("ptt_preview_enabled", "PTT: show popup while speaking", "bool"),
+        ("ptt_stream_while_popup_enabled", "PTT: stream while popup is visible", "bool"),
+        ("ptt_commit_delay_ms", "PTT: delay before inserting text after release (ms)", "number"),
     ]
 
     // MARK: - Distributed Notification Names

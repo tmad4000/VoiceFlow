@@ -53,9 +53,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var transcriptsPanelWindow: TranscriptsPanelWindow?
     private var ticketsPanelWindow: TicketsPanelWindow?
     private var vocabularyPanelWindow: VocabularyPanelWindow?
+    private var pttPreviewWindow: PTTPreviewWindow?
     private var cancellables = Set<AnyCancellable>()
     private var pttMonitor: Any?
-    private var pttActivatedOnMode: Bool = false  // Track if On mode was activated via PTT
     private var isPTTKeyPhysicallyDown: Bool = false  // Track physical key state to ignore macOS key repeat events
     private var panelTopEdgeY: CGFloat?  // Track desired top-edge position for panel (fixes recurring banner-push-off bug)
     private var isRepositioningPanel: Bool = false  // Prevent didMove from updating anchor during programmatic repositioning
@@ -93,6 +93,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] mode in
                 self?.updateIcon(mode.icon)
+            }
+            .store(in: &cancellables)
+
+        // PTT preview bubble visibility
+        appState.$isPTTPreviewVisible
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] visible in
+                guard let self = self else { return }
+                if visible && self.appState.pttPreviewEnabled {
+                    self.showPTTPreviewWindow()
+                } else {
+                    self.hidePTTPreviewWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        appState.$pttPreviewEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard let self = self else { return }
+                if !enabled {
+                    self.hidePTTPreviewWindow()
+                }
             }
             .store(in: &cancellables)
 
@@ -521,6 +544,79 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panelTopEdgeY = desiredTopY
 
         window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    // MARK: - PTT Preview
+
+    private func showPTTPreviewWindow() {
+        if pttPreviewWindow == nil {
+            configurePTTPreviewWindow()
+        }
+        guard let pttPreviewWindow else { return }
+        positionPTTPreviewWindow(pttPreviewWindow)
+        pttPreviewWindow.orderFrontRegardless()
+    }
+
+    private func hidePTTPreviewWindow() {
+        pttPreviewWindow?.orderOut(nil)
+    }
+
+    private func configurePTTPreviewWindow() {
+        let panel = PTTPreviewWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 220),
+            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingController = NSHostingController(
+            rootView: PTTPreviewView()
+                .environmentObject(appState)
+        )
+
+        panel.contentView = hostingController.view
+        panel.isReleasedWhenClosed = false
+        panel.isFloatingPanel = true
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hasShadow = true
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isMovableByWindowBackground = true
+        panel.delegate = self
+
+        pttPreviewWindow = panel
+    }
+
+    private func positionPTTPreviewWindow(_ window: NSWindow) {
+        if let savedOrigin = loadPTTPopupOrigin() {
+            window.setFrameOrigin(savedOrigin)
+            return
+        }
+
+        guard let screen = NSScreen.main else { return }
+        let frame = screen.visibleFrame
+        let size = window.frame.size
+        let x = frame.midX - size.width / 2
+        let y = frame.minY + 24
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    private func savePTTPopupOrigin(_ origin: NSPoint) {
+        UserDefaults.standard.set(origin.x, forKey: "ptt_popup_origin_x")
+        UserDefaults.standard.set(origin.y, forKey: "ptt_popup_origin_y")
+    }
+
+    private func loadPTTPopupOrigin() -> NSPoint? {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "ptt_popup_origin_x") == nil {
+            return nil
+        }
+        let x = defaults.double(forKey: "ptt_popup_origin_x")
+        let y = defaults.double(forKey: "ptt_popup_origin_y")
+        return NSPoint(x: x, y: y)
     }
 
     @objc func togglePanel() {
@@ -1256,41 +1352,61 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.isPTTKeyPhysicallyDown { return }
                 self.isPTTKeyPhysicallyDown = true
 
-                // Double-tap detection (300ms window)
-                let now = Date()
-                if let lastTap = self.appState.lastPTTKeyDownTime,
-                   now.timeIntervalSince(lastTap) < 0.3 {
-                    // Double-tap detected - toggle On mode
-                    self.appState.lastPTTKeyDownTime = nil  // Reset to avoid triple-tap
-                    
-                    // Check if we're in graceful sleep period (PTT release just triggered)
-                    // If so, double-tap should cancel sleep and stay ON (Persistent)
-                    if self.appState.microphoneMode == .on && !self.appState.isPTTProcessing {
-                        self.appState.logDebug("PTT: Double-tap → OFF")
-                        self.appState.setMode(.off)
-                    } else {
-                        self.appState.logDebug("PTT: Double-tap → ON (persistent)")
-                        self.appState.cancelPendingPTTSleep()
-                        self.appState.setMode(.on)
+                if !self.appState.pttPreviewEnabled {
+                    // Legacy PTT: double-tap toggles persistent On/Off
+                    let now = Date()
+                    if let lastTap = self.appState.lastPTTKeyDownTime,
+                       now.timeIntervalSince(lastTap) < 0.3 {
+                        self.appState.lastPTTKeyDownTime = nil
+                        if self.appState.microphoneMode == .on && !self.appState.isPTTProcessing {
+                            self.appState.logDebug("PTT: Double-tap → Off (legacy)")
+                            self.appState.setMode(.off)
+                        } else {
+                            self.appState.logDebug("PTT: Double-tap → On (legacy)")
+                            self.appState.cancelPendingPTTSleep()
+                            self.appState.setMode(.on)
+                        }
+                        return
                     }
-                    self.pttActivatedOnMode = false  // Persistent mode, not PTT-activated
-                    return
+                    self.appState.lastPTTKeyDownTime = now
                 }
-                self.appState.lastPTTKeyDownTime = now
+
+                if self.appState.pttPreviewEnabled {
+                    // If sticky mode is active, a single press ends the session
+                    if self.appState.isPTTSticky {
+                        self.appState.logDebug("PTT: Sticky end")
+                        self.appState.recordPTTRelease()
+                        self.appState.endPTTSession()
+                        return
+                    }
+
+                    // Double-tap detection (300ms window) → latch PTT
+                    let now = Date()
+                    if let lastTap = self.appState.lastPTTKeyDownTime,
+                       now.timeIntervalSince(lastTap) < 0.3 {
+                        self.appState.lastPTTKeyDownTime = nil  // Reset to avoid triple-tap
+                        self.appState.logDebug("PTT: Double-tap → Sticky")
+                        self.appState.cancelPendingPTTSleep()
+                        self.appState.recordPTTPress()
+                        let returnMode = self.appState.microphoneMode
+                        self.appState.startPTTSession(returnMode: returnMode, sticky: true)
+                        return
+                    }
+                    self.appState.lastPTTKeyDownTime = now
+                }
 
                 self.appState.cancelPendingPTTSleep()
                 // Record PTT press timestamp for filtering pre-press background speech
                 self.appState.recordPTTPress()
 
-                if self.appState.microphoneMode == .on {
+                if self.appState.microphoneMode == .on && !self.appState.isPTTSessionActive {
                     // Already in On mode → Push-to-Mute
-                    self.pttActivatedOnMode = false
                     self.appState.isPTMMuted = true
                     self.appState.logDebug("PTM: Muted (key held)")
                 } else if self.appState.microphoneMode != .on {
                     // Off or Sleep mode → Push-to-Talk
-                    self.appState.setMode(.on)
-                    self.pttActivatedOnMode = true
+                    let returnMode = self.appState.microphoneMode
+                    self.appState.startPTTSession(returnMode: returnMode, sticky: false)
                     self.appState.logDebug("PTT: ON (key consumed)")
                 }
             }
@@ -1310,12 +1426,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
 
+                // Sticky mode stays active until the next press
+                guard !self.appState.isPTTSticky else { return }
+
                 // Handle Push-to-Talk release
-                // Record PTT release timestamp for filtering post-release speech
                 self.appState.recordPTTRelease()
-                if self.appState.microphoneMode == .on && self.pttActivatedOnMode {
-                    self.pttActivatedOnMode = false
-                    self.appState.requestGracefulSleep()
+                if self.appState.microphoneMode == .on && self.appState.isPTTSessionActive {
+                    self.appState.endPTTSession()
                 }
             }
         }
@@ -1398,6 +1515,12 @@ extension AppDelegate: NSMenuDelegate, NSWindowDelegate {
         if let window = notification.object as? NSWindow, window == settingsWindow {
             NSApp.setActivationPolicy(.accessory)
         }
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window == pttPreviewWindow else { return }
+        savePTTPopupOrigin(window.frame.origin)
     }
 }
 
