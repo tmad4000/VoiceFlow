@@ -1,5 +1,3 @@
-import AVFoundation
-import Speech
 import UIKit
 
 final class KeyboardViewController: UIInputViewController {
@@ -21,27 +19,19 @@ final class KeyboardViewController: UIInputViewController {
     private weak var nextKeyboardButton: UIButton?
 
     private var isShiftEnabled = false
-    private var isTranscribing = false
-    private var lastInserted = ""
-
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-    private let audioEngine = AVAudioEngine()
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
+    private var hasPendingDictation = false
+    private let hostAppURL = URL(string: "voiceflowkeyboard://dictation")
+    private let dictationPasteboardPrefix = "voiceflow-dictation::"
 
     override func viewDidLoad() {
         super.viewDidLoad()
         setupView()
     }
 
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        stopTranscribing()
-    }
-
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         nextKeyboardButton?.isHidden = !needsInputModeSwitchKey
+        refreshDictationState()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -205,8 +195,13 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         if let micButton {
-            micButton.backgroundColor = isTranscribing ? UIColor.systemRed : UIColor.secondarySystemBackground
-            micButton.setTitleColor(isTranscribing ? .white : .label, for: .normal)
+            if hasPendingDictation {
+                micButton.backgroundColor = UIColor.systemGreen
+                micButton.setTitleColor(.white, for: .normal)
+            } else {
+                micButton.backgroundColor = UIColor.secondarySystemBackground
+                micButton.setTitleColor(.label, for: .normal)
+            }
         }
     }
 
@@ -243,148 +238,72 @@ final class KeyboardViewController: UIInputViewController {
         case .globe:
             advanceToNextInputMode()
         case .mic:
-            toggleTranscription()
+            handleMicPress()
         case .numbers:
             break
         }
     }
 
-    private func toggleTranscription() {
-        if isTranscribing {
-            stopTranscribing()
-        } else {
-            startTranscribing()
-        }
-    }
-
-    private func startTranscribing() {
-        guard !isTranscribing else { return }
-
-        guard hasFullAccess else {
-            statusLabel.text = "Enable Full Access to use the microphone"
-            return
-        }
-
-        guard let speechRecognizer else {
-            statusLabel.text = "Speech recognizer unavailable"
-            return
-        }
-
-        if !speechRecognizer.isAvailable {
-            statusLabel.text = "Speech recognizer unavailable"
-            return
-        }
-
-        let speechStatus = SFSpeechRecognizer.authorizationStatus()
-        if speechStatus != .authorized {
-            statusLabel.text = "Requesting speech permission"
-            SFSpeechRecognizer.requestAuthorization { [weak self] status in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    if status == .authorized {
-                        self.startTranscribing()
-                    } else {
-                        self.statusLabel.text = "Speech permission denied"
-                    }
-                }
-            }
-            return
-        }
-
-        let recordPermission = AVAudioSession.sharedInstance().recordPermission
-        if recordPermission != .granted {
-            statusLabel.text = "Requesting microphone permission"
-            AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    if granted {
-                        self.startTranscribing()
-                    } else {
-                        self.statusLabel.text = "Microphone permission denied"
-                    }
-                }
-            }
-            return
-        }
-
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-
-            recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-            guard let recognitionRequest else {
-                statusLabel.text = "Unable to start speech recognition"
-                return
-            }
-            recognitionRequest.shouldReportPartialResults = true
-
-            let inputNode = audioEngine.inputNode
-            let recordingFormat = inputNode.outputFormat(forBus: 0)
-            inputNode.removeTap(onBus: 0)
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
-                self?.recognitionRequest?.append(buffer)
-            }
-
-            audioEngine.prepare()
-            try audioEngine.start()
-
-            isTranscribing = true
-            statusLabel.text = "Listening…"
+    private func handleMicPress() {
+        if let dictation = consumeDictationFromPasteboard() {
+            textDocumentProxy.insertText(dictation)
+            statusLabel.text = "Inserted dictation"
+            hasPendingDictation = false
             updateKeyAppearance()
+            return
+        }
 
-            recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+        if !hasFullAccess {
+            statusLabel.text = "Enable Full Access to paste dictation"
+        }
+
+        openHostApp()
+    }
+
+    private func openHostApp() {
+        guard let hostAppURL else {
+            statusLabel.text = "Unable to open VoiceFlow"
+            return
+        }
+
+        extensionContext?.open(hostAppURL, completionHandler: { [weak self] success in
+            DispatchQueue.main.async {
                 guard let self else { return }
-                if let result {
-                    self.handleTranscription(result)
+                if success {
+                    self.statusLabel.text = "Dictate in VoiceFlow, then return to paste"
+                } else {
+                    self.statusLabel.text = "Open VoiceFlow to dictate"
                 }
-                if error != nil || result?.isFinal == true {
-                    self.stopTranscribing()
-                }
+                self.refreshDictationState()
             }
-        } catch {
-            statusLabel.text = "Audio session failed"
-            stopTranscribing()
-        }
+        })
     }
 
-    private func handleTranscription(_ result: SFSpeechRecognitionResult) {
-        let text = result.bestTranscription.formattedString
-        replaceInsertedText(with: text)
-        if result.isFinal {
-            lastInserted = ""
+    private func refreshDictationState() {
+        if peekDictationFromPasteboard() != nil {
+            hasPendingDictation = true
+            statusLabel.text = "Dictation ready. Tap mic to paste"
+        } else {
+            hasPendingDictation = false
+            if hasFullAccess {
+                statusLabel.text = "Tap mic to dictate in VoiceFlow app"
+            } else {
+                statusLabel.text = "Enable Full Access for dictation"
+            }
         }
-    }
-
-    private func replaceInsertedText(with newText: String) {
-        guard newText != lastInserted else { return }
-        if !lastInserted.isEmpty {
-            deleteBackward(times: lastInserted.count)
-        }
-        textDocumentProxy.insertText(newText)
-        lastInserted = newText
-    }
-
-    private func deleteBackward(times: Int) {
-        guard times > 0 else { return }
-        for _ in 0..<times {
-            textDocumentProxy.deleteBackward()
-        }
-    }
-
-    private func stopTranscribing() {
-        if audioEngine.isRunning {
-            audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
-        }
-        recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
-        recognitionTask = nil
-        recognitionRequest = nil
-
-        isTranscribing = false
-        statusLabel.text = "Ready"
         updateKeyAppearance()
-        lastInserted = ""
+    }
+
+    private func peekDictationFromPasteboard() -> String? {
+        guard hasFullAccess else { return nil }
+        guard let text = UIPasteboard.general.string else { return nil }
+        guard text.hasPrefix(dictationPasteboardPrefix) else { return nil }
+        return String(text.dropFirst(dictationPasteboardPrefix.count))
+    }
+
+    private func consumeDictationFromPasteboard() -> String? {
+        guard let dictation = peekDictationFromPasteboard() else { return nil }
+        UIPasteboard.general.items = []
+        return dictation
     }
 }

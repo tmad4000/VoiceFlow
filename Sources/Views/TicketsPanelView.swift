@@ -82,6 +82,7 @@ struct TicketsPanelView: View {
         VStack(spacing: 0) {
             // Header
             headerBar
+                .padding(.top, 28) // Padding for window buttons (traffic lights)
 
             Divider()
 
@@ -128,7 +129,7 @@ struct TicketsPanelView: View {
                 .background(Color.orange.opacity(0.1))
             }
         }
-        .frame(width: 400, height: 500)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             TicketsVisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
         )

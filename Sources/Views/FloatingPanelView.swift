@@ -30,421 +30,135 @@ struct FloatingPanelView: View {
     }
 
     private var minimalPanel: some View {
-        HStack(spacing: 6) {
-            // Compact mode buttons
-            CompactModeButtons()
-
-            // Audio pulse indicator when active
-            if appState.microphoneMode == .on || appState.microphoneMode == .sleep {
-                AudioPulseIndicator(level: appState.audioLevel, mode: appState.microphoneMode, isMuted: appState.isPTMMuted)
-            }
-
-            // PTT processing indicator (waiting for finalized text)
-            if appState.isPTTProcessing {
-                PTTProcessingWaveView()
-                    .instantTooltip("Processing speech...")
-            }
-
-            if appState.isNewerBuildAvailable {
-                Image(systemName: "arrow.clockwise.circle.fill")
-                    .font(.system(size: 10))
-                    .foregroundColor(.green)
-                    .instantTooltip("New build available - Click to Restart")
-                    .onTapGesture {
-                        appState.restartApp()
-                    }
-            }
-
-            // Expand button
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    appState.isPanelMinimal = false
+        HStack(spacing: 8) {
+            // Left edge: Status Pulse / Indicator
+            ZStack {
+                if appState.microphoneMode != .off {
+                    AudioPulseIndicator(level: appState.audioLevel, mode: appState.microphoneMode, isMuted: appState.isPTMMuted)
+                } else {
+                    Circle()
+                        .fill(Color.gray.opacity(0.5))
+                        .frame(width: 8, height: 8)
                 }
-            }) {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.secondary)
             }
-            .buttonStyle(.plain)
-            .pointerCursor()
-            .instantTooltip("Expand panel")
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(
-            VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.green, lineWidth: appState.isCommandFlashActive ? 2 : 0)
-                        .animation(.easeInOut(duration: 0.2), value: appState.isCommandFlashActive)
-                )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        // Small padding at edges to allow window resize handles
-        .padding(3)
-    }
+            .frame(width: 16)
 
-    private var fullPanel: some View {
-        VStack(spacing: 0) {
-            // Header with mode buttons, volume indicator, and close button
-            HStack(spacing: 14) {
-                // ... DEV indicator ...
-                if Bundle.main.bundleIdentifier?.contains("release") != true {
-                    Text("DEV")
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundColor(.orange)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.2))
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
-                        .fixedSize()  // Prevent text from wrapping when window is narrow
+            // Center: Mode Buttons (Pill style)
+            HStack(spacing: 4) {
+                ForEach([MicrophoneMode.off, .sleep, .on], id: \.self) { mode in
+                    Button(action: { appState.setMode(mode) }) {
+                        Image(systemName: mode.icon)
+                            .font(.system(size: 10, weight: isSelected(mode) ? .bold : .medium))
+                            .foregroundColor(isSelected(mode) ? modeColor(mode) : .secondary.opacity(0.7))
+                            .frame(width: 22, height: 22)
+                            .background(
+                                Circle()
+                                    .fill(isSelected(mode) ? Color.white.opacity(0.15) : Color.clear)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .help(compactModeHelpText(for: mode))
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(Color.black.opacity(0.15))
+            .clipShape(Capsule())
+
+            // Right side indicators (Dynamic)
+            HStack(spacing: 6) {
+                if appState.isPTTProcessing {
+                    PTTProcessingWaveView()
+                        .instantTooltip("Processing speech...")
                 }
 
                 if appState.isNewerBuildAvailable {
                     Button(action: { appState.restartApp() }) {
                         Image(systemName: "arrow.clockwise.circle.fill")
-                            .font(.system(size: 14))
+                            .font(.system(size: 12))
                             .foregroundColor(.green)
                     }
                     .buttonStyle(.plain)
-                    .pointerCursor()
                     .instantTooltip("New build available - Click to Restart")
                 }
 
-                // MODE CONTROL - Icon Only
-                UnifiedModeButton()
-                    .fixedSize()
-
-                Spacer()
-
-                // VOLUME METER - Large & Dramatic
-                if appState.microphoneMode == .on || appState.microphoneMode == .sleep {
-                    Button(action: { isMicSelectorPresented.toggle() }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "mic.fill")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(.secondary)
-                            MicLevelIndicator(level: appState.audioLevel)
-                                .frame(width: 90, height: 8)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                        )
-                        .contentShape(Rectangle())
+                // Expand button
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        appState.isPanelMinimal = false
                     }
-                    .buttonStyle(.plain)
-                    .fixedSize()
-                    .instantTooltip("Click to change microphone")
-                    .popover(isPresented: $isMicSelectorPresented, arrowEdge: .bottom) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            InputDeviceMenuItems()
-                        }
-                        .padding(12)
-                        .frame(minWidth: 200)
-                    }
-
-                    // Force end button
-                    if appState.isConnected {
-                        Button(action: { appState.forceEndUtterance() }) {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 18))
-                                .foregroundColor(.accentColor)
-                        }
-                        .buttonStyle(.plain)
-                        .pointerCursor()
-                        .instantTooltip("Force send current dictation")
-                    }
-
-                    // PTT processing indicator
-                    if appState.isPTTProcessing {
-                        PTTProcessingWaveView()
-                            .instantTooltip("Processing speech...")
-                    }
+                }) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
                 }
-
-                // Utility buttons
-                HStack(spacing: 10) {
-                    Button(action: { appState.toggleCommandPanel() }) {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(appState.isCommandPanelVisible ? .accentColor : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-                    .instantTooltip("Claude Code (⌃⌥C)")
-
-                    Button(action: openHistory) {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-                    .instantTooltip("Open history")
-
-                    Button(action: openSettings) {
-                        Image(systemName: "gear")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-                    .instantTooltip("Open settings (⌘,)")
-
-                    // More options menu
-                    Menu {
-                        // Version info (non-interactive)
-                        Text("VoiceFlow \(AppVersion.displayString)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        Divider()
-
-                        Button(action: openCommands) {
-                            Label("Voice Commands", systemImage: "command")
-                        }
-
-                        Divider()
-
-                        // Panels section
-                        Section("Panels") {
-                            Button(action: { appState.toggleCommandPanel() }) {
-                                Label {
-                                    menuLabel(
-                                        appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code",
-                                        shortcut: appState.shortcutString(for: appState.commandPanelShortcut)
-                                    )
-                                } icon: {
-                                    Image(systemName: "terminal")
-                                }
-                            }
-                            Button(action: { appState.openNotesPanel() }) {
-                                Label("Notes", systemImage: "note.text")
-                            }
-                            Button(action: { appState.openTranscriptsPanel() }) {
-                                Label("Transcripts", systemImage: "text.quote")
-                            }
-                            Button(action: { appState.openVocabularyPanel() }) {
-                                Label("Custom Vocabulary", systemImage: "textformat.abc")
-                            }
-                        }
-
-                        Divider()
-
-                        // Vibe coding section
-                        Section("Vibe Coding") {
-                            // Auto-submit toggle
-                            Toggle(isOn: Binding(
-                                get: { appState.autoSubmitEnabled },
-                                set: { appState.autoSubmitEnabled = $0 }
-                            )) {
-                                Label("Auto-Submit", systemImage: "return")
-                            }
-
-                            // Delay picker (only show when auto-submit enabled)
-                            if appState.autoSubmitEnabled {
-                                Menu {
-                                    ForEach([1.0, 2.0, 3.0, 4.0, 5.0], id: \.self) { delay in
-                                        Button {
-                                            appState.autoSubmitDelaySeconds = delay
-                                        } label: {
-                                            if appState.autoSubmitDelaySeconds == delay {
-                                                Label("\(Int(delay))s", systemImage: "checkmark")
-                                            } else {
-                                                Text("\(Int(delay))s")
-                                            }
-                                        }
-                                    }
-                                } label: {
-                                    Label("Delay: \(Int(appState.autoSubmitDelaySeconds))s", systemImage: "timer")
-                                }
-                            }
-
-                            // Trailing newline sends Enter
-                            Toggle(isOn: Binding(
-                                get: { appState.trailingNewlineSendsEnter },
-                                set: { appState.trailingNewlineSendsEnter = $0 }
-                            )) {
-                                Label("Newline→Enter", systemImage: "arrow.turn.down.left")
-                            }
-                        }
-
-                        Divider()
-
-                        // Feedback section
-                        Section("Feedback") {
-                            Button(action: { appState.openTicketsPanel() }) {
-                                Label("Tickets", systemImage: "ticket")
-                            }
-                        }
-
-                        Divider()
-
-                        Button(action: {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                appState.isPanelMinimal = true
-                            }
-                        }) {
-                            Label("Minimize Panel", systemImage: "arrow.down.right.and.arrow.up.left")
-                        }
-                        Button(action: hidePanel) {
-                            Label("Hide Panel", systemImage: "minus")
-                        }
-                        Button(action: { appState.restartApp() }) {
-                            Label("Restart App", systemImage: "arrow.clockwise")
-                        }
-                        Button(role: .destructive, action: quitApp) {
-                            Label("Quit VoiceFlow", systemImage: "power")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(.secondary)
-                            .frame(width: 20, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .pointerCursor()
-                    .instantTooltip("More options")
-                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .instantTooltip("Expand panel")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color.black.opacity(0.1))
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .padding(.vertical, 6)
+        .background(
+            ZStack {
+                VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
+                
+                // Mode-based glow/tint
+                Capsule()
+                    .fill(modeColor(appState.microphoneMode).opacity(0.12))
+            }
+            .overlay(
+                Capsule()
+                    .stroke(modeColor(appState.microphoneMode).opacity(0.3), lineWidth: 1)
+            )
+            .overlay(
+                Capsule()
+                    .stroke(Color.green, lineWidth: appState.isCommandFlashActive ? 2 : 0)
+                    .animation(.easeInOut(duration: 0.2), value: appState.isCommandFlashActive)
+            )
+        )
+        .clipShape(Capsule())
+        .shadow(color: Color.black.opacity(0.2), radius: 4, y: 2)
+        .padding(3)
+    }
+
+    private func isSelected(_ mode: MicrophoneMode) -> Bool {
+        appState.microphoneMode == mode
+    }
+
+    private func modeColor(_ mode: MicrophoneMode) -> Color {
+        switch mode {
+        case .off: return .gray
+        case .sleep: return .orange
+        case .on: return .green
+        }
+    }
+
+    private func compactModeHelpText(for mode: MicrophoneMode) -> String {
+        let isOnAndMuted = appState.microphoneMode == .on && appState.isPTMMuted
+        if mode == .on && isOnAndMuted {
+            return "Muted (release key to unmute)"
+        }
+        let base = mode.rawValue.capitalized
+        guard let shortcut = appState.shortcutString(for: mode) else { return base }
+        return "\(base) (\(shortcut))"
+    }
+
+    private var fullPanel: some View {
+        VStack(spacing: 0) {
+            panelHeader
 
             // Warning Banners - limited to 2 max to prevent layout issues
             if !appState.activeWarnings.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(appState.activeWarnings.prefix(2)) { warning in
-                        WarningBanner(warning: warning) {
-                            appState.dismissWarning(id: warning.id)
-                        }
-                    }
-                    // Show overflow indicator if more than 2 warnings
-                    if appState.activeWarnings.count > 2 {
-                        HStack {
-                            Text("+\(appState.activeWarnings.count - 2) more")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Button("Dismiss all") {
-                                for warning in appState.activeWarnings {
-                                    appState.dismissWarning(id: warning.id)
-                                }
-                            }
-                            .font(.system(size: 10))
-                            .buttonStyle(.plain)
-                            .foregroundColor(.blue)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color.gray.opacity(0.1))
-                    }
-                }
-                .frame(maxHeight: 120) // Cap warning section height
+                warningsSection
             }
 
             Divider()
                 .padding(.horizontal, 10)
 
-            // Transcript area - scrollable with flexible height
-            ScrollViewReader { proxy in
-                ZStack(alignment: .bottomTrailing) {
-                    ScrollView {
-                        TranscriptContentView()
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.leading, 12)
-                            .padding(.trailing, 36)  // Extra trailing space for copy button
-                            .padding(.vertical, 10)
-                            .textSelection(.enabled)
-                            .contentShape(Rectangle())
-                            .background(
-                                GeometryReader { contentGeo in
-                                    Color.clear.preference(
-                                        key: ScrollContentOffsetKey.self,
-                                        value: contentGeo.frame(in: .named("scrollContainer")).minY
-                                    )
-                                }
-                            )
-
-                        // Invisible anchor for scrolling
-                        Color.clear.frame(height: 1).id("bottom")
-                    }
-                    .coordinateSpace(name: "scrollContainer")
-                    .frame(minHeight: 100, maxHeight: .infinity)
-                    .onPreferenceChange(ScrollContentOffsetKey.self) { offset in
-                        // Detect user scrolling UP (offset increases = content moves down = scrolled up)
-                        let delta = offset - lastScrollOffset
-                        if delta > 5 && autoScrollEnabled {
-                            // User scrolled up - disable auto-scroll
-                            autoScrollEnabled = false
-                        }
-                        lastScrollOffset = offset
-                    }
-                    .onChange(of: appState.recentTurns.count) { _ in
-                        if autoScrollEnabled {
-                            withAnimation {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onChange(of: appState.currentTranscript) { _ in
-                        if autoScrollEnabled {
-                            proxy.scrollTo("bottom", anchor: .bottom)
-                        }
-                    }
-                    
-                    if !autoScrollEnabled {
-                        Button(action: {
-                            autoScrollEnabled = true
-                            withAnimation {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
-                        }) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 24))
-                                .foregroundColor(.accentColor)
-                                .background(Circle().fill(Color.white).shadow(radius: 2))
-                        }
-                        .padding(16)
-                        .transition(.scale.combined(with: .opacity))
-                    }
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                if !appState.recentTurns.isEmpty || !appState.currentTranscript.isEmpty {
-                    Button(action: {
-                        // Combine all turns plus current transcript
-                        var allText = appState.recentTurns.map { $0.transcript }.joined(separator: " ")
-                        if !appState.currentTranscript.isEmpty {
-                            if !allText.isEmpty { allText += " " }
-                            allText += appState.currentTranscript
-                        }
-                        let pasteboard = NSPasteboard.general
-                        pasteboard.clearContents()
-                        pasteboard.setString(allText, forType: .string)
-                    }) {
-                        Image(systemName: "doc.on.doc")
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
-                            .padding(6)
-                            .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow).opacity(0.8))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-                    .padding(.top, 8)
-                    .padding(.trailing, 8)
-                    .help("Copy all visible text to clipboard")
-                }
-            }
+            transcriptArea
         }
         .frame(minWidth: 360, maxWidth: 1000, minHeight: 100, maxHeight: 800)
         .background(
@@ -459,70 +173,453 @@ struct FloatingPanelView: View {
         // Small padding at edges to allow window resize handles to be accessible
         .padding(3)
         .overlay(alignment: .bottom) {
-            VStack(spacing: 6) {
-                if appState.isCommandFlashActive, let commandName = appState.lastCommandName {
-                    Text("Command: \(commandName)")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Color.green.opacity(0.8))
-                        .clipShape(Capsule())
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-                if appState.isKeywordFlashActive, let keywordName = appState.lastKeywordName {
-                    Text("Keyword: \(keywordName)")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Color.blue.opacity(0.75))
-                        .clipShape(Capsule())
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-                // Extended command mode indicator
-                if appState.isExtendedCommandMode {
-                    HStack(spacing: 4) {
-                        ProgressView()
-                            .scaleEffect(0.6)
-                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                        Text("Long Command Mode...")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.orange.opacity(0.85))
-                    .clipShape(Capsule())
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-                // Audio recording indicator
-                if appState.isRecordingAudio {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Color.white)
-                            .frame(width: 8, height: 8)
-                            .overlay(
-                                Circle()
-                                    .fill(Color.white)
-                                    .frame(width: 8, height: 8)
-                                    .scaleEffect(1.5)
-                                    .opacity(0.5)
-                            )
-                        Text("Recording Audio...")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.red.opacity(0.85))
-                    .clipShape(Capsule())
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            .padding(.bottom, 20)
+            statusIndicators
         }
         .overlay(alignment: .bottom) {
+            overlayNotifications
+        }
+    }
+
+    // MARK: - Subviews
+
+    private var panelHeader: some View {
+        HStack(spacing: 14) {
+            // Left Group
+            HStack(spacing: 10) {
+                if Bundle.main.bundleIdentifier?.contains("release") != true {
+                    Text("DEV")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.2))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                        .fixedSize()
+                }
+
+                if appState.isNewerBuildAvailable {
+                    Button(action: { appState.restartApp() }) {
+                        Image(systemName: "arrow.clockwise.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(.green)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .instantTooltip("New build available - Click to Restart")
+                }
+
+                UnifiedModeButton()
+                    .fixedSize()
+            }
+
+            Spacer()
+
+            // Center Group (Mic Meter & Action Buttons)
+            HStack(spacing: 8) {
+                // Mic Selector (Always visible)
+                Button(action: { isMicSelectorPresented.toggle() }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(appState.microphoneMode == .off ? .secondary.opacity(0.5) : .secondary)
+                        MicLevelIndicator(level: appState.audioLevel)
+                            .frame(width: 90, height: 8)
+                            .opacity(appState.microphoneMode == .off ? 0.5 : 1.0)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .instantTooltip("Click to change microphone")
+                .popover(isPresented: $isMicSelectorPresented, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        InputDeviceMenuItems()
+                    }
+                    .padding(12)
+                    .frame(minWidth: 200)
+                }
+
+                // Force end button
+                if appState.isConnected && (appState.microphoneMode == .on || appState.microphoneMode == .sleep) {
+                    Button(action: { appState.forceEndUtterance() }) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .instantTooltip("Force send current dictation")
+                }
+
+                // PTT processing indicator
+                if appState.isPTTProcessing {
+                    PTTProcessingWaveView()
+                        .instantTooltip("Processing speech...")
+                }
+            }
+
+            utilityButtons
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.black.opacity(0.1))
+    }
+
+    private var utilityButtons: some View {
+        HStack(spacing: 10) {
+            Button(action: { appState.toggleCommandPanel() }) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(appState.isCommandPanelVisible ? .accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .fixedSize()
+            .instantTooltip("Claude Code (⌃⌥C)")
+
+            Button(action: openHistory) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .fixedSize()
+            .instantTooltip("Open history")
+
+            Button(action: openSettings) {
+                Image(systemName: "gear")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .fixedSize()
+            .instantTooltip("Open settings (⌘,)")
+
+            utilityMenu
+        }
+        .fixedSize()
+    }
+
+    private var utilityMenu: some View {
+        Menu {
+            // Version info (non-interactive)
+            Text("VoiceFlow \(AppVersion.displayString)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Divider()
+
+            Button(action: openCommands) {
+                Label("Voice Commands", systemImage: "command")
+            }
+
+            Divider()
+
+            // Panels section
+            Section("Panels") {
+                Button(action: { appState.toggleCommandPanel() }) {
+                    Label {
+                        menuLabel(
+                            appState.isCommandPanelVisible ? "Hide Claude Code" : "Claude Code",
+                            shortcut: appState.shortcutString(for: appState.commandPanelShortcut)
+                        )
+                    } icon: {
+                        Image(systemName: "terminal")
+                    }
+                }
+                Button(action: { appState.openNotesPanel() }) {
+                    Label("Notes", systemImage: "note.text")
+                }
+                Button(action: { appState.openTranscriptsPanel() }) {
+                    Label("Transcripts", systemImage: "text.quote")
+                }
+                Button(action: { appState.openVocabularyPanel() }) {
+                    Label("Custom Vocabulary", systemImage: "textformat.abc")
+                }
+            }
+
+            Divider()
+
+            // Vibe coding section
+            Section("Vibe Coding") {
+                // Auto-submit toggle
+                Toggle(isOn: Binding(
+                    get: { appState.autoSubmitEnabled },
+                    set: { appState.autoSubmitEnabled = $0 }
+                )) {
+                    Label("Auto-Submit", systemImage: "return")
+                }
+
+                // Delay picker (only show when auto-submit enabled)
+                if appState.autoSubmitEnabled {
+                    Menu {
+                        ForEach([1.0, 2.0, 3.0, 4.0, 5.0], id: \.self) { delay in
+                            Button {
+                                appState.autoSubmitDelaySeconds = delay
+                            } label: {
+                                if appState.autoSubmitDelaySeconds == delay {
+                                    Label("\(Int(delay))s", systemImage: "checkmark")
+                                } else {
+                                    Text("\(Int(delay))s")
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("Delay: \(Int(appState.autoSubmitDelaySeconds))s", systemImage: "timer")
+                    }
+                }
+
+                // Trailing newline sends Enter
+                Toggle(isOn: Binding(
+                    get: { appState.trailingNewlineSendsEnter },
+                    set: { appState.trailingNewlineSendsEnter = $0 }
+                )) {
+                    Label("Newline→Enter", systemImage: "arrow.turn.down.left")
+                }
+            }
+
+            Divider()
+
+            // Feedback section
+            Section("Feedback") {
+                Button(action: { appState.openTicketsPanel() }) {
+                    Label("Tickets", systemImage: "ticket")
+                }
+            }
+
+            Divider()
+
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    appState.isPanelMinimal = true
+                }
+            }) {
+                Label("Minimize Panel", systemImage: "arrow.down.right.and.arrow.up.left")
+            }
+            Button(action: hidePanel) {
+                Label("Hide Panel", systemImage: "minus")
+            }
+            Button(action: { appState.restartApp() }) {
+                Label("Restart App", systemImage: "arrow.clockwise")
+            }
+            Button(role: .destructive, action: quitApp) {
+                Label("Quit VoiceFlow", systemImage: "power")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(.secondary)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .pointerCursor()
+        .instantTooltip("More options")
+    }
+
+    private var warningsSection: some View {
+        VStack(spacing: 0) {
+            ForEach(appState.activeWarnings.prefix(2)) { warning in
+                WarningBanner(warning: warning) {
+                    appState.dismissWarning(id: warning.id)
+                }
+            }
+            // Show overflow indicator if more than 2 warnings
+            if appState.activeWarnings.count > 2 {
+                HStack {
+                    Text("+\(appState.activeWarnings.count - 2) more")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Dismiss all") {
+                        for warning in appState.activeWarnings {
+                            appState.dismissWarning(id: warning.id)
+                        }
+                    }
+                    .font(.system(size: 10))
+                    .buttonStyle(.plain)
+                    .foregroundColor(.blue)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.gray.opacity(0.1))
+            }
+        }
+        .frame(maxHeight: 120) // Cap warning section height
+    }
+
+    private var transcriptArea: some View {
+        ScrollViewReader { proxy in
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView {
+                    TranscriptContentView()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 12)
+                        .padding(.trailing, 36)  // Extra trailing space for copy button
+                        .padding(.vertical, 10)
+                        .textSelection(.enabled)
+                        .contentShape(Rectangle())
+                        .background(
+                            GeometryReader { contentGeo in
+                                Color.clear.preference(
+                                    key: ScrollContentOffsetKey.self,
+                                    value: contentGeo.frame(in: .named("scrollContainer")).minY
+                                )
+                            }
+                        )
+
+                    // Invisible anchor for scrolling
+                    Color.clear.frame(height: 1).id("bottom")
+                }
+                .coordinateSpace(name: "scrollContainer")
+                .frame(minHeight: 100, maxHeight: .infinity)
+                .onPreferenceChange(ScrollContentOffsetKey.self) { offset in
+                    // Detect user scrolling UP (offset increases = content moves down = scrolled up)
+                    let delta = offset - lastScrollOffset
+                    if delta > 5 && autoScrollEnabled {
+                        // User scrolled up - disable auto-scroll
+                        autoScrollEnabled = false
+                    }
+                    lastScrollOffset = offset
+                }
+                .onChange(of: appState.recentTurns.count) { _ in
+                    if autoScrollEnabled {
+                        withAnimation {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }
+                }
+                .onChange(of: appState.currentTranscript) { _ in
+                    if autoScrollEnabled {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+                
+                if !autoScrollEnabled {
+                    Button(action: {
+                        autoScrollEnabled = true
+                        withAnimation {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.accentColor)
+                            .background(Circle().fill(Color.white).shadow(radius: 2))
+                    }
+                    .padding(16)
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if !appState.recentTurns.isEmpty || !appState.currentTranscript.isEmpty {
+                Button(action: {
+                    // Combine all turns plus current transcript
+                    var allText = appState.recentTurns.map { $0.transcript }.joined(separator: " ")
+                    if !appState.currentTranscript.isEmpty {
+                        if !allText.isEmpty { allText += " " }
+                        allText += appState.currentTranscript
+                    }
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.setString(allText, forType: .string)
+                }) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .padding(6)
+                        .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow).opacity(0.8))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .padding(.top, 8)
+                .padding(.trailing, 8)
+                .help("Copy all visible text to clipboard")
+            }
+        }
+    }
+
+    private var statusIndicators: some View {
+        VStack(spacing: 6) {
+            if appState.isCommandFlashActive, let commandName = appState.lastCommandName {
+                Text("Command: \(commandName)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.green.opacity(0.8))
+                    .clipShape(Capsule())
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            if appState.isKeywordFlashActive, let keywordName = appState.lastKeywordName {
+                Text("Keyword: \(keywordName)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.blue.opacity(0.75))
+                    .clipShape(Capsule())
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            // Extended command mode indicator
+            if appState.isExtendedCommandMode {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                    Text("Long Command Mode...")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.orange.opacity(0.85))
+                .clipShape(Capsule())
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            // Audio recording indicator
+            if appState.isRecordingAudio {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 8, height: 8)
+                        .overlay(
+                            Circle()
+                                .fill(Color.white)
+                                .frame(width: 8, height: 8)
+                                .scaleEffect(1.5)
+                                .opacity(0.5)
+                        )
+                    Text("Recording Audio...")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.red.opacity(0.85))
+                .clipShape(Capsule())
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .padding(.bottom, 20)
+    }
+
+    private var overlayNotifications: some View {
+        Group {
             if showingHideToast {
                 ToastView(message: "Panel hidden. Click menu bar icon to show.")
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -597,13 +694,47 @@ struct FloatingPanelView: View {
     }
 }
 
-private struct InputDeviceMenu: View {
+private struct MicLevelIndicator: View {
+    let level: Float  // 0.0 to 1.0
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            // Background track
+            Capsule()
+                .fill(Color.white.opacity(0.1))
+                .frame(height: 6)
+            
+            // Level bar with glow
+            Capsule()
+                .fill(LinearGradient(
+                    gradient: Gradient(colors: [.green, .yellow, .red]),
+                    startPoint: .leading,
+                    endPoint: .trailing
+                ))
+                .frame(width: calculateWidth(level), height: 6)
+                .shadow(color: levelColor.opacity(level > 0.05 ? 0.6 : 0), radius: 4)
+        }
+    }
+
+    private func calculateWidth(_ level: Float) -> CGFloat {
+        if level.isNaN || level.isInfinite { return 4 }
+        return max(4, CGFloat(level) * 90) // Match the frame width
+    }
+
+    private var levelColor: Color {
+        if level > 0.8 { return .red }
+        if level > 0.5 { return .yellow }
+        return .green
+    }
+}
+
+private struct InputDeviceMenuItems: View {
     @EnvironmentObject var appState: AppState
     @State private var devices: [AVCaptureDevice] = []
     
     var body: some View {
-        Menu {
-            Text("Select Input Device")
+        Group {
+            Text("Select Microphone")
                 .font(.caption)
             Divider()
             
@@ -633,10 +764,7 @@ private struct InputDeviceMenu: View {
             Button("Audio Settings...") {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.sound")!)
             }
-        } label: {
-            EmptyView()
         }
-        .menuStyle(.borderlessButton)
         .onAppear {
             refreshDevices()
         }
@@ -779,7 +907,7 @@ private struct UnifiedModeButton: View {
                         Button {
                             appState.setMode(m)
                         } label: {
-                            Label {
+                            Label { 
                                 menuLabel(m.rawValue, shortcut: appState.shortcutString(for: m))
                             } icon: {
                                 Image(systemName: m.icon)
@@ -892,151 +1020,6 @@ private struct SpeakerFilterPill: View {
         .buttonStyle(.plain)
         .pointerCursor()
         .help("Click to listen to all speakers")
-    }
-}
-
-private struct MicLevelIndicator: View {
-    let level: Float  // 0.0 to 1.0
-
-    var body: some View {
-        ZStack(alignment: .leading) {
-            // Background track
-            Capsule()
-                .fill(Color.white.opacity(0.1))
-                .frame(height: 6)
-            
-            // Level bar with glow
-            Capsule()
-                .fill(LinearGradient(
-                    gradient: Gradient(colors: [.green, .yellow, .red]),
-                    startPoint: .leading,
-                    endPoint: .trailing
-                ))
-                .frame(width: calculateWidth(level), height: 6)
-                .shadow(color: levelColor.opacity(level > 0.05 ? 0.6 : 0), radius: 4)
-        }
-    }
-
-    private func calculateWidth(_ level: Float) -> CGFloat {
-        if level.isNaN || level.isInfinite { return 4 }
-        return max(4, CGFloat(level) * 120)
-    }
-
-    private var levelColor: Color {
-        if level > 0.8 { return .red }
-        if level > 0.5 { return .yellow }
-        return .green
-    }
-}
-
-private struct InputDeviceMenuItems: View {
-    @EnvironmentObject var appState: AppState
-    @State private var devices: [AVCaptureDevice] = []
-    
-    var body: some View {
-        Group {
-            Text("Select Microphone")
-                .font(.caption)
-            Divider()
-            
-            Button {
-                appState.saveInputDevice(nil)
-            } label: {
-                if appState.selectedInputDeviceId == nil {
-                    Label("System Default", systemImage: "checkmark")
-                } else {
-                    Text("System Default")
-                }
-            }
-            
-            ForEach(devices, id: \.uniqueID) { device in
-                Button {
-                    appState.saveInputDevice(device.uniqueID)
-                } label: {
-                    if appState.selectedInputDeviceId == device.uniqueID {
-                        Label(device.localizedName, systemImage: "checkmark")
-                    } else {
-                        Text(device.localizedName)
-                    }
-                }
-            }
-            
-            Divider()
-            Button("Audio Settings...") {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.sound")!)
-            }
-        }
-        .onAppear {
-            refreshDevices()
-        }
-    }
-    
-    private func refreshDevices() {
-        let discoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInMicrophone, .externalUnknown],
-            mediaType: .audio,
-            position: .unspecified
-        )
-        self.devices = discoverySession.devices
-    }
-}
-
-
-// Compact mode buttons for minimal panel
-private struct CompactModeButtons: View {
-    @EnvironmentObject var appState: AppState
-
-    private var isOnAndMuted: Bool {
-        appState.microphoneMode == .on && appState.isPTMMuted
-    }
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach([MicrophoneMode.off, .sleep, .on], id: \.self) { mode in
-                Button(action: { appState.setMode(mode) }) {
-                    ZStack {
-                        // PTM: Show red circle with mic.slash for On mode when muted
-                        if mode == .on && isOnAndMuted {
-                            Circle()
-                                .fill(Color.red)
-                                .frame(width: 12, height: 12)
-                            Image(systemName: "mic.slash.fill")
-                                .font(.system(size: 7, weight: .bold))
-                                .foregroundColor(.white)
-                        } else {
-                            Circle()
-                                .fill(colorFor(mode).opacity(appState.microphoneMode == mode ? 1.0 : 0.3))
-                                .frame(width: 12, height: 12)
-                                .overlay(
-                                    Circle()
-                                        .stroke(colorFor(mode), lineWidth: appState.microphoneMode == mode ? 0 : 1)
-                                        .opacity(0.5)
-                                )
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .help(compactModeHelpText(for: mode))
-            }
-        }
-    }
-
-    private func compactModeHelpText(for mode: MicrophoneMode) -> String {
-        if mode == .on && isOnAndMuted {
-            return "Muted (release key to unmute)"
-        }
-        let base = mode.rawValue
-        guard let shortcut = appState.shortcutString(for: mode) else { return base }
-        return "\(base) (\(shortcut))"
-    }
-
-    private func colorFor(_ mode: MicrophoneMode) -> Color {
-        switch mode {
-        case .off: return .gray
-        case .sleep: return .orange
-        case .on: return .green
-        }
     }
 }
 

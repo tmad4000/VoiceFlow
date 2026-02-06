@@ -26,6 +26,7 @@ struct VocabularyPanelView: View {
         VStack(spacing: 0) {
             // Header
             headerBar
+                .padding(.top, 28) // Padding for window buttons (traffic lights)
 
             Divider()
 
@@ -43,6 +44,7 @@ struct VocabularyPanelView: View {
                 entriesList
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             VocabularyVisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
         )

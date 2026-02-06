@@ -586,6 +586,7 @@ class AppState: ObservableObject {
     @Published var pttPreviewEnabled = true  // Show PTT popup during dictation
     @Published var pttStreamWhilePopupEnabled = false  // Stream while popup visible
     @Published var pttCommitDelayMs: Double = 0  // Delay before typing buffered text
+    @Published var pttAutoSubmitEnabled = false  // Auto-press Enter after PTT utterance finishes
     private var pttSleepTimeoutTask: Task<Void, Never>?  // Fallback timeout for PTT return
     private var pttReturnMode: MicrophoneMode?  // Target mode after PTT finalization
     @Published var isPTMMuted = false  // Push-to-mute: temporarily mute when key held in On mode
@@ -1546,6 +1547,9 @@ class AppState: ObservableObject {
 
             // Capture this before reset clears it
             let shouldAutoSubmit = autoSubmitEnabled && microphoneMode == .on && didTypeDictationThisUtterance
+            let shouldPTTAutoSubmit = pttAutoSubmitEnabled
+                && (isPTTSessionActive || isPTTProcessing)
+                && (didTypeDictationThisUtterance || !pttBufferedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
             if shouldAddToHistory {
                 // Preserve transcript in Sleep mode so force send can use it
@@ -1582,6 +1586,9 @@ class AppState: ObservableObject {
                         }
                         if self.shouldBufferPTTOutput {
                             self.commitPTTBufferIfNeeded()
+                        }
+                        if shouldPTTAutoSubmit {
+                            self.typeText("\n", appendSpace: false)
                         }
                         self.isPTTPreviewVisible = false
                         self.setMode(returnMode)
@@ -6430,6 +6437,7 @@ class AppState: ObservableObject {
         pttPreviewEnabled = UserDefaults.standard.object(forKey: "ptt_preview_enabled") as? Bool ?? true
         pttStreamWhilePopupEnabled = UserDefaults.standard.object(forKey: "ptt_stream_while_popup_enabled") as? Bool ?? false
         pttCommitDelayMs = UserDefaults.standard.double(forKey: "ptt_commit_delay_ms")
+        pttAutoSubmitEnabled = UserDefaults.standard.object(forKey: "ptt_auto_submit_enabled") as? Bool ?? false
     }
 
     func savePTTBufferedOutputEnabled(_ value: Bool) {
@@ -6456,6 +6464,11 @@ class AppState: ObservableObject {
     func savePTTCommitDelayMs(_ value: Double) {
         pttCommitDelayMs = value
         UserDefaults.standard.set(value, forKey: "ptt_commit_delay_ms")
+    }
+
+    func savePTTAutoSubmitEnabled(_ value: Bool) {
+        pttAutoSubmitEnabled = value
+        UserDefaults.standard.set(value, forKey: "ptt_auto_submit_enabled")
     }
 
     func applyPTTPresetWispr() {
@@ -6493,10 +6506,6 @@ class AppState: ObservableObject {
         pttReturnMode = mode
         logDebug("PTT: Requesting graceful return to \(mode.rawValue), waiting for finalized text")
         isPTTProcessing = true
-
-        // Tell the speech service to finalize current utterance
-        assemblyAIService?.forceEndUtterance()
-        appleSpeechService?.forceEndUtterance()
 
         // Set a timeout - if we don't get a final turn within 4 seconds, force return
         pttSleepTimeoutTask?.cancel()
@@ -6594,6 +6603,11 @@ class AppState: ObservableObject {
     /// Filter words to exclude pre-press background speech
     /// Only filters out words that started before PTT was pressed
     /// Does NOT filter by release time - the graceful sleep mechanism handles capturing all speech
+    ///
+    /// **Provider requirement**: This filter requires word-level timestamps from the ASR provider.
+    /// Currently all providers return timestamps: AssemblyAI (word.start), Deepgram (word.start),
+    /// Apple Speech (segment.timestamp). If adding a provider without timestamps, words will
+    /// pass through unfiltered (see guard on line checking wordStart).
     private func filterWordsForPTT(_ words: [TranscriptWord]) -> [TranscriptWord] {
         // Only filter if PTT was pressed and we have a press timestamp
         guard let pressTime = pttPressStreamTime else {
@@ -6609,6 +6623,7 @@ class AppState: ObservableObject {
         var excludedCount = 0
         let filtered = words.filter { word in
             // If word has no timing info, include it (can't filter)
+            // WARNING: Provider without timestamps will bypass PTT filtering entirely
             guard let wordStart = word.startTime else { return true }
 
             // Filter out words that started before PTT was pressed

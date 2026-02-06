@@ -54,9 +54,6 @@ targets:
     platform: iOS
     sources:
       - Sources/KeyboardExtension
-    frameworks:
-      - AVFoundation.framework
-      - Speech.framework
     info:
       path: Sources/KeyboardExtension/Info.plist
       properties:

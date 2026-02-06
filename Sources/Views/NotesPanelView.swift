@@ -64,6 +64,7 @@ struct NotesPanelView: View {
         VStack(spacing: 0) {
             // Header
             headerBar
+                .padding(.top, 28) // Padding for window buttons (traffic lights)
 
             Divider()
 
@@ -82,6 +83,7 @@ struct NotesPanelView: View {
                 notesList
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             NotesVisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
         )

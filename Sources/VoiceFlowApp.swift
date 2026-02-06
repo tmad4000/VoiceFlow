@@ -57,8 +57,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var pttMonitor: Any?
     private var isPTTKeyPhysicallyDown: Bool = false  // Track physical key state to ignore macOS key repeat events
-    private var panelTopEdgeY: CGFloat?  // Track desired top-edge position for panel (fixes recurring banner-push-off bug)
-    private var isRepositioningPanel: Bool = false  // Prevent didMove from updating anchor during programmatic repositioning
+    private var pttActivatedOnMode: Bool = false  // Track if On mode was activated via PTT to handle auto-sleep on release
 
     // CGEventTap for consuming PTT key events (prevents them from reaching apps)
     private var pttEventTap: CFMachPort?
@@ -469,52 +468,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.maxSize = NSSize(width: 1000, height: 800)
 
         panelWindow = panel
-
-        // Observe frame changes to keep top edge pinned (fixes recurring banner-push-off bug VoiceFlow-3y6k)
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(panelFrameDidChange(_:)),
-            name: NSWindow.didResizeNotification,
-            object: panel
-        )
-
-        // Track when user drags window to update the anchor point (VoiceFlow-hvdi)
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(panelDidMove(_:)),
-            name: NSWindow.didMoveNotification,
-            object: panel
-        )
-    }
-
-    @objc private func panelFrameDidChange(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow,
-              window == panelWindow,
-              let targetTopY = panelTopEdgeY,
-              let screen = NSScreen.main else { return }
-
-        // Calculate where top edge currently is
-        let currentTopY = window.frame.origin.y + window.frame.height
-
-        // If top edge has moved, reposition to maintain original top-edge position
-        // Allow small tolerance to avoid infinite loops from rounding
-        if abs(currentTopY - targetTopY) > 1 {
-            let newOriginY = targetTopY - window.frame.height
-            // Ensure we don't go below the screen bottom
-            let clampedY = max(screen.frame.origin.y, newOriginY)
-            // Set flag to prevent panelDidMove from updating anchor
-            isRepositioningPanel = true
-            window.setFrameOrigin(NSPoint(x: window.frame.origin.x, y: clampedY))
-            isRepositioningPanel = false
-        }
-    }
-
-    @objc private func panelDidMove(_ notification: Notification) {
-        // Update anchor when USER drags window - ignore programmatic moves
-        guard let window = notification.object as? NSWindow,
-              window == panelWindow,
-              !isRepositioningPanel else { return }  // Skip if we're programmatically repositioning
-        panelTopEdgeY = window.frame.origin.y + window.frame.height
     }
 
     private func setPanelVisible(_ visible: Bool) {
@@ -540,9 +493,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let desiredTopY = screen.frame.maxY - 20
         let y = desiredTopY - window.frame.height
 
-        // Store the target top-edge position for the frame observer
-        panelTopEdgeY = desiredTopY
-
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
@@ -562,24 +512,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configurePTTPreviewWindow() {
+        // Start with compact size - SwiftUI will resize based on content
         let panel = PTTPreviewWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 220),
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 120),
             styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
 
-        let hostingController = NSHostingController(
+        let hostingView = NSHostingView(
             rootView: PTTPreviewView()
                 .environmentObject(appState)
         )
 
-        panel.contentView = hostingController.view
+        // Enable automatic sizing based on SwiftUI content
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+
+        panel.contentView = hostingView
         panel.isReleasedWhenClosed = false
         panel.isFloatingPanel = true
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.hasShadow = true
+        panel.hasShadow = false  // SwiftUI view has its own shadow
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.titleVisibility = .hidden
@@ -1359,8 +1313,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                        now.timeIntervalSince(lastTap) < 0.3 {
                         self.appState.lastPTTKeyDownTime = nil
                         if self.appState.microphoneMode == .on && !self.appState.isPTTProcessing {
-                            self.appState.logDebug("PTT: Double-tap → Off (legacy)")
-                            self.appState.setMode(.off)
+                            self.appState.logDebug("PTT: Double-tap → Sleep (legacy)")
+                            self.appState.setMode(.sleep)
                         } else {
                             self.appState.logDebug("PTT: Double-tap → On (legacy)")
                             self.appState.cancelPendingPTTSleep()
@@ -1385,6 +1339,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     if let lastTap = self.appState.lastPTTKeyDownTime,
                        now.timeIntervalSince(lastTap) < 0.3 {
                         self.appState.lastPTTKeyDownTime = nil  // Reset to avoid triple-tap
+                        if self.appState.microphoneMode != .on && !self.appState.isPTTSessionActive {
+                            self.appState.logDebug("PTT: Double-tap → On")
+                            self.appState.cancelPendingPTTSleep()
+                            self.appState.setMode(.on)
+                            return
+                        }
                         self.appState.logDebug("PTT: Double-tap → Sticky")
                         self.appState.cancelPendingPTTSleep()
                         self.appState.recordPTTPress()
@@ -1400,9 +1360,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.appState.recordPTTPress()
 
                 if self.appState.microphoneMode == .on && !self.appState.isPTTSessionActive {
-                    // Already in On mode → Push-to-Mute
-                    self.appState.isPTMMuted = true
-                    self.appState.logDebug("PTM: Muted (key held)")
+                    // Already in On mode → Push-to-Sleep (temporarily go to sleep)
+                    self.appState.isPTMMuted = true  // Reusing flag to track Push-to-Sleep state
+                    self.appState.setMode(.sleep)
+                    self.appState.logDebug("PTS: Temporarily switched to Sleep (key held)")
                 } else if self.appState.microphoneMode != .on {
                     // Off or Sleep mode → Push-to-Talk
                     let returnMode = self.appState.microphoneMode
@@ -1419,10 +1380,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // Reset physical key state to allow next press
                 self.isPTTKeyPhysicallyDown = false
 
-                // Handle Push-to-Mute release
+                // Handle Push-to-Sleep release (return to On mode)
                 if self.appState.isPTMMuted {
                     self.appState.isPTMMuted = false
-                    self.appState.logDebug("PTM: Unmuted (key released)")
+                    self.appState.setMode(.on)
+                    self.appState.logDebug("PTS: Returned to On mode (key released)")
                     return
                 }
 
@@ -1575,10 +1537,16 @@ func pttEventTapCallback(
     let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
     let eventFlags = event.flags
 
+    // Debug: log all key events to see what's happening
+    // NSLog("[PTT] Key event: code=\(keyCode), type=\(type.rawValue), flags=\(eventFlags.rawValue), expected=\(state.pttKeyCode)")
+
     // Check if this is the PTT key
     guard keyCode == state.pttKeyCode else {
         return Unmanaged.passRetained(event)
     }
+
+    // Debug: we matched the PTT key
+    NSLog("[PTT] Matched PTT key \(keyCode), type=\(type.rawValue)")
 
     // Check if this is a modifier-only key (keycodes 54-63 are modifier keys)
     let isModifierKey = (54...63).contains(keyCode)
@@ -1605,10 +1573,13 @@ func pttEventTapCallback(
         }
     } else {
         // For regular keys, check keyDown/keyUp
+        NSLog("[PTT] Regular key: relevantFlags=\(relevantFlags.rawValue), requiredFlags=\(requiredFlags.rawValue)")
         if type == .keyDown && relevantFlags == requiredFlags {
+            NSLog("[PTT] KeyDown matched - triggering PTT pressed")
             state.onPTTPressed?()
             shouldConsume = state.consumePTTKey
         } else if type == .keyUp {
+            NSLog("[PTT] KeyUp - triggering PTT released")
             state.onPTTReleased?()
             shouldConsume = state.consumePTTKey
         }

@@ -90,6 +90,7 @@ class AssemblyAIService: NSObject, ObservableObject {
         guard socket == nil else { return }
 
         var urlComponents = URLComponents(string: endpoint)!
+        // NOTE: speaker_labels requires premium AssemblyAI plan - not available on standard streaming
         urlComponents.queryItems = [
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "format_turns", value: String(formatTurns)),

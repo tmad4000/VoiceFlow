@@ -87,6 +87,7 @@ struct CommandPanelView: View {
         VStack(spacing: 0) {
             // Header
             headerBar
+                .padding(.top, 28) // Padding for window buttons (traffic lights)
 
             Divider()
                 .background(Color.white.opacity(0.1))
@@ -107,6 +108,7 @@ struct CommandPanelView: View {
             // Input
             inputBar
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             CommandVisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
         )

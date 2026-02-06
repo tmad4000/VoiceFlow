@@ -45,6 +45,7 @@ enum VoiceFlowCLI {
         ("ptt_preview_enabled", "PTT: show popup while speaking", "bool"),
         ("ptt_stream_while_popup_enabled", "PTT: stream while popup is visible", "bool"),
         ("ptt_commit_delay_ms", "PTT: delay before inserting text after release (ms)", "number"),
+        ("ptt_auto_submit_enabled", "PTT: auto-press Enter after release", "bool"),
     ]
 
     // MARK: - Distributed Notification Names

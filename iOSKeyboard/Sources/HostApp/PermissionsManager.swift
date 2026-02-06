@@ -44,4 +44,9 @@ final class PermissionsManager: ObservableObject {
             }
         }
     }
+
+    func refresh() {
+        speechStatus = SFSpeechRecognizer.authorizationStatus()
+        microphoneGranted = AVAudioSession.sharedInstance().recordPermission == .granted
+    }
 }

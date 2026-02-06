@@ -20,6 +20,7 @@ struct TranscriptsPanelView: View {
         VStack(spacing: 0) {
             // Header
             headerBar
+                .padding(.top, 28) // Padding for window buttons (traffic lights)
 
             Divider()
 
@@ -37,6 +38,7 @@ struct TranscriptsPanelView: View {
                 transcriptsList
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             TranscriptsVisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
         )
