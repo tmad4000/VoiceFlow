@@ -10,7 +10,22 @@ bd list --label recurring
 When a bug recurs:
 1. If closed, reopen: `bd reopen <id> --reason "recurred: <context>"`
 2. Add label if not already: `bd label add <id> recurring`
-3. Fix the issue, then close normally
+3. Add/update a "Why this recurs" section in the ticket description
+4. Fix the issue, then close normally
+
+When closing a recurring issue:
+- Document what fixed it THIS time
+- Note whether the root cause was addressed or just the symptom
+- If only the symptom was fixed, note what a permanent fix would require
+
+### Known Recurring Patterns
+
+These are the architectural reasons VoiceFlow bugs tend to recur:
+
+- **Newline/enter at end of utterance** (VoiceFlow-qs3, VoiceFlow-f0d): Timing race between text keystroke delivery and the Return keystroke. When "newline" is in the same utterance as text, Return can fire before text is fully typed. Root cause: keystroke simulation is async but newline command processing doesn't wait for text delivery to complete.
+- **"Say" escape mode** (VoiceFlow-vw2w, VoiceFlow-xce): The "say" prefix for literal text insertion breaks across turn boundaries. Root cause: turn/utterance segmentation can split "say newline" into separate processing units.
+- **Warning banner layout** (VoiceFlow-3y6k): Banners push content off the top of the panel. Root cause: fixed-height layout doesn't account for variable warning content.
+- **Volume meter visibility** (VoiceFlow-v3ix): Volume meter disappears or flickers. Root cause: audio session state changes can hide the meter during transitions.
 
 ## Issue Tracking
 
