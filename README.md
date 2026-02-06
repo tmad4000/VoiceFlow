@@ -1,4 +1,4 @@
-# VoiceFlow
+# VoiceFlow ![Beta](https://img.shields.io/badge/status-beta-yellow)
 A native macOS speech recognition app designed for users with Repetitive Strain Injury (RSI). Uses AssemblyAI for real-time transcription with minimal keyboard usage.
 ## Features
 - **Real-time Speech-to-Text**: Dictate text directly into any application
