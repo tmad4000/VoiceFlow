@@ -76,6 +76,102 @@ enum UtteranceMode: String, CaseIterable, Codable {
     }
 }
 
+/// Speed preset for quick latency configuration
+/// Bundles multiple settings: utterance mode, live dictation, format turns, etc.
+enum SpeedPreset: String, CaseIterable, Codable, Identifiable {
+    case maxSpeed = "max_speed"
+    case balanced = "balanced"
+    case accurate = "accurate"
+    case custom = "custom"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .maxSpeed: return "Max Speed"
+        case .balanced: return "Balanced"
+        case .accurate: return "Accurate"
+        case .custom: return "Custom"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .maxSpeed: return "hare"
+        case .balanced: return "scale.3d"
+        case .accurate: return "tortoise"
+        case .custom: return "slider.horizontal.3"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .maxSpeed: return "Fastest response, may cut off early"
+        case .balanced: return "Good balance of speed and accuracy"
+        case .accurate: return "Waits longer, fewer cutoffs"
+        case .custom: return "Manual configuration"
+        }
+    }
+
+    // Preset configurations
+    var utteranceMode: UtteranceMode {
+        switch self {
+        case .maxSpeed: return .quick
+        case .balanced: return .balanced
+        case .accurate: return .patient
+        case .custom: return .custom
+        }
+    }
+
+    var liveDictationEnabled: Bool {
+        switch self {
+        case .maxSpeed: return true
+        case .balanced, .accurate, .custom: return false
+        }
+    }
+
+    var aggressiveLiveMode: Bool {
+        switch self {
+        case .maxSpeed: return true
+        case .balanced, .accurate, .custom: return false
+        }
+    }
+
+    var formatTurns: Bool {
+        switch self {
+        case .maxSpeed: return false  // ~200ms savings
+        case .balanced, .accurate, .custom: return true
+        }
+    }
+
+    var confidenceThreshold: Double {
+        switch self {
+        case .maxSpeed: return 0.3
+        case .balanced: return 0.7
+        case .accurate: return 0.85
+        case .custom: return 0.7
+        }
+    }
+
+    var silenceThresholdMs: Int {
+        switch self {
+        case .maxSpeed: return 100
+        case .balanced: return 160
+        case .accurate: return 400
+        case .custom: return 160
+        }
+    }
+
+    var maxTurnSilenceMs: Int {
+        switch self {
+        case .maxSpeed: return 800
+        case .balanced: return 1280
+        case .accurate: return 2000
+        case .custom: return 1280
+        }
+    }
+}
+
 /// Dictation provider options
 enum DictationProvider: String, CaseIterable, Codable, Identifiable {
     case auto = "auto"
@@ -215,6 +311,9 @@ class AppState: ObservableObject {
     @Published var utteranceMode: UtteranceMode = .balanced
     @Published var customConfidenceThreshold: Double = 0.7
     @Published var customSilenceThresholdMs: Int = 160
+    @Published var customMaxTurnSilenceMs: Int = 1280
+    @Published var formatTurnsEnabled: Bool = true
+    @Published var speedPreset: SpeedPreset = .balanced
     @Published var activeBehavior: ActiveBehavior = .mixed
     @Published var lastCommandName: String? = nil
     @Published var isCommandFlashActive: Bool = false
@@ -627,6 +726,11 @@ class AppState: ObservableObject {
     /// Effective silence threshold based on mode
     var effectiveSilenceThresholdMs: Int {
         utteranceMode == .custom ? customSilenceThresholdMs : utteranceMode.silenceThresholdMs
+    }
+
+    /// Effective max turn silence based on speed preset
+    var effectiveMaxTurnSilenceMs: Int {
+        speedPreset == .custom ? customMaxTurnSilenceMs : speedPreset.maxTurnSilenceMs
     }
 
     /// Whether the app should use the offline provider based on settings and connectivity
@@ -1227,7 +1331,7 @@ class AppState: ObservableObject {
         let utteranceConfig = UtteranceConfig(
             confidenceThreshold: effectiveConfidenceThreshold,
             silenceThresholdMs: effectiveSilenceThresholdMs,
-            maxTurnSilenceMs: utteranceMode.maxTurnSilenceMs
+            maxTurnSilenceMs: effectiveMaxTurnSilenceMs
         )
         assemblyAIService?.setUtteranceConfig(utteranceConfig)
 
@@ -1286,7 +1390,7 @@ class AppState: ObservableObject {
 
         // Start services
         assemblyAIService?.setTranscribeMode(transcribeMode)
-        assemblyAIService?.setFormatTurns(!liveDictationEnabled)
+        assemblyAIService?.setFormatTurns(!liveDictationEnabled && formatTurnsEnabled)
         assemblyAIService?.setVocabularyPrompt(effectiveVocabularyPrompt)
         logDebug("Vocabulary: \(effectiveVocabularyPrompt.prefix(100))...")
         assemblyAIService?.connect()
@@ -1319,7 +1423,7 @@ class AppState: ObservableObject {
         let utteranceConfig = UtteranceConfig(
             confidenceThreshold: effectiveConfidenceThreshold,
             silenceThresholdMs: effectiveSilenceThresholdMs,
-            maxTurnSilenceMs: utteranceMode.maxTurnSilenceMs
+            maxTurnSilenceMs: effectiveMaxTurnSilenceMs
         )
         deepgramService?.setUtteranceConfig(utteranceConfig)
 
@@ -1371,7 +1475,7 @@ class AppState: ObservableObject {
 
         // Start services
         deepgramService?.setTranscribeMode(transcribeMode)
-        deepgramService?.setFormatTurns(!liveDictationEnabled)
+        deepgramService?.setFormatTurns(!liveDictationEnabled && formatTurnsEnabled)
         deepgramService?.setVocabularyTerms(effectiveVocabularyTerms)
         deepgramService?.connect()
         audioCaptureManager?.startCapture()
@@ -1401,7 +1505,7 @@ class AppState: ObservableObject {
         let utteranceConfig = UtteranceConfig(
             confidenceThreshold: effectiveConfidenceThreshold,
             silenceThresholdMs: effectiveSilenceThresholdMs,
-            maxTurnSilenceMs: utteranceMode.maxTurnSilenceMs
+            maxTurnSilenceMs: effectiveMaxTurnSilenceMs
         )
         appleSpeechService?.setUtteranceConfig(utteranceConfig)
         
@@ -1705,6 +1809,10 @@ class AppState: ObservableObject {
         }
 
         var processedText = preprocessDictation(textToType, forceLiteral: isLiteralTurn, words: wordsForKeywords)
+        if isLiteralTurn {
+            NSLog("[VoiceFlow] 🔤 handleDictationTurn literal: raw='%@' -> processed='%@'",
+                  String(textToType.prefix(60)), String(processedText.prefix(60)))
+        }
 
         // Apply AI formatting if enabled (quick local heuristics for now)
         if aiFormatterEnabled {
@@ -2952,6 +3060,11 @@ class AppState: ObservableObject {
         var startIndex = max(typedFinalWordCount, lastCommandEndIndex + 1)
         let isLiteral = currentUtteranceIsLiteral  // Use the flag set by processVoiceCommands
 
+        if isLiteral {
+            NSLog("[VoiceFlow] 🔤 handleLiveDictationTurn: isLiteral=true, literalStartWordIndex=%d, startIndex=%d, transcript='%@'",
+                  literalStartWordIndex, startIndex, String(turn.transcript.prefix(60)))
+        }
+
         // If literal mode was triggered by "say" after wake commands (e.g., "speech on say press enter"),
         // skip all words up to and including "say"
         if isLiteral && literalStartWordIndex > startIndex {
@@ -3159,6 +3272,9 @@ class AppState: ObservableObject {
             let rawText = prefix + newWords.joined(separator: " ")
             let wordSlice = Array(effectiveWords[startIndex...].filter { filterPunctuation($0.text) })
             var textToType = processInlineReplacements(rawText, wordSlice, isLiteral)
+            if isLiteral {
+                NSLog("[VoiceFlow] 🔤 endOfTurn literal path: rawText='%@' -> textToType='%@'", rawText, textToType)
+            }
             if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
                 textToType = " " + textToType
             }
@@ -5478,25 +5594,31 @@ class AppState: ObservableObject {
     private func flushBufferedTerminalNewlines() {
         guard bufferedTerminalNewlines > 0 else { return }
 
-        logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s)")
-
         let isTerminal = focusContextManager.isCurrentAppTerminal()
+        logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s) (isTerminal=\(isTerminal))")
 
-        // For terminals: use AppleScript with built-in delay (more atomic/reliable than Thread.sleep)
-        // For non-terminals: CGEvent with no delay (faster)
-        let appleScriptDelay: Double = 0.15  // 150ms delay inside AppleScript
+        // Wait for text to be fully processed before sending Return
+        // Terminals need more time due to shell input processing
+        let delayBeforeReturn: TimeInterval = isTerminal ? 0.15 : 0.05
+        Thread.sleep(forTimeInterval: delayBeforeReturn)
 
         for i in 0..<bufferedTerminalNewlines {
-            if isTerminal {
-                // AppleScript handles its own timing internally - more reliable than Thread.sleep
-                sendReturnViaAppleScript(delaySeconds: i == 0 ? appleScriptDelay : 0.05)
-            } else {
-                let source = CGEventSource(stateID: .hidSystemState)
-                let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-                let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-                keyDown?.post(tap: .cghidEventTap)
-                keyUp?.post(tap: .cghidEventTap)
+            if i > 0 {
+                Thread.sleep(forTimeInterval: 0.05) // gap between multiple Returns
             }
+            let source = CGEventSource(stateID: .hidSystemState)
+            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+            if isTerminal {
+                // Send \r (carriage return) for terminal apps, matching typeText() behavior
+                var cr: UniChar = 0x0D
+                keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+                keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+                keyDown?.flags = []
+                keyUp?.flags = []
+            }
+            keyDown?.post(tap: .cghidEventTap)
+            keyUp?.post(tap: .cghidEventTap)
             lastKeyEventTime = Date()
         }
 
@@ -5505,17 +5627,21 @@ class AppState: ObservableObject {
 
     /// Send a single Enter key press (for explicit "press enter" / "submit" command)
     private func sendEnterKey() {
-        logDebug("Sending explicit Enter key")
         let isTerminal = focusContextManager.isCurrentAppTerminal()
+        logDebug("Sending explicit Enter key (isTerminal=\(isTerminal))")
+        let source = CGEventSource(stateID: .hidSystemState)
+        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
         if isTerminal {
-            sendReturnViaAppleScript()
-        } else {
-            let source = CGEventSource(stateID: .hidSystemState)
-            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-            keyDown?.post(tap: .cghidEventTap)
-            keyUp?.post(tap: .cghidEventTap)
+            // Send \r (carriage return) for terminal apps, matching typeText() behavior
+            var cr: UniChar = 0x0D
+            keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+            keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+            keyDown?.flags = []
+            keyUp?.flags = []
         }
+        keyDown?.post(tap: .cghidEventTap)
+        keyUp?.post(tap: .cghidEventTap)
         lastKeyEventTime = Date()
     }
 
@@ -5567,8 +5693,8 @@ class AppState: ObservableObject {
     // MARK: - Persistence
 
     private func loadAPIKey() {
-        apiKey = UserDefaults.standard.string(forKey: "assemblyai_api_key") ?? "73686868686868686868686868686868" // Default placeholder or real key if provided
-        deepgramApiKey = UserDefaults.standard.string(forKey: "deepgram_api_key") ?? "9988458f12e98ddd52fc20a9ed5eb089b22ca29e"
+        apiKey = UserDefaults.standard.string(forKey: "assemblyai_api_key") ?? ""
+        deepgramApiKey = UserDefaults.standard.string(forKey: "deepgram_api_key") ?? ""
     }
 
     func saveAPIKey(_ key: String) {
@@ -5852,6 +5978,15 @@ class AppState: ObservableObject {
         if storedSilence > 0 {
             customSilenceThresholdMs = storedSilence
         }
+        let storedMaxSilence = UserDefaults.standard.integer(forKey: "custom_max_turn_silence_ms")
+        if storedMaxSilence > 0 {
+            customMaxTurnSilenceMs = storedMaxSilence
+        }
+        formatTurnsEnabled = UserDefaults.standard.object(forKey: "format_turns_enabled") as? Bool ?? true
+        if let presetString = UserDefaults.standard.string(forKey: "speed_preset"),
+           let preset = SpeedPreset(rawValue: presetString) {
+            speedPreset = preset
+        }
     }
 
     func saveUtteranceMode(_ mode: UtteranceMode) {
@@ -5883,6 +6018,63 @@ class AppState: ObservableObject {
         // Auto-switch to custom mode when manually adjusting
         if utteranceMode != .custom {
             saveUtteranceMode(.custom)
+        }
+    }
+
+    func saveCustomMaxTurnSilence(_ value: Int) {
+        customMaxTurnSilenceMs = value
+        UserDefaults.standard.set(value, forKey: "custom_max_turn_silence_ms")
+        // Auto-switch to custom speed preset when manually adjusting
+        if speedPreset != .custom {
+            speedPreset = .custom
+            UserDefaults.standard.set(SpeedPreset.custom.rawValue, forKey: "speed_preset")
+        }
+    }
+
+    func saveFormatTurns(_ enabled: Bool) {
+        formatTurnsEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "format_turns_enabled")
+        // Auto-switch to custom speed preset when manually adjusting
+        if speedPreset != .custom {
+            speedPreset = .custom
+            UserDefaults.standard.set(SpeedPreset.custom.rawValue, forKey: "speed_preset")
+        }
+    }
+
+    /// Apply a speed preset, configuring all related settings at once
+    func applySpeedPreset(_ preset: SpeedPreset) {
+        speedPreset = preset
+        UserDefaults.standard.set(preset.rawValue, forKey: "speed_preset")
+
+        guard preset != .custom else { return }
+
+        // Apply all preset values
+        utteranceMode = preset.utteranceMode
+        UserDefaults.standard.set(preset.utteranceMode.rawValue, forKey: "utterance_mode")
+
+        customConfidenceThreshold = preset.confidenceThreshold
+        UserDefaults.standard.set(preset.confidenceThreshold, forKey: "custom_confidence_threshold")
+
+        customSilenceThresholdMs = preset.silenceThresholdMs
+        UserDefaults.standard.set(preset.silenceThresholdMs, forKey: "custom_silence_threshold_ms")
+
+        customMaxTurnSilenceMs = preset.maxTurnSilenceMs
+        UserDefaults.standard.set(preset.maxTurnSilenceMs, forKey: "custom_max_turn_silence_ms")
+
+        liveDictationEnabled = preset.liveDictationEnabled
+        UserDefaults.standard.set(preset.liveDictationEnabled, forKey: "live_dictation_enabled")
+
+        aggressiveLiveMode = preset.aggressiveLiveMode
+        UserDefaults.standard.set(preset.aggressiveLiveMode, forKey: "aggressive_live_mode")
+
+        formatTurnsEnabled = preset.formatTurns
+        UserDefaults.standard.set(preset.formatTurns, forKey: "format_turns_enabled")
+
+        logDebug("Applied speed preset: \(preset.displayName)")
+
+        // Restart services if connected to apply new settings
+        if isConnected {
+            restartServicesIfActive()
         }
     }
 
