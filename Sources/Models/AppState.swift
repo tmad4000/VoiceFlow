@@ -723,7 +723,7 @@ class AppState: ObservableObject {
     private var pendingCrossUtteranceTime: Date? = nil
     private let crossUtteranceKeywordWindowSeconds: TimeInterval = 2.0  // Max time to wait for continuation
     private let crossUtteranceNewlineEnabled: Bool = false  // Simplicity mode: avoid split-word "new" + "line" rewriting
-    private let terminalAtomicTrailingSubmitEnabled: Bool = true  // Keep terminal trailing newline in typed payload to preserve ordering
+    private let terminalAtomicTrailingSubmitEnabled: Bool = true  // Re-enabled: prior stable behavior for trailing terminal newline submit
 
     private var shouldUseLegacyPTT: Bool {
         !pttPreviewEnabled

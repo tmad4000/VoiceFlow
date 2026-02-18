@@ -8,6 +8,20 @@ bd update <id> --status in_progress  # Claim work
 bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
+
+## Canonical Dev Run Mode
+- Use `VoiceFlow-Dev.app` for day-to-day development/testing.
+- Build/run with:
+  ```bash
+  ./build_dev.sh
+  open VoiceFlow-Dev.app
+  ```
+- Do **not** launch `.build/arm64-apple-macosx/debug/VoiceFlow` directly for normal testing.
+- Rationale:
+  - keeps one stable app identity (`com.jacobcole.voiceflow.dev`) for TCC/Accessibility
+  - avoids repeated Accessibility re-prompts from ad-hoc binary churn
+  - keeps dev settings separate from release settings
+
 ## Landing the Plane (Session Completion)
 **When ending a work session**, complete the steps below where applicable. Push is recommended, not mandatory.
 **RECOMMENDED WORKFLOW:**

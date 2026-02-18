@@ -21,6 +21,15 @@ cd VoiceFlow
 swift build
 swift run
 ```
+
+### Recommended Dev Workflow (macOS app)
+```bash
+./build_dev.sh
+open VoiceFlow-Dev.app
+```
+- Prefer `VoiceFlow-Dev.app` for iterative testing.
+- Avoid running `.build/arm64-apple-macosx/debug/VoiceFlow` directly for normal manual QA, because app identity churn can retrigger Accessibility permission prompts.
+
 ### Or open in Xcode
 ```bash
 open Package.swift

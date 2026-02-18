@@ -31,7 +31,7 @@ struct FloatingPanelView: View {
 
     private var minimalPanel: some View {
         HStack(spacing: 8) {
-            // Left edge: Status Pulse / Indicator
+            // Left edge: ringed mic activity indicator
             ZStack {
                 if appState.microphoneMode != .off {
                     AudioPulseIndicator(level: appState.audioLevel, mode: appState.microphoneMode, isMuted: appState.isPTMMuted)
@@ -41,7 +41,8 @@ struct FloatingPanelView: View {
                         .frame(width: 8, height: 8)
                 }
             }
-            .frame(width: 16)
+            .frame(width: 18, height: 18)
+            .help("Microphone level")
 
             // Center: Mode Buttons (Pill style)
             HStack(spacing: 4) {
@@ -75,8 +76,11 @@ struct FloatingPanelView: View {
                         .instantTooltip("Processing speech...")
                 }
 
-                refreshBuildButton
-                latestBuildIndicator
+                minimalCommandIndicator
+
+                if appState.isNewerBuildAvailable {
+                    refreshBuildButton
+                }
 
                 // Expand button
                 Button(action: {
@@ -276,15 +280,19 @@ struct FloatingPanelView: View {
     }
 
     private var buildTrackBadge: some View {
-        Text(isDevBuild ? "DEV" : "REL")
-            .font(.system(size: 8, weight: .bold, design: .monospaced))
-            .foregroundColor(isDevBuild ? .orange : .secondary)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
-            .background((isDevBuild ? Color.orange : Color.gray).opacity(0.16))
-            .clipShape(RoundedRectangle(cornerRadius: 3))
-            .fixedSize()
-            .instantTooltip(isDevBuild ? "Development build" : "Release build")
+        Group {
+            if isDevBuild {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(Color.orange.opacity(0.18))
+                        .frame(width: 14, height: 14)
+                    Text("D")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.orange)
+                }
+                .instantTooltip("Development build")
+            }
+        }
     }
 
     private var refreshBuildButton: some View {
@@ -296,16 +304,29 @@ struct FloatingPanelView: View {
         .disabled(!appState.isNewerBuildAvailable)
         .buttonStyle(.plain)
         .pointerCursor()
-        .instantTooltip(appState.isNewerBuildAvailable
-                        ? "New build available - Click to Restart"
-                        : "Up to date - refresh icon remains visible")
+        .instantTooltip("New build available - Click to Restart")
     }
 
-    private var latestBuildIndicator: some View {
-        Image(systemName: appState.isNewerBuildAvailable ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-            .font(.system(size: 11))
-            .foregroundColor(appState.isNewerBuildAvailable ? .yellow : .green.opacity(0.85))
-            .instantTooltip(appState.isNewerBuildAvailable ? "Not on latest build" : "Latest build")
+    private var minimalCommandIndicator: some View {
+        Group {
+            if appState.isCommandFlashActive, let commandName = appState.lastCommandName {
+                HStack(spacing: 4) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 8, weight: .bold))
+                    Text(commandName)
+                        .font(.system(size: 9, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .frame(maxWidth: 120)
+                .foregroundColor(.green)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.green.opacity(0.12))
+                .clipShape(Capsule())
+                .instantTooltip("Detected command: \(commandName)")
+            }
+        }
     }
 
     private var utilityButtons: some View {
@@ -1083,17 +1104,17 @@ private struct AudioPulseIndicator: View {
                     .font(.system(size: 6, weight: .bold))
                     .foregroundColor(.white)
             } else {
-                // Normal: Outer glow when speaking
+                // Ringed indicator with stronger visibility in collapsed mode.
                 Circle()
-                    .fill(pulseColor.opacity(0.3))
-                    .frame(width: 14, height: 14)
-                    .scaleEffect(1.0 + CGFloat(amplifiedLevel) * 0.5)
-                    .opacity(Double(amplifiedLevel))
+                    .stroke(pulseColor.opacity(0.78), lineWidth: 1.5)
+                    .frame(width: 13, height: 13)
+                    .scaleEffect(1.0 + CGFloat(amplifiedLevel) * 0.45)
+                    .opacity(0.55 + Double(amplifiedLevel) * 0.45)
 
-                // Inner solid circle
                 Circle()
                     .fill(pulseColor)
                     .frame(width: 8, height: 8)
+                    .shadow(color: pulseColor.opacity(0.75), radius: 2 + CGFloat(amplifiedLevel) * 2)
             }
         }
         // No animation for PTM transitions - instant snap
@@ -1102,8 +1123,8 @@ private struct AudioPulseIndicator: View {
 
     private var pulseColor: Color {
         switch mode {
-        case .on: return amplifiedLevel > 0.5 ? .orange : .green
-        case .sleep: return .orange
+        case .on: return .green
+        case .sleep: return .green.opacity(0.65)
         case .off: return .gray
         }
     }

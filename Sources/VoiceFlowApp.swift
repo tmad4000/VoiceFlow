@@ -525,8 +525,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func preferredPanelScreen() -> NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        if let mouseScreen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) }) {
+            return mouseScreen
+        }
+        return NSScreen.main ?? NSScreen.screens.first
+    }
+
     private func positionPanelWindow(_ window: NSWindow) {
-        guard let screen = NSScreen.main else { return }
+        guard let screen = preferredPanelScreen() else { return }
         let frame = screen.visibleFrame
         let horizontalMargin: CGFloat = 24
         let verticalTopOffset: CGFloat = 110
