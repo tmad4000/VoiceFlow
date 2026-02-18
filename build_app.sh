@@ -1,6 +1,26 @@
 #!/bin/bash
 set -e
 
+# Build identity (always advances, even for rapid rebuilds in the same second)
+VERSION_SOURCE_FILE="Sources/Version.swift"
+SHORT_VERSION=$(sed -n 's/.*static let version = "\(.*\)".*/\1/p' "${VERSION_SOURCE_FILE}" | head -n 1)
+if [ -z "${SHORT_VERSION}" ]; then
+  SHORT_VERSION="0.2.0"
+fi
+COUNTER_FILE=".build/release_build_counter"
+mkdir -p .build
+CURRENT_TS=$(date +%Y%m%d%H%M%S)
+LAST_TS=0
+if [ -f "${COUNTER_FILE}" ]; then
+  LAST_TS=$(cat "${COUNTER_FILE}" 2>/dev/null || echo 0)
+fi
+if [ "${CURRENT_TS}" -le "${LAST_TS}" ]; then
+  BUILD_NUMBER=$((LAST_TS + 1))
+else
+  BUILD_NUMBER="${CURRENT_TS}"
+fi
+echo "${BUILD_NUMBER}" > "${COUNTER_FILE}"
+
 # Build the project
 echo "Building VoiceFlow..."
 swift build -c release --arch arm64
@@ -25,7 +45,7 @@ cp "${BINARY_PATH}" "${MACOS_DIR}/${RELEASE_NAME}"
 
 # Create Release Info.plist
 echo "Creating Release Info.plist..."
-cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
+cat > "${CONTENTS_DIR}/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -35,9 +55,9 @@ cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
     <key>CFBundleIdentifier</key>
     <string>com.jacobcole.voiceflow.release</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0</string>
+    <string>${BUILD_NUMBER}</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>${SHORT_VERSION}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
@@ -77,6 +97,7 @@ echo "Verifying Signature..."
 codesign -dv --verbose=4 "${APP_BUNDLE}"
 
 echo "Build and Sign Complete: ${APP_BUNDLE}"
+echo "Version: ${SHORT_VERSION} (rel.${BUILD_NUMBER})"
 
 # Copy API key from dev defaults to release defaults
 DEV_API_KEY=$(defaults read com.jacobcole.voiceflow assemblyai_api_key 2>/dev/null || true)

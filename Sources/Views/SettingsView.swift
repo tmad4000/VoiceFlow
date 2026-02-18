@@ -513,7 +513,7 @@ struct GeneralSettingsView: View {
                         Toggle("Experimental: AX submit for terminal Enter", isOn: terminalAccessibilitySubmitBinding)
                             .font(.system(size: 13))
 
-                        Text("Try Accessibility API submit first for terminal Return, then fall back to CGEvent if unsupported.")
+                        Text("Only applies to explicit Enter commands. Dictation newline path is locked to CGEvent for strict ordering.")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }

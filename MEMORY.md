@@ -29,6 +29,16 @@ Use this file as the index for where durable project memory lives.
   - `NEWLINE_DEBUG_SUMMARY.md` (behavior details)
   - relevant bead issue notes (actionable next step)
 
+## 5) Timestamp Markers (Debug Correlation)
+- Use timestamp markers whenever reporting or reproducing an issue.
+- Voice command:
+  - `debug marker <note>`
+  - `voiceflow debug marker <note>`
+- CLI helper:
+  - `./scripts/debug-marker.sh "<note>"`
+- Marker lines are written to:
+  - `~/Library/Logs/VoiceFlow/voiceflow.log`
+
 ## Ground Rule
 - Chat history is not durable memory.
 - If a result matters, write it to files/issues in this map the same day.

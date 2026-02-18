@@ -4,6 +4,26 @@ set -e
 # Development build script for VoiceFlow
 # Uses Apple Development signing identity for persistent TCC permissions
 
+# Build identity (always advances, even for rapid rebuilds in the same second)
+VERSION_SOURCE_FILE="Sources/Version.swift"
+SHORT_VERSION=$(sed -n 's/.*static let version = "\(.*\)".*/\1/p' "${VERSION_SOURCE_FILE}" | head -n 1)
+if [ -z "${SHORT_VERSION}" ]; then
+  SHORT_VERSION="0.2.0"
+fi
+COUNTER_FILE=".build/dev_build_counter"
+mkdir -p .build
+CURRENT_TS=$(date +%Y%m%d%H%M%S)
+LAST_TS=0
+if [ -f "${COUNTER_FILE}" ]; then
+  LAST_TS=$(cat "${COUNTER_FILE}" 2>/dev/null || echo 0)
+fi
+if [ "${CURRENT_TS}" -le "${LAST_TS}" ]; then
+  BUILD_NUMBER=$((LAST_TS + 1))
+else
+  BUILD_NUMBER="${CURRENT_TS}"
+fi
+echo "${BUILD_NUMBER}" > "${COUNTER_FILE}"
+
 echo "Building VoiceFlow (debug)..."
 swift build --arch arm64
 
@@ -35,7 +55,7 @@ cp "${BINARY_PATH}" "${MACOS_DIR}/${DEV_APP_NAME}"
 
 # Create Dev Info.plist (with dev bundle ID for separate TCC permissions from release)
 echo "Creating Dev Info.plist..."
-cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
+cat > "${CONTENTS_DIR}/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -45,9 +65,9 @@ cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
     <key>CFBundleIdentifier</key>
     <string>com.jacobcole.voiceflow.dev</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0-dev</string>
+    <string>${BUILD_NUMBER}</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0-dev</string>
+    <string>${SHORT_VERSION}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
@@ -87,6 +107,7 @@ codesign -d --entitlements - "${APP_BUNDLE}" 2>&1 | head -20 || true
 
 echo ""
 echo "✅ Development build complete: ${APP_BUNDLE}"
+echo "Version: ${SHORT_VERSION} (dev.${BUILD_NUMBER})"
 echo ""
 echo "Note: Using Apple Development signing. TCC permissions should persist across rebuilds."
 echo "To run: open ${APP_BUNDLE}"

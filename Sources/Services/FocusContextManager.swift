@@ -25,7 +25,8 @@ class FocusContextManager: ObservableObject {
         }
 
         var isCodeEditor: Bool {
-            bundleId == "com.microsoft.VSCode" ||
+            if isTerminal { return false } // Terminals should never be code editors
+            return bundleId == "com.microsoft.VSCode" ||
             bundleId == "com.sublimetext.4" ||
             bundleId == "com.jetbrains.intellij" ||
             bundleId?.contains("Xcode") == true ||
@@ -33,7 +34,8 @@ class FocusContextManager: ObservableObject {
         }
 
         var isChat: Bool {
-            bundleId == "com.tinyspeck.slackmacgap" ||
+            if isTerminal { return false }
+            return bundleId == "com.tinyspeck.slackmacgap" ||
             bundleId == "com.apple.MobileSMS" ||
             bundleId == "us.zoom.xos" ||
             bundleId == "com.hnc.Discord" ||
@@ -42,7 +44,8 @@ class FocusContextManager: ObservableObject {
         }
 
         var isBrowser: Bool {
-            bundleId == "com.apple.Safari" ||
+            if isTerminal { return false }
+            return bundleId == "com.apple.Safari" ||
             bundleId == "com.google.Chrome" ||
             bundleId == "org.mozilla.firefox" ||
             bundleId == "com.microsoft.edgemac" ||

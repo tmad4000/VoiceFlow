@@ -37,6 +37,16 @@
   - `terminal_accessibility_submit_enabled` (default `true` on this experiment branch)
 - Build status: compiles and app bundle builds; manual reliability validation still required.
 
+### Ordering Hardening Pass (2026-02-18)
+
+- Added strict terminal ordering behavior for formatted turns:
+  - In terminal apps, formatted **non-endOfTurn** updates are now ignored for typing.
+  - Typing/submission for those turns is deferred until end-of-turn.
+  - Goal: prevent partial word fragments from being submitted before final text is complete.
+- Added terminal safety rule for submit/send voice commands:
+  - `system.force_end_utterance` now requires end-of-turn + stability in terminal contexts.
+  - Goal: avoid mid-turn command execution that can race ahead of trailing dictation text.
+
 ---
 
 ## The Two Requirements
@@ -244,6 +254,57 @@ Builds 148-150 are uncommitted.
 
 ---
 
+## Latest Data Point (2026-02-18 04:16-04:30)
+
+Status: **still not fixed** (ordering can still appear wrong in terminal TUIs).
+
+What we just verified:
+- Current dev config is high-delay/simple mode:
+  - `terminal_submit_delay_ms = 4000`
+  - `terminal_simple_submit_enabled = true`
+  - `terminal_simple_submit_pause_ms = 3200`
+- In local unredacted logs, latest utterance path still shows text then newline in intent:
+  - `[4:16:24 AM] Live typing delta (final): " this is a test\n"`
+- But user-visible behavior in terminal can still appear as newline/submit racing ahead of text.
+
+Conclusion from this iteration:
+- The issue is not solved by longer delays alone.
+- Mixed delivery channels are still a likely root cause in terminal paths:
+  - text via CGEvent Unicode injection
+  - submit/newline may go via Accessibility action when enabled
+- Next fix direction: enforce single transport/channel per terminal utterance and avoid AX+CG mixing in the same send path.
+
+---
+
+## In-Progress Fix Applied (2026-02-18 04:32, unverified)
+
+- Implemented channel lock for dictation newline/submit paths:
+  - terminal text + Return now forced to CGEvent-only in the same serialized queue.
+  - AX submit is no longer used in dictation newline path.
+- Removed AX gate from atomic trailing path so `text + \r` can stay atomic even if AX setting is enabled.
+- Added explicit log marker:
+  - `[MARKER 2026-02-18T12:32:19Z] source=cli note="cg-only terminal newline transport deployed (dictation path)"`
+- Status: awaiting manual validation (not yet confirmed fixed).
+
+---
+
+## Regression Data Point: Text Loss (2026-02-18 04:34)
+
+- User reported dropped text after the CG-only ordering patch.
+- Relevant local log lines:
+  - `[4:34:44 AM] Live typing delta (final): " i don't think it got all of my text\n"`
+  - `[4:34:49 AM] Live typing delta (final): " why did it not get all my text here\nhere's more"`
+- Interpretation: not a hard crash; appears as missing chunks during ongoing dictation flow.
+- Most likely contributor: terminal guard that deferred formatted non-endOfTurn typing (introduced in earlier ordering hardening pass) could skip interim content when end-of-turn payload is incomplete.
+
+Immediate mitigation applied at `2026-02-18T12:35:53Z`:
+- Rolled back terminal formatted non-endOfTurn deferral.
+- Marker in log:
+  - `[MARKER 2026-02-18T12:35:53Z] source=cli note="rollback: removed terminal formatted non-endOfTurn deferral to prevent text loss"`
+- Status: awaiting manual re-test.
+
+---
+
 ## VoiceFlow Log Evidence
 
 From Build 149 logs (atomic delivery confirmed working):
@@ -315,3 +376,32 @@ Split-turn example (text and newline as separate utterances):
 5. **Retry mechanism** - After sending Return, check if the text was actually submitted (e.g., by monitoring the terminal output). If not, retry.
 
 6. **Much longer delay (5000ms+)** - As a diagnostic: if 5000ms works 100% of the time, it confirms the issue is purely timing and we can then binary search for the minimum reliable delay.
+
+---
+
+## Session Findings (Feb 18, 2026 - Late Session)
+
+### Test: Atomic Unicode Plan (Plan A)
+**Method:** Sending `ls\r` as a single Unicode injection event (using Virtual Key 0).
+**Results:**
+- **Normal Terminal (Terminal.app):** ✅ SUCCESS. `ls` executes immediately.
+- **Claude Code TUI (ink/React):** ❌ FAILURE. `ls` appears, followed by a literal visual line break, but no command execution.
+**Insight:** Claude Code specifically listens for the **physical Return key event (VK 36)** to trigger its submit logic. It treats the Unicode control character `\r` (0x0D) as literal text (a newline character) rather than a "Submit" signal. This invalidates any plan to hide the "Enter" inside the text payload for TUIs.
+
+### Test: Plan B (The 500ms Air Gap)
+**Theory:** A physical separation (delay) between the Unicode text injection and the physical Return key event is required to allow the TUI's internal React state machine to "settle" and render the text before the "Enter" arrives.
+**Results:** ✅ SUCCESS. Claude Code executed the command correctly with a 500ms separation.
+
+### Test: Stress-Testing the Air Gap (250ms & 100ms)
+**Method:** Repeated the test with progressively shorter delays.
+**Results:**
+- **250ms Delay:** ✅ SUCCESS. 
+- **100ms Delay:** ✅ SUCCESS. 
+**Insight:** Even a tiny 100ms "Air Gap" is sufficient for Claude Code to process the preceding text before the physical Return key hits. This is a massive improvement over the current 4000ms "open-loop" delay.
+
+### Test: Rapid Command Chaining
+**Method:** Sent a sequence of three commands (`pwd`, `echo`, `ls -a`) each with a 100ms air gap before the Return key and a 100ms gap between commands.
+**Results:** ✅ SUCCESS. All three commands executed in perfect order within the Claude Code TUI.
+**Conclusion:** The **Physical Return Key (VK 36)** is the mandatory trigger for TUI submission. Unicode `\r` is ignored by the TUI logic. A 100ms-250ms physical delay between text and key event is the "Golden Ratio" for reliable, snappy performance.
+
+
