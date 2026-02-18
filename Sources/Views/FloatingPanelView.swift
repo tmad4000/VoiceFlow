@@ -68,20 +68,15 @@ struct FloatingPanelView: View {
 
             // Right side indicators (Dynamic)
             HStack(spacing: 6) {
+                buildTrackBadge
+
                 if appState.isPTTProcessing {
                     PTTProcessingWaveView()
                         .instantTooltip("Processing speech...")
                 }
 
-                if appState.isNewerBuildAvailable {
-                    Button(action: { appState.restartApp() }) {
-                        Image(systemName: "arrow.clockwise.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundColor(.green)
-                    }
-                    .buttonStyle(.plain)
-                    .instantTooltip("New build available - Click to Restart")
-                }
+                refreshBuildButton
+                latestBuildIndicator
 
                 // Expand button
                 Button(action: {
@@ -160,7 +155,7 @@ struct FloatingPanelView: View {
 
             transcriptArea
         }
-        .frame(minWidth: 440, maxWidth: 1000, minHeight: 120, maxHeight: 800)
+        .frame(minWidth: 400, maxWidth: 1000, minHeight: 110, maxHeight: 800)
         .background(
             VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
                 .overlay(
@@ -186,7 +181,7 @@ struct FloatingPanelView: View {
         HStack(spacing: 14) {
             // Left Group
             HStack(spacing: 10) {
-                if Bundle.main.bundleIdentifier?.contains("release") != true {
+                if isDevBuild {
                     Text("DEV")
                         .font(.system(size: 8, weight: .bold, design: .monospaced))
                         .foregroundColor(.orange)
@@ -274,6 +269,43 @@ struct FloatingPanelView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(Color.black.opacity(0.1))
+    }
+
+    private var isDevBuild: Bool {
+        Bundle.main.bundleIdentifier?.contains("release") != true
+    }
+
+    private var buildTrackBadge: some View {
+        Text(isDevBuild ? "DEV" : "REL")
+            .font(.system(size: 8, weight: .bold, design: .monospaced))
+            .foregroundColor(isDevBuild ? .orange : .secondary)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background((isDevBuild ? Color.orange : Color.gray).opacity(0.16))
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+            .fixedSize()
+            .instantTooltip(isDevBuild ? "Development build" : "Release build")
+    }
+
+    private var refreshBuildButton: some View {
+        Button(action: { appState.restartApp() }) {
+            Image(systemName: appState.isNewerBuildAvailable ? "arrow.clockwise.circle.fill" : "arrow.clockwise.circle")
+                .font(.system(size: 12))
+                .foregroundColor(appState.isNewerBuildAvailable ? .green : .secondary.opacity(0.6))
+        }
+        .disabled(!appState.isNewerBuildAvailable)
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .instantTooltip(appState.isNewerBuildAvailable
+                        ? "New build available - Click to Restart"
+                        : "Up to date - refresh icon remains visible")
+    }
+
+    private var latestBuildIndicator: some View {
+        Image(systemName: appState.isNewerBuildAvailable ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+            .font(.system(size: 11))
+            .foregroundColor(appState.isNewerBuildAvailable ? .yellow : .green.opacity(0.85))
+            .instantTooltip(appState.isNewerBuildAvailable ? "Not on latest build" : "Latest build")
     }
 
     private var utilityButtons: some View {

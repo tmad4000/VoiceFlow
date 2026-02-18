@@ -30,14 +30,23 @@ enum VoiceFlowCLI {
         ("dictation_provider", "Dictation provider (auto/online/deepgram/offline)", "string"),
         ("launch_mode", "Initial mode on launch (On/Off/Sleep)", "string"),
         ("utterance_mode", "Utterance detection mode (quick/balanced/patient/dictation/extra_long/custom)", "string"),
+        ("speed_preset", "Speed preset (max_speed/balanced/accurate/custom)", "string"),
         ("live_dictation_enabled", "Enable live dictation mode", "bool"),
+        ("format_turns_enabled", "Enable server formatting of turns", "bool"),
+        ("aggressive_live_mode", "Type on partials for lower latency", "bool"),
+        ("aggressive_allow_corrections", "Allow backspace corrections in aggressive mode", "bool"),
         ("command_delay_ms", "Delay before executing commands (ms)", "number"),
+        ("terminal_submit_delay_ms", "Delay before Enter submit in terminal TUIs (ms)", "number"),
+        ("terminal_simple_submit_enabled", "Use simple fixed-delay separate submit for terminal newline", "bool"),
+        ("terminal_simple_submit_pause_ms", "Fixed pause before simple terminal submit (ms)", "number"),
+        ("trailing_newline_sends_enter", "Treat trailing newline keyword as Enter submit", "bool"),
         ("sleep_timer_enabled", "Enable auto-sleep timer", "bool"),
         ("sleep_timer_minutes", "Minutes before auto-sleep", "number"),
         ("vocabulary_prompt", "Custom vocabulary terms (comma-separated)", "string"),
         ("auto_populate_vocabulary", "Auto-add command phrases to vocabulary", "bool"),
         ("custom_confidence_threshold", "Custom end-of-turn confidence (0.0-1.0)", "number"),
         ("custom_silence_threshold_ms", "Custom silence threshold (ms)", "number"),
+        ("custom_max_turn_silence_ms", "Custom max pause inside utterance (ms)", "number"),
         ("active_behavior", "Active mode behavior (mixed/dictation/command)", "string"),
         ("auto_submit_enabled", "Auto-press Enter after utterance + silence (vibe coding)", "bool"),
         ("auto_submit_delay_seconds", "Seconds of silence before auto-submit (default 2.0)", "number"),
@@ -56,6 +65,7 @@ enum VoiceFlowCLI {
     static let forceSendNotification = "com.jacobcole.voiceflow.forceSend"
     static let restartNotification = "com.jacobcole.voiceflow.restart"
     static let setAutoSubmitNotification = "com.jacobcole.voiceflow.setAutoSubmit"
+    static let debugInjectTurnNotification = "com.jacobcole.voiceflow.debugInjectTurn"
 
     // MARK: - Main Entry Point
 
@@ -78,7 +88,7 @@ enum VoiceFlowCLI {
             return true
 
         case "status":
-            handleStatus()
+            handleStatus(Array(args.dropFirst(2)))
             return true
 
         case "force-send", "send":
@@ -109,6 +119,14 @@ enum VoiceFlowCLI {
             handleShortcuts()
             return true
 
+        case "debug-turn":
+            handleDebugTurn(Array(args.dropFirst(2)))
+            return true
+
+        case "debug-split":
+            handleDebugSplit(Array(args.dropFirst(2)))
+            return true
+
         case "help", "-h", "--help":
             printHelp()
             return true
@@ -132,7 +150,7 @@ enum VoiceFlowCLI {
 
     private static func handleConfig(_ args: [String]) {
         guard let subcommand = args.first?.lowercased() else {
-            print("Usage: VoiceFlow config <list|get|set>")
+            print("Usage: VoiceFlow config <list|get|set|dump>")
             exit(1)
         }
 
@@ -154,9 +172,12 @@ enum VoiceFlowCLI {
             }
             configSet(args[1], value: args[2])
 
+        case "dump":
+            configDump(Array(args.dropFirst(1)))
+
         default:
             print("Unknown config command: \(subcommand)")
-            print("Usage: VoiceFlow config <list|get|set>")
+            print("Usage: VoiceFlow config <list|get|set|dump>")
             exit(1)
         }
     }
@@ -239,6 +260,73 @@ enum VoiceFlowCLI {
         defaults.synchronize()
     }
 
+    private static func formatDumpValue(_ value: Any) -> String {
+        switch value {
+        case let str as String:
+            return "\"\(str)\""
+        case let num as NSNumber:
+            if CFGetTypeID(num) == CFBooleanGetTypeID() {
+                return num.boolValue ? "true" : "false"
+            }
+            return "\(num)"
+        case let array as [Any]:
+            return "[" + array.map { formatDumpValue($0) }.joined(separator: ", ") + "]"
+        case let dict as [String: Any]:
+            let keys = dict.keys.sorted()
+            let pairs = keys.map { key in
+                "\"\(key)\": \(formatDumpValue(dict[key]!))"
+            }
+            return "{ " + pairs.joined(separator: ", ") + " }"
+        case let data as Data:
+            return "<Data \(data.count) bytes>"
+        default:
+            return "\(value)"
+        }
+    }
+
+    private static func configDump(_ args: [String]) {
+        let defaults = UserDefaults.standard
+        let includeAllKnownDomains = args.contains("--all-domains") || args.contains("-a")
+        let explicitDomain = args.first(where: { !$0.hasPrefix("-") })
+
+        let domains: [String]
+        if let explicitDomain {
+            domains = [explicitDomain]
+        } else if includeAllKnownDomains {
+            domains = Array(Set(bundleIds + [activeBundleId])).sorted()
+        } else {
+            domains = [activeBundleId]
+        }
+
+        var printedAnyDomain = false
+        for domain in domains {
+            guard let persisted = defaults.persistentDomain(forName: domain), !persisted.isEmpty else {
+                continue
+            }
+
+            printedAnyDomain = true
+            print("Domain: \(domain)")
+            print(String(repeating: "-", count: 70))
+            for key in persisted.keys.sorted() {
+                if let value = persisted[key] {
+                    print("\(key) = \(formatDumpValue(value))")
+                }
+            }
+            print("")
+        }
+
+        if !printedAnyDomain {
+            if let explicitDomain {
+                print("No persisted settings found for domain: \(explicitDomain)")
+            } else if includeAllKnownDomains {
+                print("No persisted settings found in known VoiceFlow domains: \(Array(Set(bundleIds + [activeBundleId])).sorted())")
+            } else {
+                print("No persisted settings found for domain: \(activeBundleId)")
+                print("Tip: use 'VoiceFlow config dump --all-domains' to inspect both dev/release bundle IDs.")
+            }
+        }
+    }
+
     // MARK: - Mode Command
 
     private static func handleMode(_ args: [String]) {
@@ -268,9 +356,10 @@ enum VoiceFlowCLI {
 
     // MARK: - Status Command
 
-    private static func handleStatus() {
+    private static func handleStatus(_ args: [String]) {
         let center = DistributedNotificationCenter.default()
         var receivedResponse = false
+        let verbose = args.contains("--verbose") || args.contains("-v")
 
         // Listen for response
         let observer = center.addObserver(
@@ -311,6 +400,43 @@ enum VoiceFlowCLI {
                 }
                 if let transcript = userInfo["transcript"] as? String, !transcript.isEmpty {
                     print("Current transcript: \(transcript)")
+                }
+                if let utteranceMode = userInfo["utteranceMode"] as? String {
+                    print("Utterance mode: \(utteranceMode)")
+                }
+                if let speedPreset = userInfo["speedPreset"] as? String {
+                    print("Speed preset: \(speedPreset)")
+                }
+                if let threshold = userInfo["effectiveConfidenceThreshold"] as? Double {
+                    print("Effective confidence cutoff: \(String(format: "%.2f", threshold))")
+                }
+                if let silenceMs = userInfo["effectiveSilenceThresholdMs"] as? Int {
+                    print("Effective end-of-turn silence cutoff: \(silenceMs) ms")
+                }
+                if let maxSilenceMs = userInfo["effectiveMaxTurnSilenceMs"] as? Int {
+                    print("Effective max in-turn pause cutoff: \(maxSilenceMs) ms")
+                }
+
+                if verbose {
+                    print("Runtime details:")
+                    if let customConfidence = userInfo["customConfidenceThreshold"] as? Double {
+                        print("  custom_confidence_threshold: \(String(format: "%.2f", customConfidence))")
+                    }
+                    if let customSilence = userInfo["customSilenceThresholdMs"] as? Int {
+                        print("  custom_silence_threshold_ms: \(customSilence)")
+                    }
+                    if let customMaxSilence = userInfo["customMaxTurnSilenceMs"] as? Int {
+                        print("  custom_max_turn_silence_ms: \(customMaxSilence)")
+                    }
+                    if let terminalSubmitDelayMs = userInfo["terminalSubmitDelayMs"] as? Double {
+                        print("  terminal_submit_delay_ms: \(Int(terminalSubmitDelayMs))")
+                    }
+                    if let simpleSubmitEnabled = userInfo["terminalSimpleSubmitEnabled"] as? Bool {
+                        print("  terminal_simple_submit_enabled: \(simpleSubmitEnabled)")
+                    }
+                    if let simpleSubmitPauseMs = userInfo["terminalSimpleSubmitPauseMs"] as? Double {
+                        print("  terminal_simple_submit_pause_ms: \(Int(simpleSubmitPauseMs))")
+                    }
                 }
             }
 
@@ -392,6 +518,59 @@ enum VoiceFlowCLI {
 
         print("Auto-submit: \(enabled ? "ON" : "OFF") (delay: \(delay)s)")
         print("(Sends Enter key after utterance completes + \(delay)s silence)")
+    }
+
+    // MARK: - Debug Turn Commands
+
+    private static func postDebugTurn(_ text: String, source: String) {
+        let center = DistributedNotificationCenter.default()
+        center.postNotificationName(
+            NSNotification.Name(debugInjectTurnNotification),
+            object: nil,
+            userInfo: [
+                "transcript": text,
+                "endOfTurn": true,
+                "isFormatted": true,
+                "source": source
+            ],
+            deliverImmediately: true
+        )
+    }
+
+    private static func handleDebugTurn(_ args: [String]) {
+        guard !args.isEmpty else {
+            print("Usage: VoiceFlow debug-turn <text>")
+            print("Example: VoiceFlow debug-turn \"this is a test newline\"")
+            exit(1)
+        }
+
+        let text = args.joined(separator: " ")
+        postDebugTurn(text, source: "cli-debug-turn")
+        print("Injected debug turn: \"\(text)\"")
+        print("(Requires running VoiceFlow app in On mode)")
+    }
+
+    private static func handleDebugSplit(_ args: [String]) {
+        guard args.count >= 2 else {
+            print("Usage: VoiceFlow debug-split <first_turn_text> <second_turn_text> [delay_ms]")
+            print("Example: VoiceFlow debug-split \"this is a test\" \"newline\" 1200")
+            exit(1)
+        }
+
+        let first = args[0]
+        let second = args[1]
+        let delayMs = max(0, args.dropFirst(2).first.flatMap(Int.init) ?? 1000)
+
+        postDebugTurn(first, source: "cli-debug-split-1")
+        if delayMs > 0 {
+            usleep(useconds_t(min(delayMs, 60_000)) * 1000)
+        }
+        postDebugTurn(second, source: "cli-debug-split-2")
+
+        print("Injected split debug turns:")
+        print("  1) \"\(first)\"")
+        print("  2) \"\(second)\" after \(delayMs)ms")
+        print("(Requires running VoiceFlow app in On mode)")
     }
 
     // MARK: - Log Command
@@ -717,8 +896,9 @@ enum VoiceFlowCLI {
             VoiceFlow config list               List all settings with values
             VoiceFlow config get <key>          Get a specific setting value
             VoiceFlow config set <key> <value>  Set a setting value
+            VoiceFlow config dump [domain]      Dump persisted settings from UserDefaults domain
             VoiceFlow mode <on|off|sleep>       Set mode (controls running app)
-            VoiceFlow status                    Get status from running app
+            VoiceFlow status [-v]               Get runtime status from running app (-v for detailed thresholds)
             VoiceFlow force-send                Force send partial text or last utterance
             VoiceFlow log [N] [-f]              Show last N log lines (default 50), -f to follow
             VoiceFlow history [N] [-c] [-a]     Show dictation history (default 10), -c=commands, -a=all
@@ -729,6 +909,8 @@ enum VoiceFlowCLI {
             VoiceFlow restart                   Restart app (preserves current mode)
             VoiceFlow auto-submit <on|off> [s]  Toggle auto-Enter after utterance (vibe coding)
             VoiceFlow shortcuts                 Show all keyboard shortcuts
+            VoiceFlow debug-turn <text>         Inject synthetic end-of-turn transcript (manual testing)
+            VoiceFlow debug-split <a> <b> [ms]  Inject two turns with optional delay for split-turn testing
             VoiceFlow help                      Show this help message
 
         CONFIG KEYS:
@@ -746,6 +928,10 @@ enum VoiceFlowCLI {
             VoiceFlow config get assemblyai_api_key
             VoiceFlow mode on
             VoiceFlow status
+            VoiceFlow status --verbose
+            VoiceFlow config dump --all-domains
+            VoiceFlow debug-turn "this is a test newline"
+            VoiceFlow debug-split "this is a test" "newline" 1200
         """)
     }
 

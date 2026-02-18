@@ -344,7 +344,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     "newerBuild": self.appState.isNewerBuildAvailable,
                     "isPanelMinimal": self.appState.isPanelMinimal,
                     "isPanelVisible": self.panelWindow?.isVisible ?? false,
-                    "build": AppVersion.build
+                    "build": AppVersion.build,
+                    "utteranceMode": self.appState.utteranceMode.rawValue,
+                    "speedPreset": self.appState.speedPreset.rawValue,
+                    "effectiveConfidenceThreshold": self.appState.effectiveConfidenceThreshold,
+                    "effectiveSilenceThresholdMs": self.appState.effectiveSilenceThresholdMs,
+                    "effectiveMaxTurnSilenceMs": self.appState.effectiveMaxTurnSilenceMs,
+                    "customConfidenceThreshold": self.appState.customConfidenceThreshold,
+                    "customSilenceThresholdMs": self.appState.customSilenceThresholdMs,
+                    "customMaxTurnSilenceMs": self.appState.customMaxTurnSilenceMs,
+                    "terminalSubmitDelayMs": self.appState.terminalSubmitDelayMs,
+                    "terminalSimpleSubmitEnabled": self.appState.terminalSimpleSubmitEnabled,
+                    "terminalSimpleSubmitPauseMs": self.appState.terminalSimpleSubmitPauseMs
                 ]
                 
                 self.appState.logDebug("CLI Status Check: Level=\(self.appState.audioLevel)")
@@ -403,6 +414,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Handle debug turn injection from CLI
+        center.addObserver(
+            forName: NSNotification.Name(VoiceFlowCLI.debugInjectTurnNotification),
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                guard let transcript = notification.userInfo?["transcript"] as? String else {
+                    self.appState.logDebug("CLI: Debug turn ignored (missing transcript)")
+                    return
+                }
+
+                let endOfTurn = notification.userInfo?["endOfTurn"] as? Bool ?? true
+                let isFormatted = notification.userInfo?["isFormatted"] as? Bool ?? true
+                let source = notification.userInfo?["source"] as? String ?? "cli-debug"
+
+                self.appState.logDebug("CLI: Debug turn injected (\(source))")
+                self.appState.injectDebugTurn(transcript, isFormatted: isFormatted, endOfTurn: endOfTurn, source: source)
+            }
+        }
+
         // Handle vocabulary changes from CLI
         center.addObserver(
             forName: NSNotification.Name("com.jacobcole.voiceflow.vocabularyChanged"),
@@ -424,7 +458,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configurePanelWindow() {
         let panel = FloatingPanelWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 160),
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 140),
             styleMask: [.titled, .resizable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -472,7 +506,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
         
         // Set size constraints
-        panel.minSize = NSSize(width: 440, height: 120)
+        panel.minSize = NSSize(width: 400, height: 110)
         panel.maxSize = NSSize(width: 1000, height: 800)
 
         panelWindow = panel
@@ -493,13 +527,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func positionPanelWindow(_ window: NSWindow) {
         guard let screen = NSScreen.main else { return }
-        let panelWidth = window.frame.width
-        let x = (screen.frame.width - panelWidth) / 2 + screen.frame.origin.x
+        let frame = screen.visibleFrame
+        let horizontalMargin: CGFloat = 24
+        let verticalTopOffset: CGFloat = 110
 
-        // Pin to TOP edge of screen (20px clearance for menu bar)
-        // This fixes the recurring bug where banners push the header off-screen (VoiceFlow-3y6k)
-        let desiredTopY = screen.frame.maxY - 20
-        let y = desiredTopY - window.frame.height
+        let x = max(frame.minX + 12, frame.maxX - window.frame.width - horizontalMargin)
+        let y = max(frame.minY + 24, frame.maxY - window.frame.height - verticalTopOffset)
 
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }

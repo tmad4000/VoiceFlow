@@ -301,7 +301,9 @@ class AppState: ObservableObject {
     @Published var isPanelMinimal: Bool = false
     @Published var currentWords: [TranscriptWord] = []
     @Published var commandDelayMs: Double = 50
-    @Published var terminalSubmitDelayMs: Double = 1500
+    @Published var terminalSubmitDelayMs: Double = 2500
+    @Published var terminalSimpleSubmitEnabled: Bool = true
+    @Published var terminalSimpleSubmitPauseMs: Double = 1200
     @Published var liveDictationEnabled: Bool = false
     @Published var aggressiveLiveMode: Bool = false  // Type immediately from partials, correct if changed
     @Published var aggressiveAllowCorrections: Bool = true  // Allow backspace corrections (disable for terminals)
@@ -711,6 +713,7 @@ class AppState: ObservableObject {
     private var lastKeyEventTime: Date?  // For consistent Return key timing across typeText calls
     private var lastTerminalTextTypeCompletionTime: Date?  // End time of the last terminal typeText call that injected characters
     private var bufferedTerminalNewlines: Int = 0  // Newlines to send after utterance ends (terminal mode)
+    private var terminalSubmitAttemptCounter: Int = 0  // Correlates newline submit attempts in logs
     private let terminalTypingQueue = DispatchQueue(label: "com.voiceflow.terminalTyping")
     private let terminalTypingQueueKey = DispatchSpecificKey<Void>()
 
@@ -719,6 +722,8 @@ class AppState: ObservableObject {
     private var pendingCrossUtteranceKeyword: String? = nil
     private var pendingCrossUtteranceTime: Date? = nil
     private let crossUtteranceKeywordWindowSeconds: TimeInterval = 2.0  // Max time to wait for continuation
+    private let crossUtteranceNewlineEnabled: Bool = false  // Simplicity mode: avoid split-word "new" + "line" rewriting
+    private let terminalAtomicTrailingSubmitEnabled: Bool = true  // Keep terminal trailing newline in typed payload to preserve ordering
 
     private var shouldUseLegacyPTT: Bool {
         !pttPreviewEnabled
@@ -759,6 +764,7 @@ class AppState: ObservableObject {
         loadCustomVocabulary()
         loadCommandDelay()
         loadTerminalSubmitDelay()
+        loadTerminalSimpleSubmitSettings()
         loadLiveDictationEnabled()
         loadAggressiveLiveMode()
         loadAggressiveAllowCorrections()
@@ -2116,37 +2122,40 @@ class AppState: ObservableObject {
         var consumedFirstWordForCrossUtterance = false
 
         // === CROSS-UTTERANCE KEYWORD HANDLING ===
-        // Check if we have a pending "new" from the previous utterance and current starts with "line"
-        if let pending = pendingCrossUtteranceKeyword,
+        // Disabled in simplicity mode to avoid out-of-order rewriting of trailing "new".
+        if crossUtteranceNewlineEnabled,
+           let pending = pendingCrossUtteranceKeyword,
            let pendingTime = pendingCrossUtteranceTime,
            Date().timeIntervalSince(pendingTime) < crossUtteranceKeywordWindowSeconds,
            !words.isEmpty {
             let firstToken = normalizeToken(words[0].text)
             if pending == "new" && firstToken == "line" {
                 logDebug("Cross-utterance 'new line' detected! Previous utterance ended with 'new', this one starts with 'line'")
-                // Buffer newline for terminals, otherwise prepend to output
                 if focusContextManager.isCurrentAppTerminal() {
                     bufferedTerminalNewlines += 1
+                    NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=cross_utterance terminal=YES action=buffer_flush buffered=%d", bufferedTerminalNewlines)
                     logDebug("Buffering cross-utterance newline for terminal")
                 } else {
+                    NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=cross_utterance terminal=NO action=inline_newline")
                     output = "\n"
                 }
                 keyword = "New line"
                 consumedFirstWordForCrossUtterance = true
                 triggerKeywordFlash(name: "New line")
             } else {
-                // The pending keyword wasn't completed, output it
                 logDebug("Cross-utterance keyword '\(pending)' not continued (got '\(firstToken)'), outputting it")
                 output = pending + " "
             }
             pendingCrossUtteranceKeyword = nil
             pendingCrossUtteranceTime = nil
-        } else if pendingCrossUtteranceKeyword != nil {
-            // Pending keyword timed out
+        } else if crossUtteranceNewlineEnabled, pendingCrossUtteranceKeyword != nil {
             logDebug("Cross-utterance keyword timed out")
             if let pending = pendingCrossUtteranceKeyword {
                 output = pending + " "
             }
+            pendingCrossUtteranceKeyword = nil
+            pendingCrossUtteranceTime = nil
+        } else if !crossUtteranceNewlineEnabled {
             pendingCrossUtteranceKeyword = nil
             pendingCrossUtteranceTime = nil
         }
@@ -2155,14 +2164,42 @@ class AppState: ObservableObject {
             while output.last == " " {
                 output.removeLast()
             }
-            // Trailing newlines in terminal mode: buffer to send AFTER all text is typed
-            // Mid-utterance newlines: insert inline so typeText sends Enter at the right position
-            // This allows "hello newline world" to type "hello" → Enter → "world" in TUIs
-            if isTrailing && (focusContextManager.isCurrentAppTerminal() || trailingNewlineSendsEnter) {
+            // Terminal trailing:
+            // - Simple mode: buffer and flush as a separate submit command after fixed pause
+            // - Advanced mode: include \n for atomic text+Return in one typeText call
+            // Non-terminal trailing: buffer for flush (timing-based)
+            // Mid-utterance: insert inline so typeText sends Enter at the right position
+            if isTrailing && focusContextManager.isCurrentAppTerminal() {
+                if terminalAtomicTrailingSubmitEnabled {
+                    if output.last != "\n" {
+                        output.append("\n")
+                    }
+                    NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=keyword_append terminal=YES action=atomic_in_text trailing=YES simpleOverride=YES")
+                    NSLog("[VoiceFlow] ⏎ Trailing newline: atomic terminal path overrides simple buffering")
+                } else if terminalSimpleSubmitEnabled {
+                    bufferedTerminalNewlines += 1
+                    NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=keyword_append terminal=YES action=buffer_flush_simple trailing=YES buffered=%d pauseMs=%.0f",
+                          bufferedTerminalNewlines, terminalSimpleSubmitPauseMs)
+                    NSLog("[VoiceFlow] ⏎ Trailing newline: buffering for SIMPLE terminal submit")
+                    logDebug("Trailing newline: simple terminal buffering (\(Int(terminalSimpleSubmitPauseMs))ms pause)")
+                } else {
+                    // Keep \n in output - typeText will deliver text+Return atomically on terminalTypingQueue
+                    if output.last != "\n" {
+                        output.append("\n")
+                    }
+                    NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=keyword_append terminal=YES action=atomic_in_text trailing=YES")
+                    NSLog("[VoiceFlow] ⏎ Trailing newline: keeping in output for atomic terminal delivery")
+                }
+            } else if isTrailing && trailingNewlineSendsEnter {
                 bufferedTerminalNewlines += 1
-                logDebug("Buffering trailing newline (terminal=\(focusContextManager.isCurrentAppTerminal()), total buffered: \(bufferedTerminalNewlines))")
+                NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=keyword_append terminal=%@ action=buffer_flush trailing=YES buffered=%d",
+                      focusContextManager.isCurrentAppTerminal() ? "YES" : "NO",
+                      bufferedTerminalNewlines)
+                logDebug("Buffering trailing newline (non-terminal, total buffered: \(bufferedTerminalNewlines))")
             } else if output.last != "\n" {
                 output.append("\n")
+                NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=keyword_append terminal=%@ action=inline_newline trailing=NO",
+                      focusContextManager.isCurrentAppTerminal() ? "YES" : "NO")
                 logDebug("Inserting inline newline (terminal=\(focusContextManager.isCurrentAppTerminal()), trailing=\(isTrailing))")
             }
         }
@@ -2885,25 +2922,19 @@ class AppState: ObservableObject {
         }
 
         // === CROSS-UTTERANCE PENDING DETECTION ===
-        // Check if output ends with "new" (without "line" following) - set as pending for next utterance
-        // This handles the case where "new line" is split across utterance boundaries
-        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        let outputWords = trimmedOutput.lowercased().split(separator: " ")
-        if let lastWord = outputWords.last, lastWord == "new" {
-            // Check if this "new" is isolated at the end (not part of "new line" which was already processed)
-            // We should only set pending if:
-            // 1. The output ends with "new"
-            // 2. There's no "line" after it (which there shouldn't be if we're here)
-            logDebug("Utterance ends with 'new' - saving as pending for potential cross-utterance 'new line'")
-            pendingCrossUtteranceKeyword = "new"
-            pendingCrossUtteranceTime = Date()
-            // Remove "new" from output - we'll output it later if needed
-            if let range = output.range(of: "new", options: [.backwards, .caseInsensitive]) {
-                // Only remove if it's at the end (possibly with trailing space)
-                let afterNew = output[range.upperBound...]
-                if afterNew.trimmingCharacters(in: .whitespaces).isEmpty {
-                    output = String(output[..<range.lowerBound])
-                    logDebug("Removed trailing 'new' from output, will be handled in next utterance")
+        if crossUtteranceNewlineEnabled {
+            let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let outputWords = trimmedOutput.lowercased().split(separator: " ")
+            if let lastWord = outputWords.last, lastWord == "new" {
+                logDebug("Utterance ends with 'new' - saving as pending for potential cross-utterance 'new line'")
+                pendingCrossUtteranceKeyword = "new"
+                pendingCrossUtteranceTime = Date()
+                if let range = output.range(of: "new", options: [.backwards, .caseInsensitive]) {
+                    let afterNew = output[range.upperBound...]
+                    if afterNew.trimmingCharacters(in: .whitespaces).isEmpty {
+                        output = String(output[..<range.lowerBound])
+                        logDebug("Removed trailing 'new' from output, will be handled in next utterance")
+                    }
                 }
             }
         }
@@ -3204,11 +3235,24 @@ class AppState: ObservableObject {
             if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
                 textToType = " " + textToType
             }
-            // Simpler approach: detect trailing newline CHARACTER and convert to buffered Enter
+            // Handle trailing newline: in terminal mode, keep \n in text for ATOMIC delivery
+            // (text + Return serialized on terminalTypingQueue). Non-terminal: buffer for flush.
             if trailingNewlineSendsEnter && textToType.hasSuffix("\n") {
-                textToType = String(textToType.dropLast())
-                bufferedTerminalNewlines += 1
-                NSLog("[VoiceFlow] ⏎ Trailing newline char detected in output, buffering Enter")
+                if focusContextManager.isCurrentAppTerminal() && terminalAtomicTrailingSubmitEnabled {
+                    NSLog("[VoiceFlow] ⏎ Trailing newline: forcing atomic terminal delivery (formatted)")
+                } else if focusContextManager.isCurrentAppTerminal() && terminalSimpleSubmitEnabled {
+                    textToType = String(textToType.dropLast())
+                    bufferedTerminalNewlines += 1
+                    NSLog("[VoiceFlow] ⏎ Trailing newline: SIMPLE terminal path, buffering Enter (formatted) pauseMs=%.0f buffered=%d",
+                          terminalSimpleSubmitPauseMs, bufferedTerminalNewlines)
+                } else if focusContextManager.isCurrentAppTerminal() {
+                    // Keep \n - typeText will deliver text+Return atomically on terminalTypingQueue
+                    NSLog("[VoiceFlow] ⏎ Trailing newline: atomic delivery via typeText (terminal mode)")
+                } else {
+                    textToType = String(textToType.dropLast())
+                    bufferedTerminalNewlines += 1
+                    NSLog("[VoiceFlow] ⏎ Trailing newline char detected in output, buffering Enter")
+                }
             }
             logDebug("Live typing delta (formatted): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
@@ -3346,11 +3390,24 @@ class AppState: ObservableObject {
             if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
                 textToType = " " + textToType
             }
-            // Simpler approach: detect trailing newline CHARACTER and convert to buffered Enter
+            // Handle trailing newline: in terminal mode, keep \n in text for ATOMIC delivery
+            // (text + Return serialized on terminalTypingQueue). Non-terminal: buffer for flush.
             if trailingNewlineSendsEnter && textToType.hasSuffix("\n") {
-                textToType = String(textToType.dropLast())
-                bufferedTerminalNewlines += 1
-                NSLog("[VoiceFlow] ⏎ Trailing newline char detected in output, buffering Enter")
+                if isInTerminal && terminalAtomicTrailingSubmitEnabled {
+                    NSLog("[VoiceFlow] ⏎ Trailing newline: forcing atomic terminal delivery (endOfTurn)")
+                } else if isInTerminal && terminalSimpleSubmitEnabled {
+                    textToType = String(textToType.dropLast())
+                    bufferedTerminalNewlines += 1
+                    NSLog("[VoiceFlow] ⏎ Trailing newline: SIMPLE terminal path, buffering Enter (endOfTurn) pauseMs=%.0f buffered=%d",
+                          terminalSimpleSubmitPauseMs, bufferedTerminalNewlines)
+                } else if isInTerminal {
+                    // Keep \n - typeText will deliver text+Return atomically on terminalTypingQueue
+                    NSLog("[VoiceFlow] ⏎ Trailing newline: atomic delivery via typeText (terminal mode)")
+                } else {
+                    textToType = String(textToType.dropLast())
+                    bufferedTerminalNewlines += 1
+                    NSLog("[VoiceFlow] ⏎ Trailing newline char detected in output, buffering Enter")
+                }
             }
             logDebug("Live typing delta (final): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
@@ -5481,6 +5538,41 @@ class AppState: ObservableObject {
         }
     }
 
+    private func nextTerminalSubmitAttemptID() -> Int {
+        terminalSubmitAttemptCounter += 1
+        return terminalSubmitAttemptCounter
+    }
+
+    private func logTerminalSubmitAttempt(
+        id: Int,
+        path: String,
+        reason: String,
+        trailing: Bool,
+        minDelayBeforeSubmit: TimeInterval,
+        elapsedSinceLastKey: TimeInterval?,
+        appliedWait: TimeInterval,
+        bufferedNewlines: Int
+    ) {
+        let elapsedMsText: String
+        if let elapsedSinceLastKey {
+            elapsedMsText = String(format: "%.0f", elapsedSinceLastKey * 1000)
+        } else {
+            elapsedMsText = "none"
+        }
+
+        NSLog("[VoiceFlow] ⏎ SUBMIT_ATTEMPT id=%d path=%@ reason=%@ trailing=%@ minDelayMs=%.0f elapsedMs=%@ waitMs=%.0f buffered=%d didTypeThisUtterance=%@ submitSettingMs=%.0f",
+              id,
+              path,
+              reason,
+              trailing ? "YES" : "NO",
+              minDelayBeforeSubmit * 1000,
+              elapsedMsText,
+              appliedWait * 1000,
+              bufferedNewlines,
+              didTypeDictationThisUtterance ? "YES" : "NO",
+              terminalSubmitDelayMs)
+    }
+
     private func chunkForUnicodeInjection(_ text: String, maxCharacters: Int) -> [String] {
         guard !text.isEmpty else { return [] }
         guard text.count > maxCharacters else { return [text] }
@@ -5595,6 +5687,33 @@ class AppState: ObservableObject {
         // terminalTypingQueue for all terminal text and newline delivery.
         if isTerminal {
             performTerminalTyping {
+                if terminalAtomicTrailingSubmitEnabled,
+                   output.hasSuffix("\n"),
+                   !String(output.dropLast()).contains("\n") {
+                    let atomicOutput = String(output.dropLast()) + "\r"
+                    let submitAttemptID = nextTerminalSubmitAttemptID()
+                    logTerminalSubmitAttempt(
+                        id: submitAttemptID,
+                        path: "atomic_unicode_payload",
+                        reason: "trailing_newline_combined",
+                        trailing: true,
+                        minDelayBeforeSubmit: 0,
+                        elapsedSinceLastKey: lastKeyEventTime.map { Date().timeIntervalSince($0) },
+                        appliedWait: 0,
+                        bufferedNewlines: bufferedTerminalNewlines
+                    )
+                    let chunks = chunkForUnicodeInjection(atomicOutput, maxCharacters: terminalUnicodeChunkLength)
+                    for chunk in chunks {
+                        if postUnicodeStringEvent(chunk, source: source) {
+                            eventsPosted += chunk.count
+                        }
+                        lastKeyEventTime = Date()
+                    }
+                    NSLog("[VoiceFlow] ⏎ TERMINAL_ATOMIC_TRAILING submit=in_payload chars=%d", atomicOutput.count)
+                    logger.debug("Successfully injected \(eventsPosted) characters via CGEvent unicode (terminal atomic trailing mode)")
+                    return
+                }
+
                 let segments = output.components(separatedBy: "\n")
 
                 for (i, segment) in segments.enumerated() {
@@ -5612,20 +5731,43 @@ class AppState: ObservableObject {
 
                     // Preserve every newline in output by sending Return at each boundary.
                     if i < segments.count - 1 {
-                        let minDelayBeforeReturn = terminalInlineReturnMinDelay
+                        // Trailing Return (text\n → submit) uses longer delay for TUI readiness.
+                        // Middle Returns (line1\nline2) use short delay since next text follows.
+                        let isTrailingReturn = (i == segments.count - 2) && (segments.last?.isEmpty == true)
+                        let submitReason = isTrailingReturn ? "trailing_newline_in_output" : "inline_newline_in_output"
+                        let minDelayBeforeReturn = isTrailingReturn ? (terminalSubmitDelayMs / 1000.0) : terminalInlineReturnMinDelay
+                        let submitAttemptID = nextTerminalSubmitAttemptID()
+                        var elapsedSinceLastKey: TimeInterval?
+                        var waitApplied: TimeInterval = minDelayBeforeReturn
+                        if isTrailingReturn {
+                            NSLog("[VoiceFlow] ⏎ TRAILING Return (atomic): waiting %.0fms for TUI readiness", minDelayBeforeReturn * 1000)
+                        }
                         if let lastTime = lastKeyEventTime {
                             let elapsed = Date().timeIntervalSince(lastTime)
                             let neededDelay = max(0, minDelayBeforeReturn - elapsed)
+                            elapsedSinceLastKey = elapsed
+                            waitApplied = neededDelay
                             if neededDelay > 0 {
                                 Thread.sleep(forTimeInterval: neededDelay)
                             }
-                            NSLog("[VoiceFlow] ⏎ Inline Return (unicode mode): elapsed=%.0fms, delay=%.0fms",
-                                  elapsed * 1000, max(0, minDelayBeforeReturn - elapsed) * 1000)
+                            NSLog("[VoiceFlow] ⏎ Inline Return (unicode mode): elapsed=%.0fms, delay=%.0fms, trailing=%@",
+                                  elapsed * 1000, max(0, minDelayBeforeReturn - elapsed) * 1000, isTrailingReturn ? "YES" : "NO")
                         } else {
                             Thread.sleep(forTimeInterval: minDelayBeforeReturn)
                         }
+                        logTerminalSubmitAttempt(
+                            id: submitAttemptID,
+                            path: "atomic",
+                            reason: submitReason,
+                            trailing: isTrailingReturn,
+                            minDelayBeforeSubmit: minDelayBeforeReturn,
+                            elapsedSinceLastKey: elapsedSinceLastKey,
+                            appliedWait: waitApplied,
+                            bufferedNewlines: bufferedTerminalNewlines
+                        )
 
                         // Send Return with \r for terminal submit
+                        NSLog("[VoiceFlow] ⏎ Sending Return key event NOW (trailing=%@)", isTrailingReturn ? "YES" : "NO")
                         let source = CGEventSource(stateID: .hidSystemState)
                         let retDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
                         let retUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
@@ -5637,6 +5779,7 @@ class AppState: ObservableObject {
                         retDown?.post(tap: .cghidEventTap)
                         retUp?.post(tap: .cghidEventTap)
                         lastKeyEventTime = Date()
+                        NSLog("[VoiceFlow] ⏎ Return key event POSTED (trailing=%@)", isTrailingReturn ? "YES" : "NO")
 
                         // Post-Return delay for TUI to process submit
                         NSLog("[VoiceFlow] ⏎ Post-Return delay: waiting %.0fms for TUI to process submit", terminalPostReturnDelay * 1000)
@@ -5732,8 +5875,50 @@ class AppState: ObservableObject {
 
         let isTerminal = focusContextManager.isCurrentAppTerminal()
         logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s) (isTerminal=\(isTerminal))")
+        if isTerminal, terminalSimpleSubmitEnabled {
+            logDebug("Simple terminal submit active: fixed \(Int(terminalSimpleSubmitPauseMs))ms pause before Enter")
+        }
 
         let flushBlock = {
+            if isTerminal, self.terminalSimpleSubmitEnabled {
+                let simpleDelay = max(0, self.terminalSimpleSubmitPauseMs / 1000.0)
+                let submitAttemptID = self.nextTerminalSubmitAttemptID()
+                self.logTerminalSubmitAttempt(
+                    id: submitAttemptID,
+                    path: "flush_simple",
+                    reason: self.didTypeDictationThisUtterance ? "simple_mode_same_turn" : "simple_mode_followup_turn",
+                    trailing: true,
+                    minDelayBeforeSubmit: simpleDelay,
+                    elapsedSinceLastKey: self.lastKeyEventTime.map { Date().timeIntervalSince($0) },
+                    appliedWait: simpleDelay,
+                    bufferedNewlines: self.bufferedTerminalNewlines
+                )
+                NSLog("[VoiceFlow] ⏎ SIMPLE_TERMINAL_SUBMIT wait=%.0fms buffered=%d", simpleDelay * 1000, self.bufferedTerminalNewlines)
+                Thread.sleep(forTimeInterval: simpleDelay)
+
+                for i in 0..<self.bufferedTerminalNewlines {
+                    if i > 0 {
+                        Thread.sleep(forTimeInterval: 0.05)
+                    }
+                    self.logDebug("Simple terminal submit: posting Enter now (\(i + 1)/\(self.bufferedTerminalNewlines))")
+                    let source = CGEventSource(stateID: .hidSystemState)
+                    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+                    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+                    var cr: UniChar = 0x0D
+                    keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+                    keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+                    keyDown?.flags = []
+                    keyUp?.flags = []
+                    keyDown?.post(tap: .cghidEventTap)
+                    keyUp?.post(tap: .cghidEventTap)
+                    self.lastKeyEventTime = Date()
+                    self.logDebug("Simple terminal submit: Enter posted")
+                }
+
+                self.bufferedTerminalNewlines = 0
+                return
+            }
+
             // Wait for text to be fully processed before sending Return.
             // For terminal TUIs we combine:
             // 1) time since the last injected key event
@@ -5771,6 +5956,18 @@ class AppState: ObservableObject {
                 }
                 actualDelay = max(actualDelay, self.terminalNewlineOnlyAbsoluteMinDelay)
             }
+            let submitAttemptID = self.nextTerminalSubmitAttemptID()
+            let submitReason = self.didTypeDictationThisUtterance ? "buffered_newline_same_turn" : "newline_only_followup_turn"
+            self.logTerminalSubmitAttempt(
+                id: submitAttemptID,
+                path: "flush",
+                reason: submitReason,
+                trailing: true,
+                minDelayBeforeSubmit: minSinceLastChar,
+                elapsedSinceLastKey: self.lastKeyEventTime.map { Date().timeIntervalSince($0) },
+                appliedWait: actualDelay,
+                bufferedNewlines: self.bufferedTerminalNewlines
+            )
             Thread.sleep(forTimeInterval: actualDelay)
 
             for i in 0..<self.bufferedTerminalNewlines {
@@ -6043,10 +6240,22 @@ class AppState: ObservableObject {
 
     private func loadTerminalSubmitDelay() {
         guard let stored = UserDefaults.standard.object(forKey: "terminal_submit_delay_ms") as? Double else {
-            terminalSubmitDelayMs = 1500
+            terminalSubmitDelayMs = 2500
+            NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_DELAY effective=%.0fms source=default", terminalSubmitDelayMs)
             return
         }
-        terminalSubmitDelayMs = min(max(stored, 300), 5000)
+        let clamped = min(max(stored, 300), 5000)
+        terminalSubmitDelayMs = clamped
+        NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_DELAY effective=%.0fms source=userdefaults raw=%.0fms", clamped, stored)
+    }
+
+    private func loadTerminalSimpleSubmitSettings() {
+        terminalSimpleSubmitEnabled = UserDefaults.standard.object(forKey: "terminal_simple_submit_enabled") as? Bool ?? true
+        let storedPause = UserDefaults.standard.object(forKey: "terminal_simple_submit_pause_ms") as? Double ?? 1200
+        terminalSimpleSubmitPauseMs = min(max(storedPause, 100), 5000)
+        NSLog("[VoiceFlow] ⏎ SIMPLE_TERMINAL_SUBMIT enabled=%@ pauseMs=%.0f",
+              terminalSimpleSubmitEnabled ? "YES" : "NO",
+              terminalSimpleSubmitPauseMs)
     }
 
     func saveCommandDelay(_ value: Double) {
@@ -6058,6 +6267,17 @@ class AppState: ObservableObject {
         let clamped = min(max(value, 300), 5000)
         terminalSubmitDelayMs = clamped
         UserDefaults.standard.set(clamped, forKey: "terminal_submit_delay_ms")
+    }
+
+    func saveTerminalSimpleSubmitEnabled(_ value: Bool) {
+        terminalSimpleSubmitEnabled = value
+        UserDefaults.standard.set(value, forKey: "terminal_simple_submit_enabled")
+    }
+
+    func saveTerminalSimpleSubmitPauseMs(_ value: Double) {
+        let clamped = min(max(value, 100), 5000)
+        terminalSimpleSubmitPauseMs = clamped
+        UserDefaults.standard.set(clamped, forKey: "terminal_simple_submit_pause_ms")
     }
 
     private func loadLiveDictationEnabled() {
@@ -7190,6 +7410,34 @@ class AppState: ObservableObject {
             forceEndPending = false
             forceEndRequestedAt = nil
         }
+    }
+
+    /// Debug helper: inject a synthetic turn through the normal turn pipeline.
+    /// Useful for reproducible manual testing without speaking.
+    func injectDebugTurn(_ transcript: String, isFormatted: Bool = true, endOfTurn: Bool = true, source: String = "cli-debug") {
+        let words = transcript
+            .split(whereSeparator: \.isWhitespace)
+            .map { TranscriptWord(text: String($0), isFinal: true) }
+
+        let turn = TranscriptTurn(
+            transcript: transcript,
+            words: words,
+            endOfTurn: endOfTurn,
+            isFormatted: isFormatted,
+            turnOrder: lastTypedTurnOrder + 1,
+            utterance: transcript
+        )
+
+        NSLog("[VoiceFlow] 🧪 DEBUG_TURN source=%@ mode=%@ behavior=%@ isFormatted=%@ endOfTurn=%@ words=%d text='%@'",
+              source,
+              microphoneMode.rawValue,
+              activeBehavior.rawValue,
+              isFormatted ? "YES" : "NO",
+              endOfTurn ? "YES" : "NO",
+              words.count,
+              String(transcript.prefix(160)))
+
+        handleTurn(turn)
     }
 
     func saveToIdeaFlow() {
