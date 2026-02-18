@@ -498,6 +498,17 @@ struct GeneralSettingsView: View {
                             step: 50,
                             unit: " ms"
                         )
+
+                        Divider()
+
+                        SliderRow(
+                            "Terminal Submit Delay",
+                            subtitle: "Minimum delay before buffered Return in terminal TUIs (Claude Code, etc.).",
+                            value: terminalSubmitDelayBinding,
+                            range: 300...5000,
+                            step: 50,
+                            unit: " ms"
+                        )
                     }
                     .padding(4)
                 }
@@ -1223,6 +1234,13 @@ struct GeneralSettingsView: View {
         Binding(
             get: { appState.commandDelayMs },
             set: { appState.saveCommandDelay($0) }
+        )
+    }
+
+    private var terminalSubmitDelayBinding: Binding<Double> {
+        Binding(
+            get: { appState.terminalSubmitDelayMs },
+            set: { appState.saveTerminalSubmitDelay($0) }
         )
     }
 

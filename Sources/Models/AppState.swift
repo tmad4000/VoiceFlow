@@ -301,6 +301,7 @@ class AppState: ObservableObject {
     @Published var isPanelMinimal: Bool = false
     @Published var currentWords: [TranscriptWord] = []
     @Published var commandDelayMs: Double = 50
+    @Published var terminalSubmitDelayMs: Double = 1500
     @Published var liveDictationEnabled: Bool = false
     @Published var aggressiveLiveMode: Bool = false  // Type immediately from partials, correct if changed
     @Published var aggressiveAllowCorrections: Bool = true  // Allow backspace corrections (disable for terminals)
@@ -665,8 +666,9 @@ class AppState: ObservableObject {
     // Terminal typing timing (Unicode injection + submit)
     private let terminalInlineReturnMinDelay: TimeInterval = 0.45
     private let terminalPostReturnDelay: TimeInterval = 0.65
-    private let terminalFlushBaseDelay: TimeInterval = 0.35
-    private let terminalFlushMinSinceLastEvent: TimeInterval = 0.90
+    private let terminalFlushBaseDelay: TimeInterval = 0.60
+    private let terminalSplitNewlineFollowupWindow: TimeInterval = 3.0
+    private let terminalNewlineOnlyAbsoluteMinDelay: TimeInterval = 0.80
     private let terminalUnicodeChunkLength = 120
     private let latencyWarningThresholdMs = 1500
     private let latencyRecoveryThresholdMs = 900
@@ -707,6 +709,7 @@ class AppState: ObservableObject {
     private var lastTypedTurnOrder = -1
     private var suppressNextAutoCap = false
     private var lastKeyEventTime: Date?  // For consistent Return key timing across typeText calls
+    private var lastTerminalTextTypeCompletionTime: Date?  // End time of the last terminal typeText call that injected characters
     private var bufferedTerminalNewlines: Int = 0  // Newlines to send after utterance ends (terminal mode)
     private let terminalTypingQueue = DispatchQueue(label: "com.voiceflow.terminalTyping")
     private let terminalTypingQueueKey = DispatchSpecificKey<Void>()
@@ -755,6 +758,7 @@ class AppState: ObservableObject {
         loadVoiceCommands()
         loadCustomVocabulary()
         loadCommandDelay()
+        loadTerminalSubmitDelay()
         loadLiveDictationEnabled()
         loadAggressiveLiveMode()
         loadAggressiveAllowCorrections()
@@ -5642,6 +5646,9 @@ class AppState: ObservableObject {
 
                 logger.debug("Successfully injected \(eventsPosted) characters via CGEvent unicode (terminal mode)")
             }
+            if eventsPosted > 0 {
+                lastTerminalTextTypeCompletionTime = Date()
+            }
         } else {
             // NON-TERMINAL MODE: Use per-character CGEvents (reliable for GUI apps)
             let minDelayBeforeReturn: TimeInterval = 0.02
@@ -5727,16 +5734,12 @@ class AppState: ObservableObject {
         logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s) (isTerminal=\(isTerminal))")
 
         let flushBlock = {
-            // Wait for text to be fully processed before sending Return
-            // Terminals (especially TUI apps like Claude Code/ink) need time to process
-            // the pasted text through the PTY before receiving Return.
-            // The delay must be measured from the LAST EVENT (paste or keystroke), not from when
-            // this flush function is called, to handle fast speech where end-of-utterance
-            // arrives immediately after the last word.
-            // With Unicode injection, terminal/TUI processing is still asynchronous. We
-            // measure from the last injected key event to avoid submitting too early.
+            // Wait for text to be fully processed before sending Return.
+            // For terminal TUIs we combine:
+            // 1) time since the last injected key event
+            // 2) split-turn protection for newline-only utterances (e.g. "hello" then "newline")
             let baseDelay: TimeInterval = isTerminal ? self.terminalFlushBaseDelay : 0.05
-            let minSinceLastChar: TimeInterval = isTerminal ? self.terminalFlushMinSinceLastEvent : 0.10
+            let minSinceLastChar: TimeInterval = isTerminal ? (self.terminalSubmitDelayMs / 1000.0) : 0.10
             var actualDelay = baseDelay
             if let lastTime = self.lastKeyEventTime {
                 let elapsed = Date().timeIntervalSince(lastTime)
@@ -5745,6 +5748,28 @@ class AppState: ObservableObject {
                       elapsed * 1000, actualDelay * 1000, minSinceLastChar * 1000)
             } else {
                 NSLog("[VoiceFlow] ⏎ Flush delay: no prior keystrokes, using base delay %.0fms", baseDelay * 1000)
+            }
+
+            if isTerminal,
+               !self.didTypeDictationThisUtterance,
+               let lastTypedAt = self.lastTerminalTextTypeCompletionTime {
+                let sinceLastTypeCompletion = Date().timeIntervalSince(lastTypedAt)
+                if sinceLastTypeCompletion <= self.terminalSplitNewlineFollowupWindow {
+                    let followupDelay = self.terminalSubmitDelayMs / 1000.0
+                    if followupDelay > actualDelay {
+                        NSLog("[VoiceFlow] ⏎ Split-turn newline protection: last terminal text completed %.0fms ago, enforcing %.0fms minimum wait",
+                              sinceLastTypeCompletion * 1000, followupDelay * 1000)
+                    }
+                    actualDelay = max(actualDelay, followupDelay)
+                }
+            }
+
+            if isTerminal, !self.didTypeDictationThisUtterance, self.bufferedTerminalNewlines > 0 {
+                if self.terminalNewlineOnlyAbsoluteMinDelay > actualDelay {
+                    NSLog("[VoiceFlow] ⏎ Newline-only utterance protection: enforcing absolute min %.0fms wait from flush start",
+                          self.terminalNewlineOnlyAbsoluteMinDelay * 1000)
+                }
+                actualDelay = max(actualDelay, self.terminalNewlineOnlyAbsoluteMinDelay)
             }
             Thread.sleep(forTimeInterval: actualDelay)
 
@@ -6016,9 +6041,23 @@ class AppState: ObservableObject {
         commandDelayMs = stored
     }
 
+    private func loadTerminalSubmitDelay() {
+        guard let stored = UserDefaults.standard.object(forKey: "terminal_submit_delay_ms") as? Double else {
+            terminalSubmitDelayMs = 1500
+            return
+        }
+        terminalSubmitDelayMs = min(max(stored, 300), 5000)
+    }
+
     func saveCommandDelay(_ value: Double) {
         commandDelayMs = value
         UserDefaults.standard.set(value, forKey: "command_delay_ms")
+    }
+
+    func saveTerminalSubmitDelay(_ value: Double) {
+        let clamped = min(max(value, 300), 5000)
+        terminalSubmitDelayMs = clamped
+        UserDefaults.standard.set(clamped, forKey: "terminal_submit_delay_ms")
     }
 
     private func loadLiveDictationEnabled() {
