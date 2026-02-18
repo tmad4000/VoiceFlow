@@ -509,6 +509,13 @@ struct GeneralSettingsView: View {
                             step: 50,
                             unit: " ms"
                         )
+
+                        Toggle("Experimental: AX submit for terminal Enter", isOn: terminalAccessibilitySubmitBinding)
+                            .font(.system(size: 13))
+
+                        Text("Try Accessibility API submit first for terminal Return, then fall back to CGEvent if unsupported.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
                     }
                     .padding(4)
                 }
@@ -1241,6 +1248,13 @@ struct GeneralSettingsView: View {
         Binding(
             get: { appState.terminalSubmitDelayMs },
             set: { appState.saveTerminalSubmitDelay($0) }
+        )
+    }
+
+    private var terminalAccessibilitySubmitBinding: Binding<Bool> {
+        Binding(
+            get: { appState.terminalAccessibilitySubmitEnabled },
+            set: { appState.saveTerminalAccessibilitySubmitEnabled($0) }
         )
     }
 

@@ -25,6 +25,18 @@
     - `terminal_simple_submit_pause_ms = 3200`
     - Result: restored known-working profile.
 
+### Experimental AX Submit Branch (2026-02-18)
+
+- Branch: `experiment/ax-terminal-submit`
+- Added an experimental terminal Enter submit path that tries Accessibility actions first (`kAXConfirmAction`, then `kAXPressAction`) on the focused element, with immediate fallback to the existing CGEvent Return path when AX actions are unsupported.
+- Hooked into:
+  - trailing newline submit in terminal typing path
+  - buffered newline flush path
+  - explicit "press enter" command path
+- Added setting/toggle + persistence key:
+  - `terminal_accessibility_submit_enabled` (default `true` on this experiment branch)
+- Build status: compiles and app bundle builds; manual reliability validation still required.
+
 ---
 
 ## The Two Requirements

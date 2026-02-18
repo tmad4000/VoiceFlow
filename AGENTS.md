@@ -22,6 +22,11 @@ bd sync               # Sync with git
   - avoids repeated Accessibility re-prompts from ad-hoc binary churn
   - keeps dev settings separate from release settings
 
+## Memory Locations
+- `MEMORY.md` is the index for durable project memory.
+- `NEWLINE_DEBUG_SUMMARY.md` stores newline/terminal experiment evidence.
+- beads (`.beads/issues.jsonl`) stores actionable status and follow-ups.
+
 ## Landing the Plane (Session Completion)
 **When ending a work session**, complete the steps below where applicable. Push is recommended, not mandatory.
 **RECOMMENDED WORKFLOW:**

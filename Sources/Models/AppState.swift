@@ -304,6 +304,7 @@ class AppState: ObservableObject {
     @Published var terminalSubmitDelayMs: Double = 2500
     @Published var terminalSimpleSubmitEnabled: Bool = true
     @Published var terminalSimpleSubmitPauseMs: Double = 1200
+    @Published var terminalAccessibilitySubmitEnabled: Bool = true
     @Published var liveDictationEnabled: Bool = false
     @Published var aggressiveLiveMode: Bool = false  // Type immediately from partials, correct if changed
     @Published var aggressiveAllowCorrections: Bool = true  // Allow backspace corrections (disable for terminals)
@@ -765,6 +766,7 @@ class AppState: ObservableObject {
         loadCommandDelay()
         loadTerminalSubmitDelay()
         loadTerminalSimpleSubmitSettings()
+        loadTerminalAccessibilitySubmitSetting()
         loadLiveDictationEnabled()
         loadAggressiveLiveMode()
         loadAggressiveAllowCorrections()
@@ -5573,6 +5575,118 @@ class AppState: ObservableObject {
               terminalSubmitDelayMs)
     }
 
+    @discardableResult
+    private func tryTerminalAccessibilityReturnSubmit(
+        submitAttemptID: Int?,
+        reason: String,
+        trailing: Bool
+    ) -> Bool {
+        guard terminalAccessibilitySubmitEnabled else { return false }
+        guard let frontApp = NSWorkspace.shared.frontmostApplication else {
+            let attemptLabel = submitAttemptID.map(String.init) ?? "na"
+            NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_METHOD id=%@ method=ax_action_failed reason=%@ trailing=%@ error=no_frontmost_app",
+                  attemptLabel,
+                  reason,
+                  trailing ? "YES" : "NO")
+            return false
+        }
+        let appName = frontApp.localizedName ?? "Unknown"
+        let bundleId = frontApp.bundleIdentifier ?? "unknown"
+        let attemptLabel = submitAttemptID.map(String.init) ?? "na"
+        let actions: [(String, CFString)] = [
+            ("kAXConfirmAction", kAXConfirmAction as CFString),
+            ("kAXPressAction", kAXPressAction as CFString)
+        ]
+
+        var candidateElement: AXUIElement?
+
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedRef: AnyObject?
+        let focusedResult = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+        if focusedResult == .success, let focusedRef {
+            candidateElement = unsafeBitCast(focusedRef, to: AXUIElement.self)
+        }
+
+        if candidateElement == nil {
+            let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
+            var appFocusedRef: AnyObject?
+            let appFocusedResult = AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &appFocusedRef)
+            if appFocusedResult == .success, let appFocusedRef {
+                candidateElement = unsafeBitCast(appFocusedRef, to: AXUIElement.self)
+            }
+        }
+
+        guard let element = candidateElement else {
+            NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_METHOD id=%@ method=ax_action_failed reason=%@ trailing=%@ app=%@ bundle=%@ error=no_focused_element",
+                  attemptLabel,
+                  reason,
+                  trailing ? "YES" : "NO",
+                  appName,
+                  bundleId)
+            return false
+        }
+
+        for (actionName, actionRef) in actions {
+            let actionResult = AXUIElementPerformAction(element, actionRef)
+            if actionResult == .success {
+                NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_METHOD id=%@ method=ax_action reason=%@ trailing=%@ app=%@ bundle=%@ action=%@",
+                      attemptLabel,
+                      reason,
+                      trailing ? "YES" : "NO",
+                      appName,
+                      bundleId,
+                      actionName)
+                return true
+            }
+        }
+
+        NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_METHOD id=%@ method=ax_action_failed reason=%@ trailing=%@ app=%@ bundle=%@ error=action_unsupported",
+              attemptLabel,
+              reason,
+              trailing ? "YES" : "NO",
+              appName,
+              bundleId)
+        return false
+    }
+
+    private func postReturnViaCGEvent(isTerminal: Bool) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+        if isTerminal {
+            var cr: UniChar = 0x0D
+            keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+            keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+            keyDown?.flags = []
+            keyUp?.flags = []
+        }
+        keyDown?.post(tap: .cghidEventTap)
+        keyUp?.post(tap: .cghidEventTap)
+    }
+
+    private func postReturnWithPreferredMethod(
+        isTerminal: Bool,
+        submitAttemptID: Int?,
+        reason: String,
+        trailing: Bool
+    ) {
+        if isTerminal, tryTerminalAccessibilityReturnSubmit(submitAttemptID: submitAttemptID, reason: reason, trailing: trailing) {
+            lastKeyEventTime = Date()
+            return
+        }
+
+        if isTerminal, terminalAccessibilitySubmitEnabled {
+            let attemptLabel = submitAttemptID.map(String.init) ?? "na"
+            NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_METHOD id=%@ method=cgevent_fallback reason=%@ trailing=%@",
+                  attemptLabel,
+                  reason,
+                  trailing ? "YES" : "NO")
+        }
+
+        postReturnViaCGEvent(isTerminal: isTerminal)
+        lastKeyEventTime = Date()
+    }
+
     private func chunkForUnicodeInjection(_ text: String, maxCharacters: Int) -> [String] {
         guard !text.isEmpty else { return [] }
         guard text.count > maxCharacters else { return [text] }
@@ -5688,6 +5802,7 @@ class AppState: ObservableObject {
         if isTerminal {
             performTerminalTyping {
                 if terminalAtomicTrailingSubmitEnabled,
+                   !terminalAccessibilitySubmitEnabled,
                    output.hasSuffix("\n"),
                    !String(output.dropLast()).contains("\n") {
                     let atomicOutput = String(output.dropLast()) + "\r"
@@ -5768,17 +5883,12 @@ class AppState: ObservableObject {
 
                         // Send Return with \r for terminal submit
                         NSLog("[VoiceFlow] ⏎ Sending Return key event NOW (trailing=%@)", isTrailingReturn ? "YES" : "NO")
-                        let source = CGEventSource(stateID: .hidSystemState)
-                        let retDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-                        let retUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-                        var cr: UniChar = 0x0D
-                        retDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-                        retUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-                        retDown?.flags = []
-                        retUp?.flags = []
-                        retDown?.post(tap: .cghidEventTap)
-                        retUp?.post(tap: .cghidEventTap)
-                        lastKeyEventTime = Date()
+                        postReturnWithPreferredMethod(
+                            isTerminal: true,
+                            submitAttemptID: submitAttemptID,
+                            reason: submitReason,
+                            trailing: isTrailingReturn
+                        )
                         NSLog("[VoiceFlow] ⏎ Return key event POSTED (trailing=%@)", isTrailingReturn ? "YES" : "NO")
 
                         // Post-Return delay for TUI to process submit
@@ -5901,17 +6011,12 @@ class AppState: ObservableObject {
                         Thread.sleep(forTimeInterval: 0.05)
                     }
                     self.logDebug("Simple terminal submit: posting Enter now (\(i + 1)/\(self.bufferedTerminalNewlines))")
-                    let source = CGEventSource(stateID: .hidSystemState)
-                    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-                    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-                    var cr: UniChar = 0x0D
-                    keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-                    keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-                    keyDown?.flags = []
-                    keyUp?.flags = []
-                    keyDown?.post(tap: .cghidEventTap)
-                    keyUp?.post(tap: .cghidEventTap)
-                    self.lastKeyEventTime = Date()
+                    self.postReturnWithPreferredMethod(
+                        isTerminal: true,
+                        submitAttemptID: submitAttemptID,
+                        reason: self.didTypeDictationThisUtterance ? "simple_mode_same_turn" : "simple_mode_followup_turn",
+                        trailing: true
+                    )
                     self.logDebug("Simple terminal submit: Enter posted")
                 }
 
@@ -5974,20 +6079,12 @@ class AppState: ObservableObject {
                 if i > 0 {
                     Thread.sleep(forTimeInterval: 0.05) // gap between multiple Returns
                 }
-                let source = CGEventSource(stateID: .hidSystemState)
-                let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-                let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-                if isTerminal {
-                    // Send \r (carriage return) for terminal apps, matching typeText() behavior
-                    var cr: UniChar = 0x0D
-                    keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-                    keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-                    keyDown?.flags = []
-                    keyUp?.flags = []
-                }
-                keyDown?.post(tap: .cghidEventTap)
-                keyUp?.post(tap: .cghidEventTap)
-                self.lastKeyEventTime = Date()
+                self.postReturnWithPreferredMethod(
+                    isTerminal: isTerminal,
+                    submitAttemptID: submitAttemptID,
+                    reason: submitReason,
+                    trailing: true
+                )
             }
 
             self.bufferedTerminalNewlines = 0
@@ -6005,20 +6102,12 @@ class AppState: ObservableObject {
         let isTerminal = focusContextManager.isCurrentAppTerminal()
         logDebug("Sending explicit Enter key (isTerminal=\(isTerminal))")
         let sendBlock = {
-            let source = CGEventSource(stateID: .hidSystemState)
-            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-            if isTerminal {
-                // Send \r (carriage return) for terminal apps, matching typeText() behavior
-                var cr: UniChar = 0x0D
-                keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-                keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-                keyDown?.flags = []
-                keyUp?.flags = []
-            }
-            keyDown?.post(tap: .cghidEventTap)
-            keyUp?.post(tap: .cghidEventTap)
-            self.lastKeyEventTime = Date()
+            self.postReturnWithPreferredMethod(
+                isTerminal: isTerminal,
+                submitAttemptID: nil,
+                reason: "explicit_enter_command",
+                trailing: true
+            )
         }
 
         if isTerminal {
@@ -6258,6 +6347,12 @@ class AppState: ObservableObject {
               terminalSimpleSubmitPauseMs)
     }
 
+    private func loadTerminalAccessibilitySubmitSetting() {
+        terminalAccessibilitySubmitEnabled = UserDefaults.standard.object(forKey: "terminal_accessibility_submit_enabled") as? Bool ?? true
+        NSLog("[VoiceFlow] ⏎ TERMINAL_AX_SUBMIT enabled=%@",
+              terminalAccessibilitySubmitEnabled ? "YES" : "NO")
+    }
+
     func saveCommandDelay(_ value: Double) {
         commandDelayMs = value
         UserDefaults.standard.set(value, forKey: "command_delay_ms")
@@ -6278,6 +6373,11 @@ class AppState: ObservableObject {
         let clamped = min(max(value, 100), 5000)
         terminalSimpleSubmitPauseMs = clamped
         UserDefaults.standard.set(clamped, forKey: "terminal_simple_submit_pause_ms")
+    }
+
+    func saveTerminalAccessibilitySubmitEnabled(_ value: Bool) {
+        terminalAccessibilitySubmitEnabled = value
+        UserDefaults.standard.set(value, forKey: "terminal_accessibility_submit_enabled")
     }
 
     private func loadLiveDictationEnabled() {
