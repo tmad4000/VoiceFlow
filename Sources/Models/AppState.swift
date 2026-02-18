@@ -5476,7 +5476,7 @@ class AppState: ObservableObject {
         // Terminal UIs (Claude Code, Gemini CLI) need longer delay before Enter for reliable submission
         // Regular apps work fine with shorter delay
         let isTerminal = focusContextManager.isCurrentAppTerminal()
-        let minDelayBeforeReturn: TimeInterval = isTerminal ? 0.05 : 0.02  // 50ms for terminals (using AppleScript), 20ms otherwise
+        let minDelayBeforeReturn: TimeInterval = isTerminal ? 0.15 : 0.02  // 150ms for terminals (TUI apps need time to process chars), 20ms otherwise
 
         for char in output {
             if char == "\n" {
@@ -5598,9 +5598,23 @@ class AppState: ObservableObject {
         logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s) (isTerminal=\(isTerminal))")
 
         // Wait for text to be fully processed before sending Return
-        // Terminals need more time due to shell input processing
-        let delayBeforeReturn: TimeInterval = isTerminal ? 0.15 : 0.05
-        Thread.sleep(forTimeInterval: delayBeforeReturn)
+        // Terminals (especially TUI apps like Claude Code/ink) need time to process
+        // all preceding character events through the PTY before receiving Return.
+        // The delay must be measured from the LAST CHARACTER TYPED, not from when
+        // this flush function is called, to handle fast speech where end-of-utterance
+        // arrives immediately after the last word.
+        let baseDelay: TimeInterval = isTerminal ? 0.20 : 0.05
+        let minSinceLastChar: TimeInterval = isTerminal ? 0.30 : 0.10
+        var actualDelay = baseDelay
+        if let lastTime = lastKeyEventTime {
+            let elapsed = Date().timeIntervalSince(lastTime)
+            actualDelay = max(baseDelay, minSinceLastChar - elapsed)
+            NSLog("[VoiceFlow] ⏎ Flush delay: elapsed=%.0fms since last char, waiting %.0fms (min %.0fms from last char)",
+                  elapsed * 1000, actualDelay * 1000, minSinceLastChar * 1000)
+        } else {
+            NSLog("[VoiceFlow] ⏎ Flush delay: no prior keystrokes, using base delay %.0fms", baseDelay * 1000)
+        }
+        Thread.sleep(forTimeInterval: actualDelay)
 
         for i in 0..<bufferedTerminalNewlines {
             if i > 0 {
