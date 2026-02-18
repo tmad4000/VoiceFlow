@@ -22,8 +22,12 @@ When closing a recurring issue:
 
 These are the architectural reasons VoiceFlow bugs tend to recur:
 
-- **Newline/enter at end of utterance** (VoiceFlow-qs3, VoiceFlow-f0d): Timing race between text keystroke delivery and the Return keystroke. When "newline" is in the same utterance as text, Return can fire before text is fully typed. Root cause: keystroke simulation is async but newline command processing doesn't wait for text delivery to complete.
-- **"Say" escape mode** (VoiceFlow-vw2w, VoiceFlow-xce): The "say" prefix for literal text insertion breaks across turn boundaries. Root cause: turn/utterance segmentation can split "say newline" into separate processing units.
+- **Newline/enter at end of utterance** (VoiceFlow-qs3, VoiceFlow-f0d): RESOLVED in Build 142 via CGEvent Unicode injection. History of approaches tried:
+  1. Per-character CGEvents (original): FAILED - characters travel HID→Terminal→PTY→stdin one at a time, TUI may not render before Return arrives
+  2. Clipboard paste Cmd+V (Build 139): FAILED - race conditions: clipboard restore clobbers paste before terminal reads it, multiple rapid utterances overwrite each other's clipboard, user's clipboard disrupted
+  3. **CGEvent Unicode injection (Build 142): WORKS** - `CGEventKeyboardSetUnicodeString` sends multi-character strings in a single keyboard event. No clipboard involved. All terminal typing serialized on `terminalTypingQueue`. Flush delay 900ms (`terminalFlushMinSinceLastEvent`).
+  Key code: `typeText()` calls `postUnicodeStringEvent()` which chunks text into ≤20-char segments and injects via `CGEventKeyboardSetUnicodeString`. `performTerminalTyping()` serializes all terminal operations. Non-terminal apps still use per-character CGEvents.
+- **"Say" escape mode** (VoiceFlow-vw2w, VoiceFlow-xce): RESOLVED in Build 142. Added word-level fallback "say" detection in `preprocessDictation` + `didDetectSay` return flag from `applyKeywordReplacements` that prevents system command stripping when literal mode is active. Also fixed `literalStartWordIndex` mapping for formatted turns.
 - **Warning banner layout** (VoiceFlow-3y6k): Banners push content off the top of the panel. Root cause: fixed-height layout doesn't account for variable warning content.
 - **Volume meter visibility** (VoiceFlow-v3ix): Volume meter disappears or flickers. Root cause: audio session state changes can hide the meter during transitions.
 

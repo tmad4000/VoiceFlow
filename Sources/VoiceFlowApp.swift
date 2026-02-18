@@ -118,6 +118,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
+        // Handle panel minimal mode changes to resize window
+        appState.$isPanelMinimal
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updatePanelSize()
+            }
+            .store(in: &cancellables)
+
         // Create menu
         let menu = NSMenu()
         menu.delegate = self
@@ -464,7 +472,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
         
         // Set size constraints
-        panel.minSize = NSSize(width: 360, height: 100)
+        panel.minSize = NSSize(width: 440, height: 120)
         panel.maxSize = NSSize(width: 1000, height: 800)
 
         panelWindow = panel
@@ -575,6 +583,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func togglePanel() {
         setPanelVisible(!appState.isPanelVisible)
+    }
+
+    private func updatePanelSize() {
+        guard let panelWindow = panelWindow,
+              let hostingView = panelWindow.contentView else { return }
+
+        // We need a short delay to allow SwiftUI to perform layout after state change
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self = self, let panelWindow = self.panelWindow else { return }
+            
+            let fittingSize = hostingView.fittingSize
+            if fittingSize.width > 0 && fittingSize.height > 0 {
+                panelWindow.setContentSize(fittingSize)
+                self.positionPanelWindow(panelWindow)
+            }
+        }
     }
 
     // MARK: - Command Panel
@@ -1420,6 +1444,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         pttEventTap = eventTap
+        state.eventTapMachPort = eventTap
 
         // Create run loop source and add to current run loop
         let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
@@ -1493,6 +1518,7 @@ final class PTTEventTapState: @unchecked Sendable {
     var pttKeyCode: UInt16 = UInt16(kVK_Space)
     var pttModifiers: CGEventFlags = [.maskControl, .maskAlternate]
     var consumePTTKey: Bool = true  // Whether to consume the PTT key event
+    var eventTapMachPort: CFMachPort?  // Stored so callback can re-enable tap if disabled
 
     // Callback to notify main actor of PTT events
     var onPTTPressed: (() -> Void)?
@@ -1523,9 +1549,13 @@ func pttEventTapCallback(
 ) -> Unmanaged<CGEvent>? {
     // Handle special tap events (tap disabled, etc.)
     guard type == .keyDown || type == .keyUp || type == .flagsChanged else {
-        // For tap disabled events, just log - the tap will be re-created on next setup
+        // When macOS disables the tap (timeout or user input), re-enable it immediately.
+        // This happens when the callback takes too long or the system decides to disable it.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            NSLog("[VoiceFlow] PTT EventTap was disabled - may need to restart app")
+            NSLog("[VoiceFlow] PTT EventTap was disabled (reason: %@) - re-enabling", type == .tapDisabledByTimeout ? "timeout" : "userInput")
+            if let machPort = AppDelegate.sharedPTTState?.eventTapMachPort {
+                CGEvent.tapEnable(tap: machPort, enable: true)
+            }
         }
         return Unmanaged.passRetained(event)
     }

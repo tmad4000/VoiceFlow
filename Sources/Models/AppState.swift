@@ -645,7 +645,6 @@ class AppState: ObservableObject {
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
     private var currentUtteranceIsLiteral = false
-    private var pendingLiteralMode = false  // Persists "say" literal mode across turn boundaries
     private var literalStartWordIndex: Int = 0  // Word index AFTER "say" keyword
     private var lastHaltingCommandEndIndex = -1
     private var wakeUpTime: Date?
@@ -663,6 +662,12 @@ class AppState: ObservableObject {
     private let keywordFlashDurationSeconds: TimeInterval = 1.6
     private let keywordMaxGapSeconds: TimeInterval = 1.2
     private let typingFlushDelaySeconds: TimeInterval = 0.12
+    // Terminal typing timing (Unicode injection + submit)
+    private let terminalInlineReturnMinDelay: TimeInterval = 0.45
+    private let terminalPostReturnDelay: TimeInterval = 0.65
+    private let terminalFlushBaseDelay: TimeInterval = 0.35
+    private let terminalFlushMinSinceLastEvent: TimeInterval = 0.90
+    private let terminalUnicodeChunkLength = 120
     private let latencyWarningThresholdMs = 1500
     private let latencyRecoveryThresholdMs = 900
     private let autoSwitchOfflineThresholdMs = 500  // Auto-switch to offline if latency exceeds this
@@ -703,6 +708,8 @@ class AppState: ObservableObject {
     private var suppressNextAutoCap = false
     private var lastKeyEventTime: Date?  // For consistent Return key timing across typeText calls
     private var bufferedTerminalNewlines: Int = 0  // Newlines to send after utterance ends (terminal mode)
+    private let terminalTypingQueue = DispatchQueue(label: "com.voiceflow.terminalTyping")
+    private let terminalTypingQueueKey = DispatchSpecificKey<Void>()
 
     // Cross-utterance keyword state: tracks partial keywords that span utterance boundaries
     // e.g., "new" at end of one utterance + "line" at start of next = "new line"
@@ -743,6 +750,7 @@ class AppState: ObservableObject {
     }
 
     init() {
+        terminalTypingQueue.setSpecific(key: terminalTypingQueueKey, value: ())
         loadAPIKey()
         loadVoiceCommands()
         loadCustomVocabulary()
@@ -1826,7 +1834,14 @@ class AppState: ObservableObject {
         }
 
         let trimmedProcessed = processedText.trimmingCharacters(in: .whitespaces)
+        // DIAGNOSTIC: Log the full dictation path for newline debugging (VoiceFlow-qs3)
+        NSLog("[VoiceFlow] 📝 handleDictationTurn: isFormatted=%@, endOfTurn=%@, turnOrder=%@, rawTranscript='%@', processedText='%@', bufferedNewlines=%d, isTerminal=%@",
+              turn.isFormatted ? "YES" : "NO", turn.endOfTurn ? "YES" : "NO",
+              turn.turnOrder.map { String($0) } ?? "nil",
+              String(rawTranscript.prefix(60)), String(processedText.prefix(60)),
+              bufferedTerminalNewlines, focusContextManager.isCurrentAppTerminal() ? "YES" : "NO")
         guard !trimmedProcessed.isEmpty else {
+            NSLog("[VoiceFlow] ⚠️ handleDictationTurn: processedText EMPTY after preprocessing, bufferedNewlines=%d (will flush at utterance end without typing text)", bufferedTerminalNewlines)
             return
         }
 
@@ -1872,8 +1887,8 @@ class AppState: ObservableObject {
         }
     }
 
-    private func applyKeywordReplacements(_ text: String, words: [TranscriptWord]?, isLiteral: Bool) -> (String, String?) {
-        guard !isLiteral else { return (text, nil) }
+    private func applyKeywordReplacements(_ text: String, words: [TranscriptWord]?, isLiteral: Bool) -> (String, String?, Bool) {
+        guard !isLiteral else { return (text, nil, false) }
         if let words, !words.isEmpty {
             return applyKeywordReplacementsFromWords(words)
         }
@@ -2065,7 +2080,7 @@ class AppState: ObservableObject {
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1")
         }
 
-        return (result, keyword)
+        return (result, keyword, false)
     }
 
     private func timeScale(for word: TranscriptWord) -> Double {
@@ -2086,12 +2101,13 @@ class AppState: ObservableObject {
         return max(0, scaledGap) <= keywordMaxGapSeconds
     }
 
-    private func applyKeywordReplacementsFromWords(_ words: [TranscriptWord]) -> (String, String?) {
+    private func applyKeywordReplacementsFromWords(_ words: [TranscriptWord]) -> (String, String?, Bool) {
         var output = ""
         var keyword: String? = nil
         var lowercaseNext = false
         var letterNext = false
         var suppressNextSpace = false  // For "no space" command
+        var escapeNextKeywordLiteral = false  // One-shot escape activated by inline "say"
         let maxTagWords = 4
         var consumedFirstWordForCrossUtterance = false
 
@@ -2135,14 +2151,15 @@ class AppState: ObservableObject {
             while output.last == " " {
                 output.removeLast()
             }
-            // In terminal mode OR when trailing newline sends Enter is enabled,
-            // buffer the newline to send at end of utterance as an Enter key press
-            // This ensures Enter is sent AFTER all text is typed
-            if focusContextManager.isCurrentAppTerminal() || (isTrailing && trailingNewlineSendsEnter) {
+            // Trailing newlines in terminal mode: buffer to send AFTER all text is typed
+            // Mid-utterance newlines: insert inline so typeText sends Enter at the right position
+            // This allows "hello newline world" to type "hello" → Enter → "world" in TUIs
+            if isTrailing && (focusContextManager.isCurrentAppTerminal() || trailingNewlineSendsEnter) {
                 bufferedTerminalNewlines += 1
-                logDebug("Buffering newline (terminal=\(focusContextManager.isCurrentAppTerminal()), trailing=\(isTrailing), total buffered: \(bufferedTerminalNewlines))")
+                logDebug("Buffering trailing newline (terminal=\(focusContextManager.isCurrentAppTerminal()), total buffered: \(bufferedTerminalNewlines))")
             } else if output.last != "\n" {
                 output.append("\n")
+                logDebug("Inserting inline newline (terminal=\(focusContextManager.isCurrentAppTerminal()), trailing=\(isTrailing))")
             }
         }
 
@@ -2204,18 +2221,6 @@ class AppState: ObservableObject {
             }
 
             appendToken(wordText, joinDirectly: shouldJoin)
-        }
-
-        let sayStartIndex = consumedFirstWordForCrossUtterance ? 1 : 0
-        if words.indices.contains(sayStartIndex),
-           normalizeToken(words[sayStartIndex].text) == "say" {
-            keyword = keyword ?? "Say"
-            var index = sayStartIndex + 1
-            while index < words.count {
-                appendToken(words[index].text)
-                index += 1
-            }
-            return (output, keyword)
         }
 
         func isTagStopToken(_ token: String, nextToken: String?) -> Bool {
@@ -2280,6 +2285,32 @@ class AppState: ObservableObject {
         while index < words.count {
             let word = words[index]
             let token = normalizeToken(word.text)
+
+            // Inline "say" escape:
+            // - consume "say" itself
+            // - make the next keyword candidate literal
+            // - then resume normal keyword processing
+            if token == "say" {
+                let hasContentAfterSay = words[(index + 1)...].contains { !normalizeToken($0.text).isEmpty }
+                if hasContentAfterSay {
+                    keyword = keyword ?? "Say"
+                    escapeNextKeywordLiteral = true
+                    index += 1
+                    continue
+                } else {
+                    // Standalone "say" is regular dictation text
+                    appendProcessedToken(word.text)
+                    index += 1
+                    continue
+                }
+            }
+
+            if escapeNextKeywordLiteral {
+                appendToken(word.text)
+                escapeNextKeywordLiteral = false
+                index += 1
+                continue
+            }
 
             if token == "no", index + 1 < words.count {
                 let next = words[index + 1]
@@ -2873,28 +2904,29 @@ class AppState: ObservableObject {
             }
         }
 
-        return (output, keyword)
+        return (output, keyword, false)
     }
 
     private func preprocessDictation(_ text: String, forceLiteral: Bool = false, words: [TranscriptWord]? = nil) -> String {
         var processed = text
         
         // 1. Handle "say" prefix (escape mode)
-        // Use regex to find "say" at the beginning, ignoring optional trailing punctuation and whitespace
+        // Only treat "say" as escape prefix when additional content follows it.
         var isLiteral = forceLiteral
-        let sayPattern = "^say[\\.,?!]?(\\s+|$)"
-        if let regex = try? NSRegularExpression(pattern: sayPattern, options: [.caseInsensitive]),
-           let match = regex.firstMatch(in: processed, options: [], range: NSRange(location: 0, length: processed.utf16.count)) {
+        if let afterSay = hasContentAfterSayPrefix(processed) {
             isLiteral = true
-            // Remove the "say" prefix and the following whitespace/punctuation
-            processed = (processed as NSString).substring(from: match.range.length)
+            processed = afterSay
             if !didTriggerSayKeyword {
                 triggerKeywordFlash(name: "Say")
                 didTriggerSayKeyword = true
             }
-        } else if processed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "say" {
+        } else if !forceLiteral, let words, let first = words.first, normalizeToken(first.text) == "say",
+                  words.dropFirst().contains(where: { !normalizeToken($0.text).isEmpty }) {
+            // Fallback: word-level "say" prefix when transcript doesn't reflect it
             isLiteral = true
-            processed = ""
+            // Best-effort removal of leading "say"
+            let tokens = processed.split(whereSeparator: \.isWhitespace)
+            processed = tokens.dropFirst().joined(separator: " ")
             if !didTriggerSayKeyword {
                 triggerKeywordFlash(name: "Say")
                 didTriggerSayKeyword = true
@@ -2921,50 +2953,55 @@ class AppState: ObservableObject {
 
         // 2. Handle inline text replacements (only if not literal)
         if !isLiteral {
-            let (keywordProcessed, keyword) = applyKeywordReplacements(processed, words: words, isLiteral: isLiteral)
+            let (keywordProcessed, keyword, didDetectSay) = applyKeywordReplacements(processed, words: words, isLiteral: isLiteral)
             processed = keywordProcessed
             if let keyword {
                 triggerKeywordFlash(name: keyword)
             }
-
-            // 3. Strip wake-up phrases that might leak through after mode switch
-            let wakeUpPhrases = ["wake up", "microphone on", "flow on"]
-            for phrase in wakeUpPhrases {
-                if processed.lowercased().hasPrefix(phrase) {
-                    processed = String(processed.dropFirst(phrase.count))
-                    processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
-                    break
-                }
+            if didDetectSay {
+                isLiteral = true
             }
 
-            // 4. Handle trailing mode-switch commands if they are at the very end
-            // This allows "Hello world microphone off" to just type "Hello world"
-            let trailingCommands = ["microphone off", "flow off", "stop dictation", "go to sleep", "flow sleep", "submit dictation", "send dictation"]
-            for cmd in trailingCommands {
-                if processed.lowercased().hasSuffix(cmd) {
-                    processed = String(processed.prefix(processed.count - cmd.count))
-                    processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
-                    break
+            if !isLiteral {
+                // 3. Strip wake-up phrases that might leak through after mode switch
+                let wakeUpPhrases = ["wake up", "microphone on", "flow on"]
+                for phrase in wakeUpPhrases {
+                    if processed.lowercased().hasPrefix(phrase) {
+                        processed = String(processed.dropFirst(phrase.count))
+                        processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
+                        break
+                    }
                 }
-            }
 
-            // Strip system command phrases that might leak through
-            let systemCommandPhrases = [
-                "window recent two", "window recent 2", "window recent", "flip",
-                "window previous", "window next",
-                "cancel that",
-                "submit dictation", "send dictation",
-                "save to idea flow",
-                "copy that", "paste that", "cut that", "undo that", "redo that",
-                "select all", "save that",
-                "tab back", "tab forward", "new tab", "close tab",
-                "go back", "go forward", "page up", "page down",
-                "scroll up", "scroll down", "press escape", "press enter"
-            ]
-            for phrase in systemCommandPhrases {
-                if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b", options: []) {
-                    let range = NSRange(processed.startIndex..<processed.endIndex, in: processed)
-                    processed = regex.stringByReplacingMatches(in: processed, options: [], range: range, withTemplate: "")
+                // 4. Handle trailing mode-switch commands if they are at the very end
+                // This allows "Hello world microphone off" to just type "Hello world"
+                let trailingCommands = ["microphone off", "flow off", "stop dictation", "go to sleep", "flow sleep", "submit dictation", "send dictation"]
+                for cmd in trailingCommands {
+                    if processed.lowercased().hasSuffix(cmd) {
+                        processed = String(processed.prefix(processed.count - cmd.count))
+                        processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
+                        break
+                    }
+                }
+
+                // Strip system command phrases that might leak through
+                let systemCommandPhrases = [
+                    "window recent two", "window recent 2", "window recent", "flip",
+                    "window previous", "window next",
+                    "cancel that",
+                    "submit dictation", "send dictation",
+                    "save to idea flow",
+                    "copy that", "paste that", "cut that", "undo that", "redo that",
+                    "select all", "save that",
+                    "tab back", "tab forward", "new tab", "close tab",
+                    "go back", "go forward", "page up", "page down",
+                    "scroll up", "scroll down", "press escape", "press enter"
+                ]
+                for phrase in systemCommandPhrases {
+                    if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b", options: []) {
+                        let range = NSRange(processed.startIndex..<processed.endIndex, in: processed)
+                        processed = regex.stringByReplacingMatches(in: processed, options: [], range: range, withTemplate: "")
+                    }
                 }
             }
             
@@ -3096,14 +3133,14 @@ class AppState: ObservableObject {
 
         // Helper to process inline replacements
         let processInlineReplacements: (String, [TranscriptWord]?, Bool) -> String = { text, words, isLiteral in
-            let (keywordProcessed, keyword) = self.applyKeywordReplacements(text, words: words, isLiteral: isLiteral)
+            let (keywordProcessed, keyword, didDetectSay) = self.applyKeywordReplacements(text, words: words, isLiteral: isLiteral)
             var result = keywordProcessed
             if let keyword {
                 self.triggerKeywordFlash(name: keyword)
             }
             // Strip system command phrases that might leak through - BUT NOT in literal mode!
             // In literal mode (after "say"), we want to type these phrases, not strip them
-            if !isLiteral {
+            if !isLiteral && !didDetectSay {
                 let systemCommandPhrases = [
                     "window recent two", "window recent 2", "window recent", "flip",
                     "window previous", "window next",
@@ -3129,19 +3166,37 @@ class AppState: ObservableObject {
 
         // If it's a formatted turn (Cloud model with formatting ON)
         if turn.isFormatted {
-            let finalWords = effectiveWords.filter { $0.isFinal == true }.map { $0.text }
-            guard finalWords.count > startIndex else { return }
-            var newWords = finalWords[startIndex...].filter(filterPunctuation)
+            let finalWordObjects = effectiveWords.enumerated().filter { $0.element.isFinal == true }
+            let finalWords = finalWordObjects.map { $0.element.text }
+            NSLog("[VoiceFlow] 📝 formatted turn: endOfTurn=%@, finalWords=%@, startIndex=%d, typedFinalWordCount=%d, isTerminal=%@, bufferedNewlines=%d",
+                  turn.endOfTurn ? "YES" : "NO", finalWords.joined(separator: "|"), startIndex, typedFinalWordCount,
+                  isFrontmostAppTerminal() ? "YES" : "NO", bufferedTerminalNewlines)
+            var finalStartIndex = startIndex
+            if isLiteral {
+                // literalStartWordIndex refers to effectiveWords indices; map it to finalWords indices
+                let literalFinalIndex = finalWordObjects.firstIndex { $0.offset >= literalStartWordIndex } ?? finalWordObjects.count
+                if literalFinalIndex > finalStartIndex {
+                    finalStartIndex = literalFinalIndex
+                }
+            }
+            guard finalWords.count > finalStartIndex else {
+                if turn.endOfTurn {
+                    NSLog("[VoiceFlow] ⚠️ formatted endOfTurn: NO NEW WORDS (finalWords.count=%d <= startIndex=%d)", finalWords.count, finalStartIndex)
+                }
+                return
+            }
+            var newWords = finalWords[finalStartIndex...].filter(filterPunctuation)
             newWords = stripLeadingSay(Array(newWords))
             guard !newWords.isEmpty else { return }
 
             let suppressLeadingSpace = startsWithNoSpaceCommand(newWords)
-            let needsSpace = (startIndex > 0 || hasTypedInSession) && !suppressLeadingSpace
+            let needsSpace = (finalStartIndex > 0 || hasTypedInSession) && !suppressLeadingSpace
             let prefix = needsSpace ? " " : ""
             let rawText = prefix + newWords.joined(separator: " ")
-            let finalWordObjects = effectiveWords.filter { $0.isFinal == true }
-            let wordSlice = Array(finalWordObjects[startIndex...].filter { filterPunctuation($0.text) })
+            let wordSlice = Array(finalWordObjects[finalStartIndex...].map { $0.element }.filter { filterPunctuation($0.text) })
             var textToType = processInlineReplacements(rawText, wordSlice, isLiteral)
+            NSLog("[VoiceFlow] 📝 formatted: newWords=%@, rawText='%@', textToType='%@', bufferedNewlines=%d",
+                  Array(newWords).joined(separator: "|"), rawText, textToType, bufferedTerminalNewlines)
             if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
                 textToType = " " + textToType
             }
@@ -3242,13 +3297,21 @@ class AppState: ObservableObject {
             lastTypedPartialText = ""
 
             let allWords = effectiveWords.map { $0.text }
+            // DIAGNOSTIC: Log full turn state for newline debugging (VoiceFlow-qs3)
+            let isInTerminal = isFrontmostAppTerminal()
+            NSLog("[VoiceFlow] 📝 endOfTurn: allWords=%@, startIndex=%d, typedFinalWordCount=%d, isTerminal=%@, isFormatted=%@, bufferedNewlines=%d",
+                  allWords.joined(separator: "|"), startIndex, typedFinalWordCount, isInTerminal ? "YES" : "NO",
+                  turn.isFormatted ? "YES" : "NO", bufferedTerminalNewlines)
+
             guard allWords.count > startIndex else {
+                NSLog("[VoiceFlow] ⚠️ endOfTurn: NO WORDS to type (allWords.count=%d <= startIndex=%d)", allWords.count, startIndex)
                 typedFinalWordCount = 0
                 return
             }
             var newWords = allWords[startIndex...].filter(filterPunctuation)
             newWords = stripLeadingSay(Array(newWords))
             guard !newWords.isEmpty else {
+                NSLog("[VoiceFlow] ⚠️ endOfTurn: newWords empty after filtering (allWords=%@)", allWords.joined(separator: "|"))
                 typedFinalWordCount = 0
                 return
             }
@@ -3256,7 +3319,6 @@ class AppState: ObservableObject {
             // In aggressive mode (when actually used), we already typed everything
             // Aggressive mode requires: enabled + corrections allowed + not in terminal
             // If any condition was false, aggressive mode was skipped and we type final text here
-            let isInTerminal = isFrontmostAppTerminal()
             let wasAggressiveModeUsed = aggressiveLiveMode && aggressiveAllowCorrections && !isInTerminal
 
             if wasAggressiveModeUsed && !lastTypedPartialWords.isEmpty {
@@ -3272,6 +3334,8 @@ class AppState: ObservableObject {
             let rawText = prefix + newWords.joined(separator: " ")
             let wordSlice = Array(effectiveWords[startIndex...].filter { filterPunctuation($0.text) })
             var textToType = processInlineReplacements(rawText, wordSlice, isLiteral)
+            NSLog("[VoiceFlow] 📝 endOfTurn: newWords=%@, rawText='%@', textToType='%@', bufferedNewlines=%d",
+                  Array(newWords).joined(separator: "|"), rawText, textToType, bufferedTerminalNewlines)
             if isLiteral {
                 NSLog("[VoiceFlow] 🔤 endOfTurn literal path: rawText='%@' -> textToType='%@'", rawText, textToType)
             }
@@ -3314,36 +3378,27 @@ class AppState: ObservableObject {
 
     /// Detect "say" prefix for literal/escape mode (used in dictation mode where full command processing is skipped)
     private func detectSayPrefix(_ turn: TranscriptTurn) {
-        // Check if previous turn ended with "say" alone - restore literal mode
-        if pendingLiteralMode {
-            currentUtteranceIsLiteral = true
-            pendingLiteralMode = false
-            literalStartWordIndex = 0  // Start from beginning since "say" was in previous turn
-            NSLog("[VoiceFlow] detectSayPrefix: restored literal mode from pending (cross-turn 'say')")
-        }
-
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         let transcriptForPrefix = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
-        // Check both transcript prefix AND first word token (transcript may not reflect words accurately)
-        let hasSayPrefix = isSayPrefix(transcriptForPrefix)
-            || normalizedTokens.first?.token == "say"
+        let transcriptHasSayWithContent = hasContentAfterSayPrefix(transcriptForPrefix) != nil
+        let tokenHasSayWithContent = normalizedTokens.first?.token == "say"
+            && normalizedTokens.dropFirst().contains(where: { !$0.token.isEmpty })
+        let hasSayPrefix = transcriptHasSayWithContent || tokenHasSayWithContent
 
         if hasSayPrefix {
             currentUtteranceIsLiteral = true
-            let firstWordIndex = normalizedTokens.first?.wordIndex ?? 0
-            literalStartWordIndex = firstWordIndex + 1  // Start after the first word ("say")
+            if normalizedTokens.first?.token == "say" {
+                let firstWordIndex = normalizedTokens.first?.wordIndex ?? 0
+                literalStartWordIndex = firstWordIndex + 1  // Start after the first word ("say")
+            } else {
+                // If words don't include "say", avoid skipping the first content word.
+                literalStartWordIndex = 0
+            }
             if !didTriggerSayKeyword {
                 triggerKeywordFlash(name: "Say")
                 didTriggerSayKeyword = true
             }
             NSLog("[VoiceFlow] detectSayPrefix: detected 'say' in dictation mode, entering literal mode")
-
-            // If turn ends with just "say" (no content after), set pending for next turn
-            let wordsAfterSay = normalizedTokens.dropFirst()
-            if turn.endOfTurn && wordsAfterSay.isEmpty {
-                pendingLiteralMode = true
-                NSLog("[VoiceFlow] detectSayPrefix: 'say' alone at end of turn, setting pendingLiteralMode")
-            }
         }
     }
 
@@ -3581,37 +3636,27 @@ class AppState: ObservableObject {
     }
 
     private func processVoiceCommands(_ turn: TranscriptTurn) {
-        // Check if previous turn ended with "say" alone - restore literal mode
-        if pendingLiteralMode {
-            currentUtteranceIsLiteral = true
-            pendingLiteralMode = false
-            literalStartWordIndex = 0  // Start from beginning since "say" was in previous turn
-            NSLog("[VoiceFlow] processVoiceCommands: restored literal mode from pending (cross-turn 'say')")
-        }
-
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         let transcriptForPrefix = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
-        // Check both transcript AND first token (transcript may not match words accurately)
-        let hasSayPrefix = isSayPrefix(transcriptForPrefix)
-            || normalizedTokens.first?.token == "say"
+        let transcriptHasSayWithContent = hasContentAfterSayPrefix(transcriptForPrefix) != nil
+        let tokenHasSayWithContent = normalizedTokens.first?.token == "say"
+            && normalizedTokens.dropFirst().contains(where: { !$0.token.isEmpty })
+        let hasSayPrefix = transcriptHasSayWithContent || tokenHasSayWithContent
         NSLog("[VoiceFlow] processVoiceCommands: transcript=\"%@\", hasSayPrefix=%d, endOfTurn=%d", String(transcriptForPrefix.prefix(60)), hasSayPrefix ? 1 : 0, turn.endOfTurn ? 1 : 0)
 
         if hasSayPrefix {
             currentUtteranceIsLiteral = true
-            let firstWordIndex = normalizedTokens.first?.wordIndex ?? 0
-            literalStartWordIndex = firstWordIndex + 1  // Start after the first word ("say")
+            if normalizedTokens.first?.token == "say" {
+                let firstWordIndex = normalizedTokens.first?.wordIndex ?? 0
+                literalStartWordIndex = firstWordIndex + 1  // Start after the first word ("say")
+            } else {
+                literalStartWordIndex = 0
+            }
             if !didTriggerSayKeyword {
                 triggerKeywordFlash(name: "Say")
                 didTriggerSayKeyword = true
             }
             logger.debug("Utterance starts with 'say', skipping command processing")
-
-            // If turn ends with just "say" (no content after), set pending for next turn
-            let wordsAfterSay = normalizedTokens.dropFirst()
-            if turn.endOfTurn && wordsAfterSay.isEmpty {
-                pendingLiteralMode = true
-                NSLog("[VoiceFlow] processVoiceCommands: 'say' alone at end of turn, setting pendingLiteralMode")
-            }
             return
         }
         if currentUtteranceIsLiteral {
@@ -3636,7 +3681,8 @@ class AppState: ObservableObject {
                 let precedingTokens = normalizedTokens.prefix(index).map { $0.token }
                 let allPrecedingAreWakeWords = precedingTokens.allSatisfy { wakeCommands.contains($0) || modifiers.contains($0) }
                 NSLog("[VoiceFlow] Found 'say' at index %d, preceding=[%@], allWake=%d", index, precedingTokens.joined(separator: ", "), allPrecedingAreWakeWords ? 1 : 0)
-                if allPrecedingAreWakeWords {
+                let hasWordsAfterSay = normalizedTokens[(index + 1)...].contains { !$0.token.isEmpty }
+                if allPrecedingAreWakeWords && hasWordsAfterSay {
                     sayIndex = index
                     break
                 }
@@ -4321,7 +4367,6 @@ class AppState: ObservableObject {
         lastTypedPartialText = ""
         // Note: We intentionally DON'T reset these flags here because they persist across utterances:
         // - pendingCrossUtteranceKeyword: for cross-utterance keyword detection (e.g., "new" + "line")
-        // - pendingLiteralMode: for cross-turn "say" escape (e.g., "say" + [pause] + "newline")
     }
 
     /// Known terminal app bundle identifiers where backspace corrections don't work reliably
@@ -4369,6 +4414,22 @@ class AppState: ObservableObject {
         let result = regex.firstMatch(in: trimmed, options: [], range: NSRange(location: 0, length: trimmed.utf16.count)) != nil
         NSLog("[VoiceFlow] 🔍 isSayPrefix: text=\"%@\", result=%@", String(trimmed.prefix(40)), result ? "true" : "false")
         return result
+    }
+
+    /// Returns content after a leading "say" prefix, or nil when "say" is not a prefix
+    /// or has no content after it (standalone "say").
+    private func hasContentAfterSayPrefix(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sayPattern = "^say[\\.,?!]?(\\s+|$)"
+        guard let regex = try? NSRegularExpression(pattern: sayPattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        guard let match = regex.firstMatch(in: trimmed, options: [], range: NSRange(location: 0, length: trimmed.utf16.count)) else {
+            return nil
+        }
+        let remainder = (trimmed as NSString).substring(from: match.range.length)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return remainder.isEmpty ? nil : remainder
     }
 
     private func executeMatch(_ match: PendingCommandMatch) {
@@ -5408,6 +5469,54 @@ class AppState: ObservableObject {
         return result
     }
 
+    private func performTerminalTyping(_ block: () -> Void) {
+        if DispatchQueue.getSpecific(key: terminalTypingQueueKey) != nil {
+            block()
+        } else {
+            terminalTypingQueue.sync(execute: block)
+        }
+    }
+
+    private func chunkForUnicodeInjection(_ text: String, maxCharacters: Int) -> [String] {
+        guard !text.isEmpty else { return [] }
+        guard text.count > maxCharacters else { return [text] }
+
+        var chunks: [String] = []
+        chunks.reserveCapacity((text.count / maxCharacters) + 1)
+        var start = text.startIndex
+
+        while start < text.endIndex {
+            let end = text.index(start, offsetBy: maxCharacters, limitedBy: text.endIndex) ?? text.endIndex
+            chunks.append(String(text[start..<end]))
+            start = end
+        }
+
+        return chunks
+    }
+
+    @discardableResult
+    private func postUnicodeStringEvent(_ text: String, source: CGEventSource?) -> Bool {
+        guard !text.isEmpty else { return true }
+        let utf16Units = Array(text.utf16)
+        guard !utf16Units.isEmpty else { return true }
+
+        return utf16Units.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return false }
+            guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                  let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
+                return false
+            }
+
+            keyDown.keyboardSetUnicodeString(stringLength: utf16Units.count, unicodeString: base)
+            keyUp.keyboardSetUnicodeString(stringLength: utf16Units.count, unicodeString: base)
+            keyDown.flags = []
+            keyUp.flags = []
+            keyDown.post(tap: .cghidEventTap)
+            keyUp.post(tap: .cghidEventTap)
+            return true
+        }
+    }
+
     private func typeText(_ text: String, appendSpace: Bool) {
         // DIAGNOSTIC: Log if typing during Sleep/Off mode (shouldn't happen - investigating clunk sounds)
         if microphoneMode != .on {
@@ -5476,87 +5585,107 @@ class AppState: ObservableObject {
         // Terminal UIs (Claude Code, Gemini CLI) need longer delay before Enter for reliable submission
         // Regular apps work fine with shorter delay
         let isTerminal = focusContextManager.isCurrentAppTerminal()
-        let minDelayBeforeReturn: TimeInterval = isTerminal ? 0.15 : 0.02  // 150ms for terminals (TUI apps need time to process chars), 20ms otherwise
 
-        for char in output {
-            if char == "\n" {
-                // Diagnostic logging for newline debugging (VoiceFlow-qs3)
-                let beforeNewline = Date()
-                var actualDelay: TimeInterval = 0
+        // TERMINAL MODE: Use direct Unicode injection, never clipboard.
+        // This avoids clipboard races and keeps ordering deterministic by serializing on
+        // terminalTypingQueue for all terminal text and newline delivery.
+        if isTerminal {
+            performTerminalTyping {
+                let segments = output.components(separatedBy: "\n")
 
-                // Ensure sufficient delay before Return key, even across typeText calls
-                // This fixes inconsistent newline submission at end of utterances
-                // Terminal UIs (like Claude Code) need time to process the keypress as "submit"
-                if let lastTime = lastKeyEventTime {
-                    let elapsed = beforeNewline.timeIntervalSince(lastTime)
-                    let neededDelay = max(0, minDelayBeforeReturn - elapsed)
-                    if neededDelay > 0 {
-                        Thread.sleep(forTimeInterval: neededDelay)
-                        actualDelay = neededDelay
+                for (i, segment) in segments.enumerated() {
+                    if !segment.isEmpty {
+                        let chunks = chunkForUnicodeInjection(segment, maxCharacters: terminalUnicodeChunkLength)
+                        for chunk in chunks {
+                            if postUnicodeStringEvent(chunk, source: source) {
+                                eventsPosted += chunk.count
+                            }
+                            lastKeyEventTime = Date()
+                        }
+                        NSLog("[VoiceFlow] ⌨️ Injected %d chars via CGEvent unicode (terminal mode): '%@'",
+                              segment.count, String(segment.prefix(60)))
                     }
-                    NSLog("[VoiceFlow] ⏎ Return key: elapsed=%.0fms, needed=%.0fms, actual_delay=%.0fms (isTerminal=%@)",
-                          elapsed * 1000, minDelayBeforeReturn * 1000, actualDelay * 1000, isTerminal ? "true" : "false")
-                } else {
-                    // Always delay before Enter, even if this is the first/only keypress
-                    // This ensures terminal UIs have time to be ready for the submission
-                    Thread.sleep(forTimeInterval: minDelayBeforeReturn)
-                    actualDelay = minDelayBeforeReturn
-                    NSLog("[VoiceFlow] ⏎ Return key: FIRST_KEYPRESS, forced_delay=%.0fms (isTerminal=%@)",
-                          actualDelay * 1000, isTerminal ? "true" : "false")
+
+                    // Preserve every newline in output by sending Return at each boundary.
+                    if i < segments.count - 1 {
+                        let minDelayBeforeReturn = terminalInlineReturnMinDelay
+                        if let lastTime = lastKeyEventTime {
+                            let elapsed = Date().timeIntervalSince(lastTime)
+                            let neededDelay = max(0, minDelayBeforeReturn - elapsed)
+                            if neededDelay > 0 {
+                                Thread.sleep(forTimeInterval: neededDelay)
+                            }
+                            NSLog("[VoiceFlow] ⏎ Inline Return (unicode mode): elapsed=%.0fms, delay=%.0fms",
+                                  elapsed * 1000, max(0, minDelayBeforeReturn - elapsed) * 1000)
+                        } else {
+                            Thread.sleep(forTimeInterval: minDelayBeforeReturn)
+                        }
+
+                        // Send Return with \r for terminal submit
+                        let source = CGEventSource(stateID: .hidSystemState)
+                        let retDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+                        let retUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+                        var cr: UniChar = 0x0D
+                        retDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+                        retUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+                        retDown?.flags = []
+                        retUp?.flags = []
+                        retDown?.post(tap: .cghidEventTap)
+                        retUp?.post(tap: .cghidEventTap)
+                        lastKeyEventTime = Date()
+
+                        // Post-Return delay for TUI to process submit
+                        NSLog("[VoiceFlow] ⏎ Post-Return delay: waiting %.0fms for TUI to process submit", terminalPostReturnDelay * 1000)
+                        Thread.sleep(forTimeInterval: terminalPostReturnDelay)
+                    }
                 }
 
-                logDebug("Sending Return key for newline (isTerminal=\(isTerminal), delay=\(Int(actualDelay * 1000))ms)")
+                logger.debug("Successfully injected \(eventsPosted) characters via CGEvent unicode (terminal mode)")
+            }
+        } else {
+            // NON-TERMINAL MODE: Use per-character CGEvents (reliable for GUI apps)
+            let minDelayBeforeReturn: TimeInterval = 0.02
 
-                // For terminals (especially ink/React apps like Claude Code), we need to ensure
-                // the Return key sends \r (carriage return), not \n (line feed).
-                // Ink's useInput hook checks key.return which expects \r for submit.
-                // If \n is received, it's treated as regular input (just a newline character).
-                if isTerminal {
-                    // Send Return key with explicit \r character and clear modifier flags
+            for char in output {
+                if char == "\n" {
+                    if let lastTime = lastKeyEventTime {
+                        let elapsed = Date().timeIntervalSince(lastTime)
+                        let neededDelay = max(0, minDelayBeforeReturn - elapsed)
+                        if neededDelay > 0 {
+                            Thread.sleep(forTimeInterval: neededDelay)
+                        }
+                    } else {
+                        Thread.sleep(forTimeInterval: minDelayBeforeReturn)
+                    }
+
                     let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
                     let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+                    keyDown?.post(tap: .cghidEventTap)
+                    keyUp?.post(tap: .cghidEventTap)
+                    lastKeyEventTime = Date()
+                    continue
+                }
 
-                    // Explicitly set the character to \r (carriage return) for terminal apps
-                    var cr: UniChar = 0x0D  // \r = carriage return
-                    keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-                    keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+                if let unicodeScalar = char.unicodeScalars.first {
+                    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
+                    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
 
-                    // Clear any modifier flags to avoid Shift+Enter being interpreted as newline
-                    keyDown?.flags = []
-                    keyUp?.flags = []
+                    var unichar = UniChar(unicodeScalar.value)
+                    keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unichar)
+                    keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unichar)
 
                     keyDown?.post(tap: .cghidEventTap)
                     keyUp?.post(tap: .cghidEventTap)
-                } else {
-                    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-                    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-                    keyDown?.post(tap: .cghidEventTap)
-                    keyUp?.post(tap: .cghidEventTap)
-                }
-                lastKeyEventTime = Date()
-                continue
-            }
+                    lastKeyEventTime = Date()
+                    eventsPosted += 1
 
-            if let unicodeScalar = char.unicodeScalars.first {
-                let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
-                let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-
-                var unichar = UniChar(unicodeScalar.value)
-                keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unichar)
-                keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unichar)
-
-                keyDown?.post(tap: .cghidEventTap)
-                keyUp?.post(tap: .cghidEventTap)
-                lastKeyEventTime = Date()
-                eventsPosted += 1
-
-                // Apply inter-character delay for apps that need slower typing (Google Docs, etc.)
-                if interCharDelay > 0 {
-                    Thread.sleep(forTimeInterval: interCharDelay)
+                    if interCharDelay > 0 {
+                        Thread.sleep(forTimeInterval: interCharDelay)
+                    }
                 }
             }
+            logger.debug("Successfully posted \(eventsPosted) character events")
         }
-        logger.debug("Successfully posted \(eventsPosted) character events")
     }
 
     /// Send Return key via AppleScript (System Events)
@@ -5597,29 +5726,63 @@ class AppState: ObservableObject {
         let isTerminal = focusContextManager.isCurrentAppTerminal()
         logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s) (isTerminal=\(isTerminal))")
 
-        // Wait for text to be fully processed before sending Return
-        // Terminals (especially TUI apps like Claude Code/ink) need time to process
-        // all preceding character events through the PTY before receiving Return.
-        // The delay must be measured from the LAST CHARACTER TYPED, not from when
-        // this flush function is called, to handle fast speech where end-of-utterance
-        // arrives immediately after the last word.
-        let baseDelay: TimeInterval = isTerminal ? 0.20 : 0.05
-        let minSinceLastChar: TimeInterval = isTerminal ? 0.30 : 0.10
-        var actualDelay = baseDelay
-        if let lastTime = lastKeyEventTime {
-            let elapsed = Date().timeIntervalSince(lastTime)
-            actualDelay = max(baseDelay, minSinceLastChar - elapsed)
-            NSLog("[VoiceFlow] ⏎ Flush delay: elapsed=%.0fms since last char, waiting %.0fms (min %.0fms from last char)",
-                  elapsed * 1000, actualDelay * 1000, minSinceLastChar * 1000)
-        } else {
-            NSLog("[VoiceFlow] ⏎ Flush delay: no prior keystrokes, using base delay %.0fms", baseDelay * 1000)
-        }
-        Thread.sleep(forTimeInterval: actualDelay)
-
-        for i in 0..<bufferedTerminalNewlines {
-            if i > 0 {
-                Thread.sleep(forTimeInterval: 0.05) // gap between multiple Returns
+        let flushBlock = {
+            // Wait for text to be fully processed before sending Return
+            // Terminals (especially TUI apps like Claude Code/ink) need time to process
+            // the pasted text through the PTY before receiving Return.
+            // The delay must be measured from the LAST EVENT (paste or keystroke), not from when
+            // this flush function is called, to handle fast speech where end-of-utterance
+            // arrives immediately after the last word.
+            // With Unicode injection, terminal/TUI processing is still asynchronous. We
+            // measure from the last injected key event to avoid submitting too early.
+            let baseDelay: TimeInterval = isTerminal ? self.terminalFlushBaseDelay : 0.05
+            let minSinceLastChar: TimeInterval = isTerminal ? self.terminalFlushMinSinceLastEvent : 0.10
+            var actualDelay = baseDelay
+            if let lastTime = self.lastKeyEventTime {
+                let elapsed = Date().timeIntervalSince(lastTime)
+                actualDelay = max(baseDelay, minSinceLastChar - elapsed)
+                NSLog("[VoiceFlow] ⏎ Flush delay: elapsed=%.0fms since last char, waiting %.0fms (min %.0fms from last char)",
+                      elapsed * 1000, actualDelay * 1000, minSinceLastChar * 1000)
+            } else {
+                NSLog("[VoiceFlow] ⏎ Flush delay: no prior keystrokes, using base delay %.0fms", baseDelay * 1000)
             }
+            Thread.sleep(forTimeInterval: actualDelay)
+
+            for i in 0..<self.bufferedTerminalNewlines {
+                if i > 0 {
+                    Thread.sleep(forTimeInterval: 0.05) // gap between multiple Returns
+                }
+                let source = CGEventSource(stateID: .hidSystemState)
+                let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+                let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+                if isTerminal {
+                    // Send \r (carriage return) for terminal apps, matching typeText() behavior
+                    var cr: UniChar = 0x0D
+                    keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+                    keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+                    keyDown?.flags = []
+                    keyUp?.flags = []
+                }
+                keyDown?.post(tap: .cghidEventTap)
+                keyUp?.post(tap: .cghidEventTap)
+                self.lastKeyEventTime = Date()
+            }
+
+            self.bufferedTerminalNewlines = 0
+        }
+
+        if isTerminal {
+            performTerminalTyping(flushBlock)
+        } else {
+            flushBlock()
+        }
+    }
+
+    /// Send a single Enter key press (for explicit "press enter" / "submit" command)
+    private func sendEnterKey() {
+        let isTerminal = focusContextManager.isCurrentAppTerminal()
+        logDebug("Sending explicit Enter key (isTerminal=\(isTerminal))")
+        let sendBlock = {
             let source = CGEventSource(stateID: .hidSystemState)
             let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
             let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
@@ -5633,30 +5796,14 @@ class AppState: ObservableObject {
             }
             keyDown?.post(tap: .cghidEventTap)
             keyUp?.post(tap: .cghidEventTap)
-            lastKeyEventTime = Date()
+            self.lastKeyEventTime = Date()
         }
 
-        bufferedTerminalNewlines = 0
-    }
-
-    /// Send a single Enter key press (for explicit "press enter" / "submit" command)
-    private func sendEnterKey() {
-        let isTerminal = focusContextManager.isCurrentAppTerminal()
-        logDebug("Sending explicit Enter key (isTerminal=\(isTerminal))")
-        let source = CGEventSource(stateID: .hidSystemState)
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
         if isTerminal {
-            // Send \r (carriage return) for terminal apps, matching typeText() behavior
-            var cr: UniChar = 0x0D
-            keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-            keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-            keyDown?.flags = []
-            keyUp?.flags = []
+            performTerminalTyping(sendBlock)
+        } else {
+            sendBlock()
         }
-        keyDown?.post(tap: .cghidEventTap)
-        keyUp?.post(tap: .cghidEventTap)
-        lastKeyEventTime = Date()
     }
 
     private func sendBackspaceKeypresses(_ count: Int) {

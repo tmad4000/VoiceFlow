@@ -263,6 +263,9 @@ struct GeneralSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
 
+                // Speed Preset Bar - prominent quick access
+                SpeedPresetBar()
+
                 // Speech Providers Section
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
@@ -2735,5 +2738,77 @@ struct ShortcutRecorder: View {
         }
         // Resume monitoring
         startActivityMonitoring()
+    }
+}
+
+// MARK: - Speed Preset Bar
+
+struct SpeedPresetBar: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: "bolt.fill")
+                        .foregroundColor(.yellow)
+                    Text("Speed Preset")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                }
+
+                // Pill buttons
+                HStack(spacing: 8) {
+                    ForEach(SpeedPreset.allCases, id: \.self) { preset in
+                        SpeedPresetPill(
+                            preset: preset,
+                            isSelected: appState.speedPreset == preset,
+                            action: { appState.applySpeedPreset(preset) }
+                        )
+                    }
+                }
+
+                // Current preset description
+                HStack(spacing: 6) {
+                    Image(systemName: appState.speedPreset.icon)
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 11))
+                    Text(appState.speedPreset.description)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(4)
+        }
+    }
+}
+
+struct SpeedPresetPill: View {
+    let preset: SpeedPreset
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: preset.icon)
+                    .font(.system(size: 10, weight: .medium))
+                Text(preset.displayName)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                Capsule()
+                    .fill(isSelected ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.1))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
+            )
+            .foregroundColor(isSelected ? .accentColor : .primary)
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
     }
 }

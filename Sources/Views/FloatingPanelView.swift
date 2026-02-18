@@ -160,7 +160,7 @@ struct FloatingPanelView: View {
 
             transcriptArea
         }
-        .frame(minWidth: 360, maxWidth: 1000, minHeight: 100, maxHeight: 800)
+        .frame(minWidth: 440, maxWidth: 1000, minHeight: 120, maxHeight: 800)
         .background(
             VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
                 .overlay(
@@ -211,6 +211,7 @@ struct FloatingPanelView: View {
                 UnifiedModeButton()
                     .fixedSize()
             }
+            .layoutPriority(1)
 
             Spacer()
 
@@ -265,8 +266,10 @@ struct FloatingPanelView: View {
                         .instantTooltip("Processing speech...")
                 }
             }
+            .layoutPriority(1)
 
             utilityButtons
+                .layoutPriority(1)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -274,40 +277,43 @@ struct FloatingPanelView: View {
     }
 
     private var utilityButtons: some View {
-        HStack(spacing: 10) {
-            Button(action: { appState.toggleCommandPanel() }) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(appState.isCommandPanelVisible ? .accentColor : .secondary)
+        HStack(spacing: 4) {
+            utilityIconButton(icon: "terminal", tooltip: "Claude Code (⌃⌥C)",
+                              color: appState.isCommandPanelVisible ? .accentColor : .secondary) {
+                appState.toggleCommandPanel()
             }
-            .buttonStyle(.plain)
-            .pointerCursor()
-            .fixedSize()
-            .instantTooltip("Claude Code (⌃⌥C)")
 
-            Button(action: openHistory) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.secondary)
+            utilityIconButton(icon: "clock.arrow.circlepath", tooltip: "Open history") {
+                openHistory()
             }
-            .buttonStyle(.plain)
-            .pointerCursor()
-            .fixedSize()
-            .instantTooltip("Open history")
 
-            Button(action: openSettings) {
-                Image(systemName: "gear")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.secondary)
+            utilityIconButton(icon: "gear", tooltip: "Open settings (⌘,)") {
+                openSettings()
             }
-            .buttonStyle(.plain)
-            .pointerCursor()
-            .fixedSize()
-            .instantTooltip("Open settings (⌘,)")
+
+            utilityIconButton(icon: "rectangle.compress.vertical", tooltip: "Minimize panel") {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    appState.isPanelMinimal = true
+                }
+            }
 
             utilityMenu
         }
         .fixedSize()
+    }
+
+    private func utilityIconButton(icon: String, tooltip: String, color: Color = .secondary, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(color)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .fixedSize()
+        .instantTooltip(tooltip)
     }
 
     private var utilityMenu: some View {
@@ -417,9 +423,9 @@ struct FloatingPanelView: View {
             }
         } label: {
             Image(systemName: "ellipsis.circle")
-                .font(.system(size: 16, weight: .bold))
+                .font(.system(size: 14, weight: .medium))
                 .foregroundColor(.secondary)
-                .frame(width: 20, height: 20)
+                .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
