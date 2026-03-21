@@ -64,6 +64,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var pttRunLoopSource: CFRunLoopSource?
     // Shared state for PTT event tap callback (must be non-MainActor accessible)
     nonisolated(unsafe) static var sharedPTTState: PTTEventTapState?
+    // Timer to poll for accessibility permission when not yet granted
+    private var accessibilityRetryTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -295,6 +297,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupCLINotifications()
 
         setupGlobalShortcuts()
+
+        // When accessibility permission is granted mid-session, auto-setup PTT event tap
+        appState.$isAccessibilityGranted
+            .removeDuplicates()
+            .dropFirst()
+            .filter { $0 }
+            .sink { [weak self] _ in
+                NSLog("[VoiceFlow] Accessibility permission granted - setting up PTT event tap")
+                self?.accessibilityRetryTimer?.invalidate()
+                self?.accessibilityRetryTimer = nil
+                self?.setupPTTEventTap()
+            }
+            .store(in: &cancellables)
+
+        // If not yet trusted, poll every 3s to detect when user grants permission
+        if !appState.isAccessibilityGranted {
+            NSLog("[VoiceFlow] Accessibility not granted - polling for permission changes")
+            accessibilityRetryTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] timer in
+                Task { @MainActor in
+                    guard let self = self else { timer.invalidate(); return }
+                    self.appState.recheckAccessibilityPermission()
+                    if self.appState.isAccessibilityGranted {
+                        timer.invalidate()
+                        self.accessibilityRetryTimer = nil
+                    }
+                }
+            }
+        }
     }
 
     private func setupCLINotifications() {
@@ -1290,8 +1320,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         teardownPTTEventTap()
 
-        // Set up PTT event tap (CGEventTap) to CONSUME PTT key events
-        setupPTTEventTap()
+        // Set up PTT event tap only if accessibility is granted (requires trusted process)
+        if appState.isAccessibilityGranted {
+            setupPTTEventTap()
+        } else {
+            NSLog("[VoiceFlow] Skipping PTT event tap setup - accessibility not granted")
+            appState.logDebug("PTT event tap deferred - waiting for accessibility permission")
+        }
 
         // Set up NSEvent monitor for other shortcuts (mode toggle, etc.)
         // Note: PTT is handled by CGEventTap above, not here
@@ -1479,8 +1514,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             callback: pttEventTapCallback,
             userInfo: nil
         ) else {
-            NSLog("[VoiceFlow] Failed to create CGEventTap for PTT - accessibility permissions may be needed")
-            appState.logDebug("PTT EventTap failed - check accessibility permissions")
+            NSLog("[VoiceFlow] Failed to create CGEventTap for PTT - this usually means accessibility permission was revoked")
+            appState.logDebug("PTT EventTap creation failed - permission may have been revoked")
             return
         }
 

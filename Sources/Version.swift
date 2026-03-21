@@ -3,7 +3,7 @@ import Foundation
 // Version info - build number is sourced from CFBundleVersion at build time
 enum AppVersion {
     static let version = "0.2.0"
-    private static let fallbackBuild = 163
+    private static let fallbackBuild = 164
 
     static var build: Int {
         Int(buildString) ?? fallbackBuild

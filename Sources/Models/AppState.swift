@@ -551,10 +551,26 @@ class AppState: ObservableObject {
 
         // Permission checks
         if !isAccessibilityGranted {
-            warnings.append(AppWarning(id: "a11y", message: "Accessibility permission needed for typing", severity: .warning))
+            warnings.append(AppWarning(
+                id: "a11y",
+                message: "Accessibility permission needed for typing",
+                severity: .warning,
+                action: { [weak self] in
+                    self?.checkAccessibilityPermission(silent: false)
+                },
+                actionLabel: "Grant Permission"
+            ))
         }
         if !isMicrophoneGranted {
-            warnings.append(AppWarning(id: "mic", message: "Microphone access needed", severity: .error))
+            warnings.append(AppWarning(
+                id: "mic",
+                message: "Microphone access needed",
+                severity: .error,
+                action: { [weak self] in
+                    self?.requestMicrophonePermission()
+                },
+                actionLabel: "Grant Access"
+            ))
         }
         if !isSpeechGranted && (dictationProvider == .offline || effectiveIsOffline) {
             warnings.append(AppWarning(id: "speech", message: "Speech recognition permission needed for Mac Speech", severity: .error))
@@ -790,7 +806,14 @@ class AppState: ObservableObject {
         loadAIFormatterSettings()
         loadCommandPanelSettings()
         loadAutoSwitchOfflineSettings()
-        checkAccessibilityPermission(silent: true)
+        // Check permissions — on first launch ever, proactively prompt for accessibility
+        let hasPromptedBefore = UserDefaults.standard.bool(forKey: "hasPromptedAccessibility")
+        if !hasPromptedBefore {
+            UserDefaults.standard.set(true, forKey: "hasPromptedAccessibility")
+            checkAccessibilityPermission(silent: false)
+        } else {
+            checkAccessibilityPermission(silent: true)
+        }
         checkMicrophonePermission()
         checkSpeechPermission()
         
