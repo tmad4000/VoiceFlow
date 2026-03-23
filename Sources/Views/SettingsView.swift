@@ -45,6 +45,9 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openHistory)) { _ in
             selectedTab = 2
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openCommands)) { _ in
+            selectedTab = 1  // Commands tab
+        }
     }
 }
 
@@ -236,8 +239,12 @@ struct GeneralSettingsView: View {
     @State private var deepgramTestStatus: TestStatus = .idle
     @State private var anthropicTestStatus: TestStatus = .idle
     
-    @State private var isAssemblyExpanded = true
+    @State private var isAssemblyExpanded = false  // Collapsed by default to reduce clutter
     @State private var isDeepgramExpanded = false
+    @State private var isAnthropicExpanded = false  // Collapsible like other API keys
+    @State private var isAppearanceExpanded = false
+    @State private var isIdeaFlowExpanded = false
+    @State private var isDebugExpanded = false
 
     enum TestStatus {
         case idle, testing, success, failed(String)
@@ -255,6 +262,9 @@ struct GeneralSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+
+                // Speed Preset Bar - prominent quick access
+                SpeedPresetBar()
 
                 // Speech Providers Section
                 GroupBox {
@@ -343,6 +353,169 @@ struct GeneralSettingsView: View {
                                 Spacer()
                             }
                         }
+
+                        Divider()
+
+                        // Anthropic
+                        DisclosureGroup(isExpanded: $isAnthropicExpanded) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                SecureField("API Key", text: $anthropicApiKeyInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onAppear { anthropicApiKeyInput = appState.anthropicApiKey }
+
+                                HStack {
+                                    Button("Save") {
+                                        appState.saveAnthropicApiKey(anthropicApiKeyInput)
+                                    }
+                                    .disabled(anthropicApiKeyInput.isEmpty)
+
+                                    Button("Test") {
+                                        testAnthropicKey()
+                                    }
+                                    .disabled(anthropicApiKeyInput.isEmpty)
+
+                                    testStatusView(anthropicTestStatus)
+
+                                    if !appState.anthropicApiKey.isEmpty {
+                                        Button("Clear") {
+                                            appState.saveAnthropicApiKey("")
+                                            anthropicApiKeyInput = ""
+                                        }
+                                        .foregroundColor(.red)
+                                    }
+
+                                    Spacer()
+
+                                    Link("Get Key", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
+                                        .font(.system(size: 11))
+                                }
+                            }
+                            .padding(.top, 4)
+                        } label: {
+                            HStack {
+                                Text("Anthropic")
+                                    .font(.system(size: 12, weight: .medium))
+                                if !appState.anthropicApiKey.isEmpty {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                        .font(.system(size: 10))
+                                }
+                                Spacer()
+                            }
+                        }
+                    }
+                    .padding(4)
+                }
+
+                // Dictation Settings (Moved near top per user request)
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Dictation")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        HStack {
+                            Text("Provider")
+                                .font(.system(size: 13))
+                            Spacer()
+                            Picker("", selection: dictationProviderBinding) {
+                                ForEach(DictationProvider.allCases) { provider in
+                                    Text(provider.displayName).tag(provider)
+                                }
+                            }
+                            .frame(width: 180)
+                        }
+
+                        Text("Choose between cloud-based (AssemblyAI, Deepgram) or local Mac speech recognition.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Text(vocabularyBiasProviderNote)
+                            .font(.system(size: 11))
+                            .foregroundColor(vocabularyBiasProviderNoteColor)
+
+                        Toggle("Auto-switch to offline if slow", isOn: autoSwitchOfflineBinding)
+                            .font(.system(size: 13))
+
+                        Text("Automatically use Mac Speech if network latency exceeds 500ms.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Divider()
+
+                        HStack {
+                            Text("Microphone")
+                                .font(.system(size: 13))
+                            Spacer()
+                            InputDevicePicker(selectedDeviceID: $appState.selectedInputDeviceId) {
+                                // On change, save (the binding updates the state, but we need to persist)
+                                appState.saveInputDevice($0)
+                            }
+                            .frame(width: 180)
+                        }
+                        
+                        Text("Select which microphone to use for dictation.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Divider()
+
+                        Toggle("Live Dictation", isOn: liveDictationBinding)
+                            .font(.system(size: 13))
+
+                        Text("Type words as they become final (lower latency, but disables punctuation).")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        if appState.liveDictationEnabled {
+                            Toggle("Aggressive Mode", isOn: aggressiveLiveModeBinding)
+                                .font(.system(size: 13))
+                                .padding(.leading, 16)
+
+                            Text("Type immediately from partials - fastest but may briefly show corrections.")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .padding(.leading, 16)
+
+                            if appState.aggressiveLiveMode {
+                                Toggle("Allow Corrections", isOn: aggressiveAllowCorrectionsBinding)
+                                    .font(.system(size: 13))
+                                    .padding(.leading, 32)
+
+                                Text("Use backspace to fix ASR changes. Disable for terminals (auto-detected).")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                                    .padding(.leading, 32)
+                            }
+                        }
+
+                        Divider()
+
+                        SliderRow(
+                            "Command Delay",
+                            subtitle: "Delay before triggering non-prefixed commands.",
+                            value: commandDelayBinding,
+                            range: 0...500,
+                            step: 50,
+                            unit: " ms"
+                        )
+
+                        Divider()
+
+                        SliderRow(
+                            "Terminal Submit Delay",
+                            subtitle: "Minimum delay before buffered Return in terminal TUIs (Claude Code, etc.).",
+                            value: terminalSubmitDelayBinding,
+                            range: 300...5000,
+                            step: 50,
+                            unit: " ms"
+                        )
+
+                        Toggle("Experimental: AX submit for terminal Enter", isOn: terminalAccessibilitySubmitBinding)
+                            .font(.system(size: 13))
+
+                        Text("Only applies to explicit Enter commands. Dictation newline path is locked to CGEvent for strict ordering.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
                     }
                     .padding(4)
                 }
@@ -364,72 +537,41 @@ struct GeneralSettingsView: View {
                         ))
                         .font(.system(size: 12))
 
-                        if appState.aiFormatterEnabled {
-                            Text("Uses focus context to improve capitalization. Capitalizes after sentences and at the start of new app focus sessions.")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
+                        Text("Uses focus context to improve capitalization. Capitalizes after sentences and at the start of new app focus sessions.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
 
-                            // Warning if no API key
-                            if appState.anthropicApiKey.isEmpty {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .foregroundColor(.orange)
-                                    Text("No API key set - using local heuristics only (basic capitalization)")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.orange)
-                                }
-                                .padding(8)
-                                .background(Color.orange.opacity(0.1))
-                                .cornerRadius(6)
-                            }
-
-                            Divider()
-
-                            HStack {
-                                Text("Anthropic API Key")
-                                    .font(.system(size: 12, weight: .medium))
-                                if !appState.anthropicApiKey.isEmpty {
-                                    Text("(saved)")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.green)
-                                }
-                            }
-
-                            SecureField("Enter your Anthropic API key", text: $anthropicApiKeyInput)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 12))
-                                .onAppear { anthropicApiKeyInput = appState.anthropicApiKey }
-
-                            HStack {
-                                Button("Save") {
-                                    appState.saveAnthropicApiKey(anthropicApiKeyInput)
-                                }
-                                .disabled(anthropicApiKeyInput.isEmpty)
-                                .font(.system(size: 11))
-
-                                Button("Test") {
-                                    testAnthropicKey()
-                                }
-                                .disabled(anthropicApiKeyInput.isEmpty)
-                                .font(.system(size: 11))
-
-                                testStatusView(anthropicTestStatus)
-
-                                if !appState.anthropicApiKey.isEmpty {
-                                    Button("Clear") {
-                                        appState.saveAnthropicApiKey("")
-                                        anthropicApiKeyInput = ""
-                                    }
-                                    .foregroundColor(.red)
+                        if appState.aiFormatterEnabled && appState.anthropicApiKey.isEmpty {
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text("Requires Anthropic API key (set in Speech Providers above)")
                                     .font(.system(size: 11))
-                                }
-
-                                Spacer()
-
-                                Link("Get API Key", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
-                                    .font(.system(size: 11))
+                                    .foregroundColor(.orange)
                             }
+                            .padding(8)
+                            .background(Color.orange.opacity(0.1))
+                            .cornerRadius(6)
                         }
+                    }
+                    .padding(4)
+                }
+
+                // Appearance Section
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Appearance")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        SliderRow(
+                            "Command Panel Font Size",
+                            subtitle: "Text size for Claude Code panel messages.",
+                            value: commandPanelFontSizeBinding,
+                            range: 10...20,
+                            step: 1,
+                            unit: "pt",
+                            formatAsInt: true
+                        )
                     }
                     .padding(4)
                 }
@@ -597,6 +739,48 @@ struct GeneralSettingsView: View {
                     .padding(4)
                 }
 
+                // PTT Popup Settings
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("PTT Popup")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        Toggle("Show PTT popup", isOn: pttPreviewEnabledBinding)
+                            .font(.system(size: 13))
+
+                        Text("Show a floating popup window during push-to-talk dictation (Wispr Flow-style).")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        Toggle("Buffer output until release", isOn: pttBufferedOutputEnabledBinding)
+                            .font(.system(size: 13))
+                            .disabled(!appState.pttPreviewEnabled)
+
+                        Toggle("Stream while popup is visible", isOn: pttStreamWhilePopupEnabledBinding)
+                            .font(.system(size: 13))
+                            .disabled(!appState.pttPreviewEnabled)
+
+                        Toggle("Auto-submit after release", isOn: pttAutoSubmitEnabledBinding)
+                            .font(.system(size: 13))
+
+                        SliderRow(
+                            "Popup Send Delay",
+                            subtitle: "Delay before inserting text after release.",
+                            value: pttCommitDelayMsBinding,
+                            range: 0...1000,
+                            step: 50,
+                            unit: " ms"
+                        )
+                        .opacity(appState.pttPreviewEnabled ? 1 : 0.6)
+                        .disabled(!appState.pttPreviewEnabled)
+
+                        Text("Double-tap PTT: Off/Sleep → On, On → latch dictation (press again to send).")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(4)
+                }
+
                 // Startup Settings
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
@@ -628,6 +812,21 @@ struct GeneralSettingsView: View {
                         Text("Automatically start VoiceFlow when you log in.")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
+
+                        Toggle("Launch Dev Build at Login", isOn: devLaunchAtLoginBinding)
+                            .font(.system(size: 13))
+
+                        if appState.devLaunchAtLogin, let path = Bundle.main.executableURL?.path {
+                            Text("Will launch: \(path)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                        } else {
+                            Text("Start the current dev binary via LaunchAgent when you log in.")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
 
                         Divider()
                         
@@ -678,68 +877,6 @@ struct GeneralSettingsView: View {
                     .padding(4)
                 }
 
-                // Dictation Settings
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Dictation")
-                            .font(.system(size: 13, weight: .semibold))
-
-                        HStack {
-                            Text("Provider")
-                                .font(.system(size: 13))
-                            Spacer()
-                            Picker("", selection: dictationProviderBinding) {
-                                ForEach(DictationProvider.allCases) { provider in
-                                    Text(provider.displayName).tag(provider)
-                                }
-                            }
-                            .frame(width: 180)
-                        }
-
-                        Text("Choose between cloud-based (AssemblyAI, Deepgram) or local Mac speech recognition.")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-
-                        Divider()
-
-                        HStack {
-                            Text("Microphone")
-                                .font(.system(size: 13))
-                            Spacer()
-                            InputDevicePicker(selectedDeviceID: $appState.selectedInputDeviceId) {
-                                // On change, save (the binding updates the state, but we need to persist)
-                                appState.saveInputDevice($0)
-                            }
-                            .frame(width: 180)
-                        }
-                        
-                        Text("Select which microphone to use for dictation.")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-
-                        Divider()
-
-                        Toggle("Live Dictation", isOn: liveDictationBinding)
-                            .font(.system(size: 13))
-
-                        Text("Type words as they become final (lower latency, but disables punctuation).")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-
-                        Divider()
-
-                        SliderRow(
-                            "Command Delay",
-                            subtitle: "Delay before triggering non-prefixed commands.",
-                            value: commandDelayBinding,
-                            range: 0...500,
-                            step: 50,
-                            unit: " ms"
-                        )
-                    }
-                    .padding(4)
-                }
-
                 // Vocabulary Section
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
@@ -749,7 +886,7 @@ struct GeneralSettingsView: View {
                         TextField("Custom words or phrases...", text: vocabularyPromptBinding)
                             .textFieldStyle(.roundedBorder)
 
-                        Text("Comma-separated words or phrases to improve recognition of technical terms, names, or jargon (Online mode only).")
+                        Text("Comma-separated words or phrases to bias recognition of technical terms, names, or jargon. Supported by \(appState.vocabularyBiasSupportedProvidersLabel).")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
@@ -1051,6 +1188,13 @@ struct GeneralSettingsView: View {
         )
     }
 
+    private var devLaunchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { appState.devLaunchAtLogin },
+            set: { appState.saveDevLaunchAtLogin($0) }
+        )
+    }
+
     private var sleepTimerEnabledBinding: Binding<Bool> {
         Binding(
             get: { appState.sleepTimerEnabled },
@@ -1086,10 +1230,31 @@ struct GeneralSettingsView: View {
         )
     }
 
+    private var autoSwitchOfflineBinding: Binding<Bool> {
+        Binding(
+            get: { appState.autoSwitchToOfflineOnHighLatency },
+            set: { appState.saveAutoSwitchOfflineSetting($0) }
+        )
+    }
+
     private var commandDelayBinding: Binding<Double> {
         Binding(
             get: { appState.commandDelayMs },
             set: { appState.saveCommandDelay($0) }
+        )
+    }
+
+    private var terminalSubmitDelayBinding: Binding<Double> {
+        Binding(
+            get: { appState.terminalSubmitDelayMs },
+            set: { appState.saveTerminalSubmitDelay($0) }
+        )
+    }
+
+    private var terminalAccessibilitySubmitBinding: Binding<Bool> {
+        Binding(
+            get: { appState.terminalAccessibilitySubmitEnabled },
+            set: { appState.saveTerminalAccessibilitySubmitEnabled($0) }
         )
     }
 
@@ -1100,11 +1265,45 @@ struct GeneralSettingsView: View {
         )
     }
 
+    private var aggressiveLiveModeBinding: Binding<Bool> {
+        Binding(
+            get: { appState.aggressiveLiveMode },
+            set: { appState.saveAggressiveLiveMode($0) }
+        )
+    }
+
+    private var aggressiveAllowCorrectionsBinding: Binding<Bool> {
+        Binding(
+            get: { appState.aggressiveAllowCorrections },
+            set: { appState.saveAggressiveAllowCorrections($0) }
+        )
+    }
+
     private var vocabularyPromptBinding: Binding<String> {
         Binding(
             get: { appState.vocabularyPrompt },
             set: { appState.saveVocabularyPrompt($0) }
         )
+    }
+
+    private var vocabularyBiasProviderNote: String {
+        if let message = appState.vocabularyBiasUnsupportedMessage {
+            return message
+        }
+        switch appState.dictationProvider {
+        case .deepgram:
+            return "Bias terms sent as Deepgram keywords (Nova-2)."
+        case .online:
+            return "Bias terms supported via AssemblyAI."
+        case .auto:
+            return "Bias terms supported via AssemblyAI when online."
+        case .offline:
+            return "Bias terms aren't supported in Mac Speech (Offline)."
+        }
+    }
+
+    private var vocabularyBiasProviderNoteColor: Color {
+        appState.supportsVocabularyBiasForCurrentProvider ? .secondary : .orange
     }
 
     private var ideaFlowURLBinding: Binding<String> {
@@ -1132,6 +1331,48 @@ struct GeneralSettingsView: View {
         Binding(
             get: { Double(appState.customSilenceThresholdMs) },
             set: { appState.saveCustomSilenceThreshold(Int($0)) }
+        )
+    }
+
+    private var commandPanelFontSizeBinding: Binding<Double> {
+        Binding(
+            get: { appState.commandPanelFontSize },
+            set: { appState.saveCommandPanelFontSize($0) }
+        )
+    }
+
+    private var pttPreviewEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { appState.pttPreviewEnabled },
+            set: { appState.savePTTPreviewEnabled($0) }
+        )
+    }
+
+    private var pttBufferedOutputEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { appState.pttBufferedOutputEnabled },
+            set: { appState.savePTTBufferedOutputEnabled($0) }
+        )
+    }
+
+    private var pttStreamWhilePopupEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { appState.pttStreamWhilePopupEnabled },
+            set: { appState.savePTTStreamWhilePopupEnabled($0) }
+        )
+    }
+
+    private var pttAutoSubmitEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { appState.pttAutoSubmitEnabled },
+            set: { appState.savePTTAutoSubmitEnabled($0) }
+        )
+    }
+
+    private var pttCommitDelayMsBinding: Binding<Double> {
+        Binding(
+            get: { appState.pttCommitDelayMs },
+            set: { appState.savePTTCommitDelayMs($0) }
         )
     }
 
@@ -1383,6 +1624,26 @@ struct ShortcutHelpRow: View {
     }
 }
 
+/// Quick reference row for common commands
+struct CommandQuickRef: View {
+    let phrase: String
+    let description: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("\"\(phrase)\"")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundColor(.primary)
+            Text("→")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+            Text(description)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+        }
+    }
+}
+
 // MARK: - Permission Row
 
 struct PermissionRow: View {
@@ -1465,6 +1726,105 @@ struct VoiceCommandsSettingsView: View {
         return AppState.specialKeywordList.filter {
             $0.phrase.localizedCaseInsensitiveContains(searchText) ||
             $0.description.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    // MARK: - Quick Reference Section
+
+    private var quickReferenceSection: some View {
+        Section(header: HStack {
+            Image(systemName: "star.fill")
+                .font(.system(size: 9))
+                .foregroundColor(.yellow)
+            Text("Quick Reference")
+        }) {
+            // Keyboard Shortcuts
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 12))
+                        .foregroundColor(.accentColor)
+                    Text("Keyboard Shortcuts")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .padding(.bottom, 4)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    ShortcutHelpRow(keys: "⌃⌥Space", description: "Push-to-Talk (Hold)")
+                    ShortcutHelpRow(keys: "⌃⌥⌘0/1/2", description: "Mode: Off/On/Sleep")
+                    ShortcutHelpRow(keys: "⌃⌘V", description: "Paste last utterance")
+                }
+            }
+            .padding(.vertical, 6)
+
+            // Available Panels
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "rectangle.on.rectangle")
+                        .font(.system(size: 12))
+                        .foregroundColor(.purple)
+                    Text("Open Panels (say these)")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .padding(.bottom, 4)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\"voiceflow open notes panel\"")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    Text("\"voiceflow open transcripts panel\"")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    Text("\"command panel\"")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                }
+                .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 6)
+
+            // Common Commands
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.orange)
+                    Text("Most Used Commands")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .padding(.bottom, 4)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    CommandQuickRef(phrase: "speech off", description: "Pause dictation")
+                    CommandQuickRef(phrase: "wake up", description: "Resume dictation")
+                    CommandQuickRef(phrase: "new line", description: "Insert line break")
+                    CommandQuickRef(phrase: "command [text]", description: "Send to Claude Code")
+                    CommandQuickRef(phrase: "say [text]", description: "Dictate literally")
+                }
+            }
+            .padding(.vertical, 6)
+
+            // Syntax Tips
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "lightbulb.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.green)
+                    Text("Tips")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .padding(.bottom, 4)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("• Most commands work anywhere in your speech")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    Text("• Mode commands must be at the **start** of utterance")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    Text("• \"say\" disables command detection for that phrase")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.vertical, 6)
         }
     }
 
@@ -1555,6 +1915,11 @@ struct VoiceCommandsSettingsView: View {
 
             // Command list
             List {
+                // Quick Reference section (always visible at top)
+                if sectionFilter == .all {
+                    quickReferenceSection
+                }
+
                 // System Commands at top (pinned)
                 if sectionFilter == .all || sectionFilter == .system {
                     Section(header: HStack {
@@ -2262,29 +2627,32 @@ struct ShortcutRecorder: View {
     @State private var isPressed = false
     @State private var monitor: Any?
     @State private var activityMonitor: Any?
-    
+    @State private var previousShortcut: KeyboardShortcut?  // For cancel support
+
     var body: some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 13))
-            Spacer()
-            Button(action: {
-                if isRecording {
-                    stopRecording()
-                } else {
-                    startRecording()
+        VStack(alignment: .trailing, spacing: 2) {
+            HStack {
+                Text(label)
+                    .font(.system(size: 13))
+                Spacer()
+                Button(action: {
+                    if isRecording {
+                        cancelRecording()
+                    } else {
+                        startRecording()
+                    }
+                }) {
+                    Text(isRecording ? "Type shortcut... (Esc to cancel)" : shortcut.description)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(isRecording ? Color.accentColor : (isPressed ? Color.green : Color.secondary.opacity(0.1)))
+                        .foregroundColor(isRecording || isPressed ? .white : .primary)
+                        .cornerRadius(4)
+                        .animation(.easeInOut(duration: 0.1), value: isPressed)
                 }
-            }) {
-                Text(isRecording ? "Type shortcut..." : shortcut.description)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(isRecording ? Color.accentColor : (isPressed ? Color.green : Color.secondary.opacity(0.1)))
-                    .foregroundColor(isRecording || isPressed ? .white : .primary)
-                    .cornerRadius(4)
-                    .animation(.easeInOut(duration: 0.1), value: isPressed)
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .onAppear {
             startActivityMonitoring()
@@ -2333,43 +2701,69 @@ struct ShortcutRecorder: View {
     private func startRecording() {
         // Stop monitoring while recording to avoid confusion
         stopActivityMonitoring()
-        
+
+        // Save current shortcut for cancel
+        previousShortcut = shortcut
+
         isRecording = true
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
             let keyCode = event.keyCode
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            
+
+            // Handle Escape key - cancel and restore previous shortcut
+            if event.type == .keyDown && keyCode == 53 {  // 53 = Escape key
+                cancelRecording()
+                return nil
+            }
+
             // Handle pure modifier release (Stop recording)
             if event.type == .flagsChanged && flags.isEmpty {
                 stopRecording()
                 return nil
             }
-            
+
             // Map modifiers
             var modifiers: KeyboardModifiers = []
             if flags.contains(.control) { modifiers.insert(.control) }
             if flags.contains(.option) { modifiers.insert(.option) }
             if flags.contains(.shift) { modifiers.insert(.shift) }
             if flags.contains(.command) { modifiers.insert(.command) }
-            
+
             let newShortcut = KeyboardShortcut(keyCode: keyCode, modifiers: modifiers)
-            
+
             // Only update shortcut if it's a KeyDown OR if it's a modifier press (flags not empty)
             if event.type == .keyDown || !flags.isEmpty {
                 shortcut = newShortcut
                 onChange?(newShortcut)
             }
-            
+
             if event.type == .keyDown {
                 stopRecording()
             }
-            
+
             return nil // Consume event
         }
     }
-    
+
     private func stopRecording() {
         isRecording = false
+        previousShortcut = nil  // Clear saved shortcut on successful recording
+        if let monitor = monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
+        // Resume monitoring
+        startActivityMonitoring()
+    }
+
+    private func cancelRecording() {
+        // Restore previous shortcut if we have one
+        if let previous = previousShortcut {
+            shortcut = previous
+            onChange?(previous)
+        }
+        isRecording = false
+        previousShortcut = nil
         if let monitor = monitor {
             NSEvent.removeMonitor(monitor)
             self.monitor = nil
@@ -2379,3 +2773,74 @@ struct ShortcutRecorder: View {
     }
 }
 
+// MARK: - Speed Preset Bar
+
+struct SpeedPresetBar: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: "bolt.fill")
+                        .foregroundColor(.yellow)
+                    Text("Speed Preset")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                }
+
+                // Pill buttons
+                HStack(spacing: 8) {
+                    ForEach(SpeedPreset.allCases, id: \.self) { preset in
+                        SpeedPresetPill(
+                            preset: preset,
+                            isSelected: appState.speedPreset == preset,
+                            action: { appState.applySpeedPreset(preset) }
+                        )
+                    }
+                }
+
+                // Current preset description
+                HStack(spacing: 6) {
+                    Image(systemName: appState.speedPreset.icon)
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 11))
+                    Text(appState.speedPreset.description)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(4)
+        }
+    }
+}
+
+struct SpeedPresetPill: View {
+    let preset: SpeedPreset
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: preset.icon)
+                    .font(.system(size: 10, weight: .medium))
+                Text(preset.displayName)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                Capsule()
+                    .fill(isSelected ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.1))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
+            )
+            .foregroundColor(isSelected ? .accentColor : .primary)
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+}

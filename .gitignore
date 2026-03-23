@@ -17,3 +17,8 @@ xcuserdata/
 *.code-workspace
 VoiceFlow-Dev.app/
 VoiceFlow Release.app/
+Version.d
+Version.o
+*.swiftdeps
+*.swiftdeps~
+test_*.swift

@@ -461,6 +461,16 @@ Turn 2: transcript="hello"   → If pasted: screen shows "helhello" (WRONG)
 
 ---
 
+## UI Layout & Window Anchoring Rules
+
+### Top-Edge Anchoring (VoiceFlow-3y6k)
+- **Rule**: Floating panels (like the main transcript panel) MUST anchor to their **top edge** when resizing.
+- **Reason**: When dynamic content like warning banners appear, the window height increases. By default, macOS windows grow upwards from the bottom-left corner. If the window is near the top of the screen (normal for VoiceFlow), this pushes the header and controls off-screen.
+- **Implementation**: Override `setFrame` in `NSPanel` subclasses to maintain `maxY` (top edge) when the height changes.
+- **Visuals**: Resizing the window manually or programmatically should always expand/contract the bottom edge, keeping the top controls fixed in place.
+
+---
+
 ## Floating Panel Window Configuration
 
 Need to set window level to floating after window appears:

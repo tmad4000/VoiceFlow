@@ -1,0 +1,195 @@
+# VoiceFlow Project Context
+
+## Recurring Issues Pattern
+
+When debugging, first check for known recurring issues:
+```bash
+bd list --label recurring
+```
+
+When a bug recurs:
+1. If closed, reopen: `bd reopen <id> --reason "recurred: <context>"`
+2. Add label if not already: `bd label add <id> recurring`
+3. Add/update a "Why this recurs" section in the ticket description
+4. Fix the issue, then close normally
+
+When closing a recurring issue:
+- Document what fixed it THIS time
+- Note whether the root cause was addressed or just the symptom
+- If only the symptom was fixed, note what a permanent fix would require
+
+### Known Recurring Patterns
+
+These are the architectural reasons VoiceFlow bugs tend to recur:
+
+- **Newline/enter at end of utterance** (VoiceFlow-qs3, VoiceFlow-f0d): RESOLVED in Build 142 via CGEvent Unicode injection. History of approaches tried:
+  1. Per-character CGEvents (original): FAILED - characters travel HID→Terminal→PTY→stdin one at a time, TUI may not render before Return arrives
+  2. Clipboard paste Cmd+V (Build 139): FAILED - race conditions: clipboard restore clobbers paste before terminal reads it, multiple rapid utterances overwrite each other's clipboard, user's clipboard disrupted
+  3. **CGEvent Unicode injection (Build 142): WORKS** - `CGEventKeyboardSetUnicodeString` sends multi-character strings in a single keyboard event. No clipboard involved. All terminal typing serialized on `terminalTypingQueue`. Flush delay 900ms (`terminalFlushMinSinceLastEvent`).
+  Key code: `typeText()` calls `postUnicodeStringEvent()` which chunks text into ≤20-char segments and injects via `CGEventKeyboardSetUnicodeString`. `performTerminalTyping()` serializes all terminal operations. Non-terminal apps still use per-character CGEvents.
+- **"Say" escape mode** (VoiceFlow-vw2w, VoiceFlow-xce): RESOLVED in Build 142. Added word-level fallback "say" detection in `preprocessDictation` + `didDetectSay` return flag from `applyKeywordReplacements` that prevents system command stripping when literal mode is active. Also fixed `literalStartWordIndex` mapping for formatted turns.
+- **Warning banner layout** (VoiceFlow-3y6k): Banners push content off the top of the panel. Root cause: fixed-height layout doesn't account for variable warning content.
+- **Volume meter visibility** (VoiceFlow-v3ix): Volume meter disappears or flickers. Root cause: audio session state changes can hide the meter during transitions.
+
+## Issue Tracking
+
+This project uses **beads** for issue tracking with prefix `VoiceFlow-`.
+
+When asked to "make a ticket" or "create an issue" for this project:
+- Use `bd create --title="..." --type=<type> --priority=<N>`
+- Types: task, feature, bug, epic, chore
+- Priorities: 0 (critical) to 4 (minimal), default is 2
+
+Common ticket commands:
+```bash
+bd list --status=open          # See open issues
+bd ready                       # Issues ready to work on
+bd close <id>                  # Close completed issue
+bd update <id> --status=in_progress  # Start work
+```
+
+## Project Overview
+
+VoiceFlow is a macOS voice-to-text dictation app with:
+- Real-time speech-to-text (AssemblyAI, Deepgram, Apple Speech)
+- Voice command recognition ("command open", "new line", etc.)
+- Claude Code integration via "command" voice trigger
+- Floating panel UI with minimal/full modes
+
+## Key Files
+
+- `Sources/Models/AppState.swift` - Main app state and voice command logic
+- `Sources/Services/ClaudeCodeService.swift` - Claude CLI integration
+- `Sources/Views/FloatingPanelView.swift` - Main UI panel
+- `Sources/Views/CommandPanelView.swift` - Claude Code chat panel
+
+## Claude Code CLI Integration
+
+The command panel uses Claude Code CLI for multi-turn conversations. Key pattern:
+
+```bash
+# First message - capture session_id from JSON response
+claude --print --output-format stream-json "message"
+
+# Subsequent messages - use --resume for true context continuity
+claude --resume <session_id> --print --output-format stream-json "followup"
+```
+
+**Why this matters:**
+- `--resume` preserves full conversation context including tool memory
+- Prompt caching kicks in for repeated conversation prefix (cheaper, faster)
+- Don't inject history as text in prompts - defeats caching and truncates
+
+See ticket **VoiceFlow-ta46** for current implementation status.
+
+## Version Management
+
+**Increment build number on every code change.** This helps track which build is running.
+
+Version info in `Sources/Version.swift`:
+```swift
+enum AppVersion {
+    static let version = "0.2.0"  // Semantic version - bump for releases
+    static let build = 43          // Build number - increment on every change
+}
+```
+
+Version is displayed in the floating panel's "..." menu as "VoiceFlow v0.2.0 (43)".
+
+## Running & Testing
+
+```bash
+# Build (SPM)
+swift build
+
+# Run (from DerivedData or build output)
+.build/debug/VoiceFlow
+# or
+/Users/jacobcole/Library/Developer/Xcode/DerivedData/VoiceFlow-bqgsuxwfbyobzkahaxtmfvunkgwd/Build/Products/Debug/VoiceFlow
+```
+
+## CLI Commands for Testing/Debugging
+
+VoiceFlow has a CLI interface for testing and debugging. **Proactively add CLI commands for any functionality that would benefit from automated testing or debugging.**
+
+```bash
+VoiceFlow status              # Get current mode, connection status, transcript
+VoiceFlow mode on|off|sleep   # Change mode remotely
+VoiceFlow force-send          # Trigger force send (types partial or resends last)
+VoiceFlow log 50              # Show last 50 log lines
+VoiceFlow log -f              # Follow log in real-time
+VoiceFlow history 10          # Show last 10 dictation entries
+VoiceFlow history -c          # Include command entries
+VoiceFlow config list         # Show all settings
+```
+
+### When to Add CLI Commands
+
+Add CLI commands proactively when:
+- A feature needs testing without manual UI interaction
+- Debugging requires triggering specific actions programmatically
+- Integration with other tools/scripts would be useful
+- The action could be part of an automated test workflow
+
+The CLI uses distributed notifications to communicate with the running app (see `VoiceFlowCLI.swift` and `VoiceFlowApp.swift`).
+
+## Related Projects & Prior Art
+
+VoiceFlow draws inspiration from established voice control software:
+
+### Dragon NaturallySpeaking (Nuance)
+- Industry standard for professional dictation since 1997
+- Excellent accuracy after training, extensive vocabulary customization
+- Windows-focused, expensive licensing, declining macOS support
+- VoiceFlow differentiator: modern cloud ASR, AI integration, developer-focused
+
+### Talon Voice (https://talonvoice.com)
+- Free/donation-based voice control for coding and accessibility
+- Powerful scripting via Python, eye tracking support
+- Active community creating custom commands/grammars
+- VoiceFlow differentiator: simpler setup, cloud ASR options, Claude integration
+
+### Utter Command (Redstart Systems)
+- Voice command layer that works with Dragon
+- Pioneered "command grammar" patterns for efficient voice control
+- Designed by Kim Patch for RSI/accessibility users
+- VoiceFlow draws from: command prefix patterns, modal voice commands
+
+### Other Notable Projects
+- **Whisper.cpp** - Local Whisper model inference (potential offline mode)
+- **Caster** - Open-source Dragon/Talon alternative
+- **Voice Control (macOS built-in)** - Apple's accessibility voice control
+- **Nerd Dictation** - Linux offline dictation using Vosk
+
+### Command Pattern Analysis
+
+#### Dragon NaturallySpeaking Patterns
+- **Inline commands**: "new paragraph", "cap [word]", "all caps [word]"
+- **Selection**: "select [text]", "select through [text]"
+- **Correction**: "scratch that", "undo that", "spell that"
+- **Navigation**: "go to beginning", "move down 5 lines"
+- **Dictation box**: buffer text then transfer to target app
+
+#### Talon Voice Patterns
+- **Phonetic alphabet**: "air bat cap drum" for a-b-c-d
+- **Formatters**: "snake hello world" → hello_world, "camel" → helloWorld
+- **Chaining**: multiple commands in sequence without pauses
+- **Context-aware**: different commands active in different apps
+- **Noise words**: "pad" for space, "slap" for enter
+
+#### Utter Command Patterns
+- **Command prefix**: "do [action]" to distinguish from dictation
+- **Numbered choices**: "pick 3" to select from disambiguation list
+- **Compound commands**: "do save close" for multiple actions
+- **Natural phrases**: "go to end of line" vs cryptic shortcuts
+- **Chunking**: group related commands under memorable prefixes
+
+### Design Principles from Prior Art
+1. **Modal commands** (Talon/Utter) - "command" prefix to enter command mode
+2. **Continuous dictation** (Dragon) - natural speech flow with punctuation
+3. **Escape hatches** (all) - ways to type literal text that sounds like commands
+4. **Visual feedback** (accessibility) - always show what was recognized
+5. **Phonetic disambiguation** (Talon) - unambiguous spoken forms for symbols
+6. **Context sensitivity** (all) - different commands in different apps/modes
+7. **Correction workflows** (Dragon) - "scratch that" and selection commands
+8. **Command chaining** (Talon) - rapid multi-command sequences

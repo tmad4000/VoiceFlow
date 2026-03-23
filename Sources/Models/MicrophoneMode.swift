@@ -45,6 +45,15 @@ enum MicrophoneMode: String, CaseIterable, Identifiable {
         case .on: return "\"speech on\""
         }
     }
+
+    /// Keyboard shortcut for this mode
+    var keyboardShortcut: String {
+        switch self {
+        case .off: return "⌃⌥⌘0"
+        case .on: return "⌃⌥⌘1"
+        case .sleep: return "⌃⌥⌘2"
+        }
+    }
 }
 
 /// Behaviors for the 'On' microphone mode

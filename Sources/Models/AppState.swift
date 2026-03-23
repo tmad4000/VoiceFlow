@@ -76,6 +76,102 @@ enum UtteranceMode: String, CaseIterable, Codable {
     }
 }
 
+/// Speed preset for quick latency configuration
+/// Bundles multiple settings: utterance mode, live dictation, format turns, etc.
+enum SpeedPreset: String, CaseIterable, Codable, Identifiable {
+    case maxSpeed = "max_speed"
+    case balanced = "balanced"
+    case accurate = "accurate"
+    case custom = "custom"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .maxSpeed: return "Max Speed"
+        case .balanced: return "Balanced"
+        case .accurate: return "Accurate"
+        case .custom: return "Custom"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .maxSpeed: return "hare"
+        case .balanced: return "scale.3d"
+        case .accurate: return "tortoise"
+        case .custom: return "slider.horizontal.3"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .maxSpeed: return "Fastest response, may cut off early"
+        case .balanced: return "Good balance of speed and accuracy"
+        case .accurate: return "Waits longer, fewer cutoffs"
+        case .custom: return "Manual configuration"
+        }
+    }
+
+    // Preset configurations
+    var utteranceMode: UtteranceMode {
+        switch self {
+        case .maxSpeed: return .quick
+        case .balanced: return .balanced
+        case .accurate: return .patient
+        case .custom: return .custom
+        }
+    }
+
+    var liveDictationEnabled: Bool {
+        switch self {
+        case .maxSpeed: return true
+        case .balanced, .accurate, .custom: return false
+        }
+    }
+
+    var aggressiveLiveMode: Bool {
+        switch self {
+        case .maxSpeed: return true
+        case .balanced, .accurate, .custom: return false
+        }
+    }
+
+    var formatTurns: Bool {
+        switch self {
+        case .maxSpeed: return false  // ~200ms savings
+        case .balanced, .accurate, .custom: return true
+        }
+    }
+
+    var confidenceThreshold: Double {
+        switch self {
+        case .maxSpeed: return 0.3
+        case .balanced: return 0.7
+        case .accurate: return 0.85
+        case .custom: return 0.7
+        }
+    }
+
+    var silenceThresholdMs: Int {
+        switch self {
+        case .maxSpeed: return 100
+        case .balanced: return 160
+        case .accurate: return 400
+        case .custom: return 160
+        }
+    }
+
+    var maxTurnSilenceMs: Int {
+        switch self {
+        case .maxSpeed: return 800
+        case .balanced: return 1280
+        case .accurate: return 2000
+        case .custom: return 1280
+        }
+    }
+}
+
 /// Dictation provider options
 enum DictationProvider: String, CaseIterable, Codable, Identifiable {
     case auto = "auto"
@@ -95,23 +191,75 @@ enum DictationProvider: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+/// Claude model options for command panel
+enum ClaudeModel: String, CaseIterable, Codable, Identifiable {
+    case opus = "opus"
+    case sonnet = "sonnet"
+    case haiku = "haiku"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .opus: return "Opus (Smartest)"
+        case .sonnet: return "Sonnet (Balanced)"
+        case .haiku: return "Haiku (Fastest)"
+        }
+    }
+
+    var shortName: String {
+        switch self {
+        case .opus: return "Opus"
+        case .sonnet: return "Sonnet"
+        case .haiku: return "Haiku"
+        }
+    }
+
+    var cliFlag: String? {
+        switch self {
+        case .opus: return "opus"
+        case .sonnet: return nil  // Default, no flag needed
+        case .haiku: return "haiku"
+        }
+    }
+}
+
 struct AppWarning: Identifiable {
     let id: String
     let message: String
     let severity: Severity
     let action: (() -> Void)?
     let actionLabel: String?
-    
-    init(id: String, message: String, severity: Severity, action: (() -> Void)? = nil, actionLabel: String? = nil) {
+    let details: String?  // Full error details for expandable view
+
+    init(id: String, message: String, severity: Severity, action: (() -> Void)? = nil, actionLabel: String? = nil, details: String? = nil) {
         self.id = id
         self.message = message
         self.severity = severity
         self.action = action
         self.actionLabel = actionLabel
+        self.details = details
     }
-    
+
     enum Severity {
         case warning, error
+    }
+}
+
+/// A custom vocabulary entry that maps a spoken phrase to a written form
+struct VocabularyEntry: Identifiable, Codable, Equatable {
+    var id: UUID
+    var spokenPhrase: String      // What the user says (e.g., "jacob cole")
+    var writtenForm: String       // What gets typed (e.g., "Jacob Cole")
+    var category: String?         // Optional category for organization
+    var isEnabled: Bool           // Whether this entry is active
+
+    init(id: UUID = UUID(), spokenPhrase: String, writtenForm: String, category: String? = nil, isEnabled: Bool = true) {
+        self.id = id
+        self.spokenPhrase = spokenPhrase
+        self.writtenForm = writtenForm
+        self.category = category
+        self.isEnabled = isEnabled
     }
 }
 
@@ -121,6 +269,9 @@ class AppState: ObservableObject {
     @Published var microphoneMode: MicrophoneMode = .off
     @Published var currentTranscript: String = ""
     @Published var recentTurns: [TranscriptTurn] = []
+
+    /// Preserved transcript from Sleep mode - allows force send to type text that was transcribed while in Sleep mode
+    private var lastSleepModeTranscript: String = ""
     @Published var isolatedSpeakerId: Int? = nil
     @Published var isConnected: Bool = false
 
@@ -145,11 +296,18 @@ class AppState: ObservableObject {
     @Published var apiKey: String = ""
     @Published var deepgramApiKey: String = ""
     @Published var voiceCommands: [VoiceCommand] = VoiceCommand.defaults
+    @Published var customVocabulary: [VocabularyEntry] = []
     @Published var isPanelVisible: Bool = true
     @Published var isPanelMinimal: Bool = false
     @Published var currentWords: [TranscriptWord] = []
     @Published var commandDelayMs: Double = 50
+    @Published var terminalSubmitDelayMs: Double = 1000
+    @Published var terminalSimpleSubmitEnabled: Bool = true
+    @Published var terminalSimpleSubmitPauseMs: Double = 1000
+    @Published var terminalAccessibilitySubmitEnabled: Bool = false
     @Published var liveDictationEnabled: Bool = false
+    @Published var aggressiveLiveMode: Bool = false  // Type immediately from partials, correct if changed
+    @Published var aggressiveAllowCorrections: Bool = true  // Allow backspace corrections (disable for terminals)
     @Published var audioLevel: Float = 0.0
     @Published var isAccessibilityGranted: Bool = false
     @Published var isMicrophoneGranted: Bool = false
@@ -157,6 +315,9 @@ class AppState: ObservableObject {
     @Published var utteranceMode: UtteranceMode = .balanced
     @Published var customConfidenceThreshold: Double = 0.7
     @Published var customSilenceThresholdMs: Int = 160
+    @Published var customMaxTurnSilenceMs: Int = 1280
+    @Published var formatTurnsEnabled: Bool = true
+    @Published var speedPreset: SpeedPreset = .balanced
     @Published var activeBehavior: ActiveBehavior = .mixed
     @Published var lastCommandName: String? = nil
     @Published var isCommandFlashActive: Bool = false
@@ -171,13 +332,15 @@ class AppState: ObservableObject {
     @Published var isOffline: Bool = false
     @Published var connectionLatencyMs: Int? = nil
     @Published var isLatencyDegraded: Bool = false
+    @Published var systemThermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
     @Published var dictationProvider: DictationProvider = .auto
     @Published var sleepTimerEnabled: Bool = true
     @Published var sleepTimerMinutes: Double = 15
     @Published var autoOffEnabled: Bool = true
     @Published var autoOffMinutes: Double = 30
-    @Published var launchMode: MicrophoneMode = .sleep
+    @Published var launchMode: MicrophoneMode = .off
     @Published var launchAtLogin: Bool = false
+    @Published var devLaunchAtLogin: Bool = false
     @Published var selectedInputDeviceId: String? = nil
     @Published var isNewerBuildAvailable: Bool = false
     @Published var settingsSearchText: String = ""
@@ -191,17 +354,87 @@ class AppState: ObservableObject {
     @Published var modeOnShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_1), modifiers: [.control, .option, .command])
     @Published var modeSleepShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_2), modifiers: [.control, .option, .command])
     @Published var modeOffShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_0), modifiers: [.control, .option, .command])
-    
+    @Published var commandPanelShortcut: KeyboardShortcut = KeyboardShortcut(keyCode: UInt16(kVK_ANSI_C), modifiers: [.control, .option])  // Ctrl+Opt+C
+
     #if DEBUG
     @Published var isDebugMode: Bool = true
     #else
     @Published var isDebugMode: Bool = false
     #endif
     @Published var showCompactError: Bool = false
+    @Published var dismissedWarningIds: Set<String> = []  // Temporarily dismissed warnings
 
     // AI Formatter
     @Published var aiFormatterEnabled: Bool = true
     @Published var anthropicApiKey: String = ""
+
+    // MARK: - Command Panel (Claude Code Integration)
+    @Published var isCommandPanelVisible: Bool = false
+    @Published var isNotesPanelVisible: Bool = false
+    @Published var isTranscriptsPanelVisible: Bool = false
+    @Published var isTicketsPanelVisible: Bool = false
+    @Published var isVocabularyPanelVisible: Bool = false
+    @Published var commandMessages: [CommandMessage] = []
+    @Published var commandInput: String = ""
+    @Published var commandMessageQueue: [String] = []
+    @Published var isClaudeProcessing: Bool = false
+    @Published var isClaudeConnected: Bool = false
+    @Published var commandWorkingDirectory: String = "~/code/ai-os-apple-data/workspace"
+    @Published var commandError: String?
+    @Published var inlineCommandResponse: CommandMessage?
+    @Published var showInlineResponse: Bool = false
+    @Published var claudeModel: ClaudeModel = .sonnet
+    @Published var claudeDebugLog: [String] = []
+    @Published var showClaudeDebugPanel: Bool = false
+    @Published var commandPanelFontSize: Double = 14.0  // Default font size for command panel text
+
+    // Session management
+    @Published var claudeSessions: [ClaudeSession] = []
+    @Published var currentSessionId: String?
+
+    // Extended command capture mode ("long command")
+    @Published var isExtendedCommandMode: Bool = false
+    private var extendedCommandBuffer: String = ""
+    private var extendedCommandPauseTimer: Timer?
+    private let extendedCommandPauseThreshold: TimeInterval = 10.0  // 10 seconds of silence
+
+    // Audio recording mode ("voiceflow start recording")
+    @Published var isRecordingAudio: Bool = false
+    private var recordingAudioBuffer: [Data] = []
+    private var recordingStartTime: Date?
+    private let recordingsDirectory: URL = {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let dir = docs.appendingPathComponent("VoiceFlow/Recordings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    // Note-taking modes
+    @Published var isCapturingNote: Bool = false           // Single utterance note
+    @Published var isCapturingLongNote: Bool = false       // Timeout-based long note
+    @Published var isContinuousNote: Bool = false          // Start/stop continuous note
+    private var noteBuffer: String = ""
+    private var notePauseTimer: Timer?
+    private let notePauseThreshold: TimeInterval = 10.0    // 10 seconds for long note
+    private let notesDirectory: URL = {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let dir = docs.appendingPathComponent("VoiceFlow/Notes", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    // Transcribing mode ("voiceflow start transcribing")
+    @Published var isTranscribing: Bool = false
+    private var transcriptBuffer: String = ""
+    private let transcriptsDirectory: URL = {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let dir = docs.appendingPathComponent("VoiceFlow/Transcripts", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    var claudeCodeService: ClaudeCodeService?
+
     let focusContextManager = FocusContextManager()
     private(set) lazy var aiFormatterService: AIFormatterService = {
         AIFormatterService(focusContext: focusContextManager)
@@ -220,7 +453,6 @@ class AppState: ObservableObject {
         ("microphone off", "Turn microphone completely Off"),
         ("stop dictation", "Turn microphone completely Off"),
         ("cancel that", "Undo last keyboard command"),
-        ("no wait", "Undo last keyboard command"),
         ("submit dictation", "Force finalize and type current speech"),
         ("send dictation", "Force finalize and type current speech"),
         ("window recent", "Switch to previous application"),
@@ -231,7 +463,34 @@ class AppState: ObservableObject {
         ("focus [app]", "Switch to a running application by name"),
         ("press [modifier] [key]", "Press a keyboard shortcut (e.g., \"press command x\")"),
         ("spell [text]", "Type characters one-by-one without spaces"),
-        ("save to idea flow", "Copy last dictation and open Idea Flow")
+        ("save to idea flow", "Copy last dictation and open Idea Flow"),
+        ("command open", "Open the Claude Code command panel"),
+        ("command close", "Close the Claude Code command panel"),
+        ("command [text]", "Execute command immediately via Claude Code"),
+        ("long command [text]", "Start extended voice command (10s pause or 'stop command' to finish)"),
+        ("stop command", "End extended voice command capture"),
+        ("stop listening", "End extended voice command capture (alternate)"),
+        ("are you listening", "Confirm VoiceFlow is active with audio/visual feedback"),
+        ("are you there", "Confirm VoiceFlow is active (alternate)"),
+        ("voiceflow start recording", "Start recording audio to a WAV file"),
+        ("voiceflow stop recording", "Stop recording and save audio file"),
+        ("take a note [text]", "Capture a single utterance as a note"),
+        ("voiceflow make a note [text]", "Capture a single utterance as a note"),
+        ("voiceflow make a long note", "Start extended note (10s pause to finish)"),
+        ("voiceflow start making a note", "Start continuous note-taking"),
+        ("voiceflow stop making a note", "Stop continuous note-taking and save"),
+        ("voiceflow start transcribing", "Start continuous transcription"),
+        ("voiceflow stop transcribing", "Stop transcription and save"),
+        ("voiceflow open notes", "Open Notes folder in Finder"),
+        ("voiceflow open notes panel", "Open the Notes panel"),
+        ("voiceflow open transcripts panel", "Open the Transcripts panel"),
+        ("voiceflow vocabulary", "Open the Custom Vocabulary panel"),
+        ("voiceflow open vocabulary", "Open the Custom Vocabulary panel"),
+        ("voiceflow open recordings", "Open Recordings folder in Finder"),
+        ("voiceflow open transcripts", "Open Transcripts folder in Finder"),
+        ("voiceflow send", "Retype/paste the last utterance"),
+        ("voiceflow debug marker [note]", "Write a timestamped debug marker to local logs"),
+        ("debug marker [note]", "Write a timestamped debug marker to local logs")
     ]
 
     /// Special dictation keywords (not commands)
@@ -257,7 +516,9 @@ class AppState: ObservableObject {
         ("open bracket", "Insert ["),
         ("close bracket", "Insert ]"),
         ("open brace", "Insert {"),
-        ("close brace", "Insert }")
+        ("close brace", "Insert }"),
+        ("backspace", "Delete previous character"),
+        ("backspace N", "Delete N characters (e.g., \"backspace 3\", \"backspace five\")")
     ]
 
     var panelVisibilityHandler: ((Bool) -> Void)?
@@ -266,24 +527,18 @@ class AppState: ObservableObject {
     var activeWarnings: [AppWarning] {
         var warnings: [AppWarning] = []
 
-        // Connection/API errors - show prominently
+        // Connection/API errors - show the actual error, not assumptions
         if let error = errorMessage {
-            let isAuthError = error.lowercased().contains("unauthorized") || error.lowercased().contains("invalid")
-            let message: String
-            if isAuthError {
-                // Determine which service is active to show specific API key name
-                switch dictationProvider {
-                case .deepgram:
-                    message = "Invalid Deepgram API Key - check Settings"
-                case .online, .auto:
-                    message = "Invalid AssemblyAI API Key - check Settings"
-                case .offline:
-                    message = "API Error - check Settings"
-                }
-            } else {
-                message = error
+            // Add service context but show actual error
+            let serviceName: String
+            switch dictationProvider {
+            case .deepgram: serviceName = "Deepgram"
+            case .online, .auto: serviceName = "AssemblyAI"
+            case .offline: serviceName = "Speech"
             }
-            warnings.append(AppWarning(id: "connection_error", message: message, severity: .error))
+            // Show actual error with service prefix for context
+            let message = "[\(serviceName)] \(error)"
+            warnings.append(AppWarning(id: "connection_error", message: message, severity: .error, details: error))
         }
 
         // Key checks
@@ -296,10 +551,26 @@ class AppState: ObservableObject {
 
         // Permission checks
         if !isAccessibilityGranted {
-            warnings.append(AppWarning(id: "a11y", message: "Accessibility permission needed for typing", severity: .warning))
+            warnings.append(AppWarning(
+                id: "a11y",
+                message: "Accessibility permission needed for typing",
+                severity: .warning,
+                action: { [weak self] in
+                    self?.checkAccessibilityPermission(silent: false)
+                },
+                actionLabel: "Grant Permission"
+            ))
         }
         if !isMicrophoneGranted {
-            warnings.append(AppWarning(id: "mic", message: "Microphone access needed", severity: .error))
+            warnings.append(AppWarning(
+                id: "mic",
+                message: "Microphone access needed",
+                severity: .error,
+                action: { [weak self] in
+                    self?.requestMicrophonePermission()
+                },
+                actionLabel: "Grant Access"
+            ))
         }
         if !isSpeechGranted && (dictationProvider == .offline || effectiveIsOffline) {
             warnings.append(AppWarning(id: "speech", message: "Speech recognition permission needed for Mac Speech", severity: .error))
@@ -312,6 +583,15 @@ class AppState: ObservableObject {
             } else {
                 warnings.append(AppWarning(id: "network_offline", message: "Network offline — switch to Mac Speech (Offline) or set provider to Auto.", severity: .warning))
             }
+        }
+
+        if let message = vocabularyBiasUnsupportedMessage {
+            warnings.append(AppWarning(
+                id: "vocab_bias_unsupported",
+                message: message,
+                severity: .warning,
+                actionLabel: "Open Settings"
+            ))
         }
 
         if effectiveIsOffline, supportsOnDeviceSpeech == false {
@@ -330,7 +610,28 @@ class AppState: ObservableObject {
             ))
         }
 
-        return warnings
+        // System thermal state warning - CPU under heavy load affects dictation quality
+        if systemThermalState == .serious {
+            warnings.append(AppWarning(
+                id: "thermal_serious",
+                message: "System under load — dictation may be degraded",
+                severity: .warning
+            ))
+        } else if systemThermalState == .critical {
+            warnings.append(AppWarning(
+                id: "thermal_critical",
+                message: "System overheating — dictation quality affected",
+                severity: .error
+            ))
+        }
+
+        // Filter out temporarily dismissed warnings
+        return warnings.filter { !dismissedWarningIds.contains($0.id) }
+    }
+
+    /// Temporarily dismiss a warning (will reappear on next session or if condition changes)
+    func dismissWarning(id: String) {
+        dismissedWarningIds.insert(id)
     }
 
     private var dictgramIsRequired: Bool {
@@ -359,10 +660,13 @@ class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var sleepTimer: Timer?
     private var autoOffTimer: Timer?
+    private var autoSubmitTimer: Timer?
+    @Published var autoSubmitEnabled: Bool = false  // Auto-press Enter after utterance + silence
+    @Published var autoSubmitDelaySeconds: Double = 3.0  // Seconds of silence before auto-submit
+    @Published var trailingNewlineSendsEnter: Bool = true  // "newline" at end of utterance sends Enter key
     private var lastExecutedEndWordIndexByCommand: [String: Int] = [:]
     private var currentUtteranceHadCommand = false
     private var currentUtteranceIsLiteral = false
-    private var pendingLiteralMode = false  // Persists "say" literal mode across turn boundaries
     private var literalStartWordIndex: Int = 0  // Word index AFTER "say" keyword
     private var lastHaltingCommandEndIndex = -1
     private var wakeUpTime: Date?
@@ -380,28 +684,74 @@ class AppState: ObservableObject {
     private let keywordFlashDurationSeconds: TimeInterval = 1.6
     private let keywordMaxGapSeconds: TimeInterval = 1.2
     private let typingFlushDelaySeconds: TimeInterval = 0.12
+    // Terminal typing timing (Unicode injection + submit)
+    private let terminalInlineReturnMinDelay: TimeInterval = 0.10
+    private let terminalPostReturnDelay: TimeInterval = 0.10
+    private let terminalFlushBaseDelay: TimeInterval = 0.10
+    private let terminalSplitNewlineFollowupWindow: TimeInterval = 3.0
+    private let terminalNewlineOnlyAbsoluteMinDelay: TimeInterval = 0.15
+    private let terminalUnicodeChunkLength = 30
     private let latencyWarningThresholdMs = 1500
     private let latencyRecoveryThresholdMs = 900
+    private let autoSwitchOfflineThresholdMs = 500  // Auto-switch to offline if latency exceeds this
+    @Published var autoSwitchToOfflineOnHighLatency = false  // Toggle for auto-switch feature
+    private var didAutoSwitchToOffline = false  // Track if we auto-switched this session
     private var didTriggerSayKeyword = false
     private var turnHandledBySpecialCommand = false  // Set by spell, focus to prevent dictation
     private var typedFinalWordCount = 0
     private var didTypeDictationThisUtterance = false
     private var hasTypedInSession = false  // Tracks if we've typed anything since going On
-    private var pendingPTTSleep = false  // When true, switch to sleep after receiving endOfTurn
-    private var pttSleepTimeoutTask: Task<Void, Never>?  // Fallback timeout for PTT sleep
+    // Aggressive live mode tracking
+    private var lastTypedPartialWords: [String] = []  // Words we've typed from partials
+    private var lastTypedPartialText: String = ""  // Full text typed (for backspace calculation)
+    @Published var isPTTProcessing = false  // When true, waiting for finalized text before PTT return
+    @Published var isPTTSessionActive = false  // True while buffering a PTT session
+    @Published var isPTTSticky = false  // True when PTT is latched (double-tap)
+    @Published var isPTTPreviewVisible = false  // Controls PTT preview bubble visibility
+    @Published var pttBufferedText: String = ""  // Buffered dictation for PTT commit
+    @Published var pttBufferedOutputEnabled = true  // Wispr-style: buffer and send on release
+    @Published var pttPreviewEnabled = true  // Show PTT popup during dictation
+    @Published var pttStreamWhilePopupEnabled = false  // Stream while popup visible
+    @Published var pttCommitDelayMs: Double = 0  // Delay before typing buffered text
+    @Published var pttAutoSubmitEnabled = false  // Auto-press Enter after PTT utterance finishes
+    private var pttSleepTimeoutTask: Task<Void, Never>?  // Fallback timeout for PTT return
+    private var pttReturnMode: MicrophoneMode?  // Target mode after PTT finalization
+    @Published var isPTMMuted = false  // Push-to-mute: temporarily mute when key held in On mode
+    var lastPTTKeyDownTime: Date?  // For double-tap detection
+
+    // PTT timestamp tracking - filters words to only include those within PTT time window
+    private var streamStartTime: Date?  // When audio stream started (for calculating stream-relative times)
+    private var pttPressStreamTime: Double?  // Stream-relative timestamp when PTT was pressed
+    private var pttReleaseStreamTime: Double?  // Stream-relative timestamp when PTT was released
+    private var isPTTActive = false  // True while PTT key is held down
     private var forceEndPending = false
     private var forceEndRequestedAt: Date?
     private let forceEndTimeoutSeconds: TimeInterval = 2.0
     private var lastTypedTurnOrder = -1
     private var suppressNextAutoCap = false
     private var lastKeyEventTime: Date?  // For consistent Return key timing across typeText calls
+    private var lastTerminalTextTypeCompletionTime: Date?  // End time of the last terminal typeText call that injected characters
+    private var terminalTextBuffer: String = "" // Buffers live dictation for terminals until newline or EOT
     private var bufferedTerminalNewlines: Int = 0  // Newlines to send after utterance ends (terminal mode)
+    private var terminalSubmitAttemptCounter: Int = 0  // Correlates newline submit attempts in logs
+    private let terminalTypingQueue = DispatchQueue(label: "com.voiceflow.terminalTyping")
+    private let terminalTypingQueueKey = DispatchSpecificKey<Void>()
 
     // Cross-utterance keyword state: tracks partial keywords that span utterance boundaries
     // e.g., "new" at end of one utterance + "line" at start of next = "new line"
     private var pendingCrossUtteranceKeyword: String? = nil
     private var pendingCrossUtteranceTime: Date? = nil
     private let crossUtteranceKeywordWindowSeconds: TimeInterval = 2.0  // Max time to wait for continuation
+    private let crossUtteranceNewlineEnabled: Bool = false  // Simplicity mode: avoid split-word "new" + "line" rewriting
+    private let terminalAtomicTrailingSubmitEnabled: Bool = true  // Re-enabled: prior stable behavior for trailing terminal newline submit
+
+    private var shouldUseLegacyPTT: Bool {
+        !pttPreviewEnabled
+    }
+
+    private var shouldBufferPTTOutput: Bool {
+        pttPreviewEnabled && pttBufferedOutputEnabled && !pttStreamWhilePopupEnabled
+    }
 
     /// Effective confidence threshold based on mode
     var effectiveConfidenceThreshold: Double {
@@ -411,6 +761,11 @@ class AppState: ObservableObject {
     /// Effective silence threshold based on mode
     var effectiveSilenceThresholdMs: Int {
         utteranceMode == .custom ? customSilenceThresholdMs : utteranceMode.silenceThresholdMs
+    }
+
+    /// Effective max turn silence based on speed preset
+    var effectiveMaxTurnSilenceMs: Int {
+        speedPreset == .custom ? customMaxTurnSilenceMs : speedPreset.maxTurnSilenceMs
     }
 
     /// Whether the app should use the offline provider based on settings and connectivity
@@ -423,16 +778,25 @@ class AppState: ObservableObject {
     }
 
     init() {
+        terminalTypingQueue.setSpecific(key: terminalTypingQueueKey, value: ())
         loadAPIKey()
         loadVoiceCommands()
+        loadCustomVocabulary()
         loadCommandDelay()
+        loadTerminalSubmitDelay()
+        loadTerminalSimpleSubmitSettings()
+        loadTerminalAccessibilitySubmitSetting()
         loadLiveDictationEnabled()
+        loadAggressiveLiveMode()
+        loadAggressiveAllowCorrections()
         loadUtteranceSettings()
         loadActiveBehavior()
         loadLaunchMode()
         loadLaunchAtLogin()
+        loadDevLaunchAtLogin()
         loadInputDevice()
         loadShortcuts()
+        loadPTTSettings()
         loadDictationProvider()
         loadDictationHistory()
         loadVocabularyPrompt()
@@ -440,7 +804,16 @@ class AppState: ObservableObject {
         loadSleepTimerSettings()
         loadAutoOffSettings()
         loadAIFormatterSettings()
-        checkAccessibilityPermission(silent: true)
+        loadCommandPanelSettings()
+        loadAutoSwitchOfflineSettings()
+        // Check permissions — on first launch ever, proactively prompt for accessibility
+        let hasPromptedBefore = UserDefaults.standard.bool(forKey: "hasPromptedAccessibility")
+        if !hasPromptedBefore {
+            UserDefaults.standard.set(true, forKey: "hasPromptedAccessibility")
+            checkAccessibilityPermission(silent: false)
+        } else {
+            checkAccessibilityPermission(silent: true)
+        }
         checkMicrophonePermission()
         checkSpeechPermission()
         
@@ -462,12 +835,44 @@ class AppState: ObservableObject {
                     }
                     
                     // If we are currently listening, we need to restart to switch services
-                    if self.microphoneMode != .off {
+                    if self.microphoneMode == .on || self.microphoneMode == .sleep {
                         let currentMode = self.microphoneMode
                         self.logDebug("Restarting services due to network change")
                         self.stopListening()
                         self.setMode(currentMode)
                     }
+                }
+            }
+            .store(in: &cancellables)
+
+        // Monitor thermal state for system performance warnings
+        NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                let newState = ProcessInfo.processInfo.thermalState
+                self.systemThermalState = newState
+                if newState == .serious || newState == .critical {
+                    NSLog("[VoiceFlow] ⚠️ Thermal state changed to \(newState == .critical ? "CRITICAL" : "SERIOUS") - dictation quality may be affected")
+                }
+            }
+            .store(in: &cancellables)
+
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceCenter.publisher(for: NSWorkspace.willSleepNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.logDebug("System sleep detected")
+            }
+            .store(in: &cancellables)
+
+        workspaceCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                self.logDebug("System wake detected - reconnecting speech services")
+                if self.microphoneMode == .on || self.microphoneMode == .sleep {
+                    self.reconnect()
                 }
             }
             .store(in: &cancellables)
@@ -738,6 +1143,12 @@ class AppState: ObservableObject {
         return nil
     }()
 
+    private static let markerTimestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
     func logDebug(_ message: String) {
         let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
         let entry = "[\(timestamp)] \(message)"
@@ -779,6 +1190,16 @@ class AppState: ObservableObject {
         debugLog.removeAll()
     }
 
+    func addDebugMarker(note rawNote: String, source: String = "manual") {
+        let trimmed = rawNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = trimmed.isEmpty ? "no note" : trimmed.replacingOccurrences(of: "\"", with: "'")
+        let isoTimestamp = Self.markerTimestampFormatter.string(from: Date())
+        let markerLine = "[MARKER \(isoTimestamp)] source=\(source) note=\"\(note)\""
+
+        Self.writeToLogFile(markerLine)
+        logDebug("🔖 Debug marker (\(source)): \(note)")
+    }
+
     /// The default Push-to-Talk shortcut description
     static let pttShortcutDescription = "⌃⌥Space (Control+Option+Space)"
 
@@ -809,6 +1230,10 @@ class AppState: ObservableObject {
     }
 
     func restartApp() {
+        // Always restart into Sleep to avoid surprising hot mic after relaunch
+        UserDefaults.standard.set(MicrophoneMode.sleep.rawValue, forKey: "resume_mode")
+        UserDefaults.standard.synchronize()
+
         let executablePath = Bundle.main.executablePath!
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
@@ -828,7 +1253,7 @@ class AppState: ObservableObject {
         restartServicesIfActive()
     }
 
-    func setMode(_ mode: MicrophoneMode, caller: String = #function, file: String = #file, line: Int = #line) {
+    func setMode(_ mode: MicrophoneMode, persist: Bool = true, caller: String = #function, file: String = #file, line: Int = #line) {
         let fileName = (file as NSString).lastPathComponent
         NSLog("[VoiceFlow] setMode called: %@ from %@:%d (%@)", mode.rawValue, fileName, line, caller)
         NSLog("[VoiceFlow] Permissions - a11y: %d, mic: %d, speech: %d", isAccessibilityGranted, isMicrophoneGranted, isSpeechGranted)
@@ -851,6 +1276,16 @@ class AppState: ObservableObject {
 
         let previousMode = microphoneMode
         microphoneMode = mode
+        // Persist current mode so it survives restarts/crashes
+        if persist {
+            let rawValue = mode.rawValue
+            UserDefaults.standard.set(rawValue, forKey: "last_mode")
+            UserDefaults.standard.synchronize()  // Force immediate write
+            // Debug: verify the save worked
+            let savedValue = UserDefaults.standard.string(forKey: "last_mode")
+            NSLog("[VoiceFlow] Saved last_mode: \"%@\" (verified: \"%@\"), domain: %@",
+                  rawValue, savedValue ?? "nil", Bundle.main.bundleIdentifier ?? "unknown")
+        }
         logDebug("Mode changed: \(previousMode.rawValue) -> \(mode.rawValue)")
         NSLog("[VoiceFlow] Mode changed: %@ -> %@", previousMode.rawValue, mode.rawValue)
 
@@ -860,7 +1295,7 @@ class AppState: ObservableObject {
             stopSleepTimer()
         }
 
-        // Auto-off timer runs in both On and Sleep modes
+        // Auto-off timer runs in On and Sleep modes
         if mode == .off {
             stopAutoOffTimer()
         } else {
@@ -873,6 +1308,7 @@ class AppState: ObservableObject {
             currentWords = []
             recentTurns = []
             isolatedSpeakerId = nil
+            lastSleepModeTranscript = ""  // Clear preserved Sleep transcript when waking
             // Mark that we just woke up to prevent the "wake up" phrase from typing
             currentUtteranceHadCommand = true
             wakeUpTime = Date()  // Grace period to ignore residual wake word audio
@@ -957,7 +1393,7 @@ class AppState: ObservableObject {
         let utteranceConfig = UtteranceConfig(
             confidenceThreshold: effectiveConfidenceThreshold,
             silenceThresholdMs: effectiveSilenceThresholdMs,
-            maxTurnSilenceMs: utteranceMode.maxTurnSilenceMs
+            maxTurnSilenceMs: effectiveMaxTurnSilenceMs
         )
         assemblyAIService?.setUtteranceConfig(utteranceConfig)
 
@@ -965,8 +1401,15 @@ class AppState: ObservableObject {
         assemblyAIService?.$isConnected
             .receive(on: DispatchQueue.main)
             .sink { [weak self] connected in
-                self?.isConnected = connected
-                self?.logDebug(connected ? "Connected to AssemblyAI" : "Disconnected from AssemblyAI")
+                guard let self = self else { return }
+                let wasConnected = self.isConnected
+                self.isConnected = connected
+                self.logDebug(connected ? "Connected to AssemblyAI" : "Disconnected from AssemblyAI")
+
+                // DIAGNOSTIC: Track reconnect cycles (investigating clunk sounds during quiet periods)
+                if !wasConnected && connected {
+                    NSLog("[VoiceFlow] 🔄 RECONNECT CYCLE: AssemblyAI reconnected (mode=\(self.microphoneMode.rawValue))")
+                }
             }
             .store(in: &cancellables)
 
@@ -997,7 +1440,9 @@ class AppState: ObservableObject {
 
         // Connect audio output to WebSocket
         audioCaptureManager?.onAudioData = { [weak self] data in
-            self?.assemblyAIService?.sendAudio(data)
+            guard let self = self, !self.isPTMMuted else { return }  // PTM: skip audio when muted
+            self.assemblyAIService?.sendAudio(data)
+            self.bufferAudioForRecording(data)
         }
 
         // Connect audio level for visualization
@@ -1007,11 +1452,15 @@ class AppState: ObservableObject {
 
         // Start services
         assemblyAIService?.setTranscribeMode(transcribeMode)
-        assemblyAIService?.setFormatTurns(!liveDictationEnabled)
+        assemblyAIService?.setFormatTurns(!liveDictationEnabled && formatTurnsEnabled)
         assemblyAIService?.setVocabularyPrompt(effectiveVocabularyPrompt)
         logDebug("Vocabulary: \(effectiveVocabularyPrompt.prefix(100))...")
         assemblyAIService?.connect()
         audioCaptureManager?.startCapture()
+
+        // Record stream start time for PTT timestamp tracking
+        streamStartTime = Date()
+        resetPTTTimestamps()
     }
 
     private func startDeepgram(transcribeMode: Bool) {
@@ -1036,7 +1485,7 @@ class AppState: ObservableObject {
         let utteranceConfig = UtteranceConfig(
             confidenceThreshold: effectiveConfidenceThreshold,
             silenceThresholdMs: effectiveSilenceThresholdMs,
-            maxTurnSilenceMs: utteranceMode.maxTurnSilenceMs
+            maxTurnSilenceMs: effectiveMaxTurnSilenceMs
         )
         deepgramService?.setUtteranceConfig(utteranceConfig)
 
@@ -1076,7 +1525,9 @@ class AppState: ObservableObject {
 
         // Connect audio output to WebSocket
         audioCaptureManager?.onAudioData = { [weak self] data in
-            self?.deepgramService?.sendAudio(data)
+            guard let self = self, !self.isPTMMuted else { return }  // PTM: skip audio when muted
+            self.deepgramService?.sendAudio(data)
+            self.bufferAudioForRecording(data)
         }
 
         // Connect audio level for visualization
@@ -1086,10 +1537,14 @@ class AppState: ObservableObject {
 
         // Start services
         deepgramService?.setTranscribeMode(transcribeMode)
-        deepgramService?.setFormatTurns(!liveDictationEnabled)
-        deepgramService?.setVocabularyPrompt(effectiveVocabularyPrompt)
+        deepgramService?.setFormatTurns(!liveDictationEnabled && formatTurnsEnabled)
+        deepgramService?.setVocabularyTerms(effectiveVocabularyTerms)
         deepgramService?.connect()
         audioCaptureManager?.startCapture()
+
+        // Record stream start time for PTT timestamp tracking
+        streamStartTime = Date()
+        resetPTTTimestamps()
     }
 
     private func startAppleSpeech(transcribeMode: Bool) {
@@ -1112,7 +1567,7 @@ class AppState: ObservableObject {
         let utteranceConfig = UtteranceConfig(
             confidenceThreshold: effectiveConfidenceThreshold,
             silenceThresholdMs: effectiveSilenceThresholdMs,
-            maxTurnSilenceMs: utteranceMode.maxTurnSilenceMs
+            maxTurnSilenceMs: effectiveMaxTurnSilenceMs
         )
         appleSpeechService?.setUtteranceConfig(utteranceConfig)
         
@@ -1143,7 +1598,9 @@ class AppState: ObservableObject {
 
         // Connect audio output to Apple Speech Service
         audioCaptureManager?.onAudioData = { [weak self] data in
-            self?.appleSpeechService?.sendAudio(data)
+            guard let self = self, !self.isPTMMuted else { return }  // PTM: skip audio when muted
+            self.appleSpeechService?.sendAudio(data)
+            self.bufferAudioForRecording(data)
         }
 
         // Connect audio level for visualization
@@ -1155,6 +1612,10 @@ class AppState: ObservableObject {
         appleSpeechService?.startRecognition(addsPunctuation: !liveDictationEnabled)
         audioCaptureManager?.startCapture()
         updateLatency(nil)
+
+        // Record stream start time for PTT timestamp tracking
+        streamStartTime = Date()
+        resetPTTTimestamps()
     }
 
     private func stopListening() {
@@ -1179,24 +1640,40 @@ class AppState: ObservableObject {
             resetSleepTimer()
         }
         // Reset auto-off timer on speech (runs in both On and Sleep modes)
-        if microphoneMode != .off {
+        if microphoneMode == .on || microphoneMode == .sleep {
             resetAutoOffTimer()
         }
-        
+        // Cancel auto-submit timer when new speech arrives
+        cancelAutoSubmitTimer()
+
         // Calculate force end status early
         let isForceEndTurn = forceEndPending && turn.endOfTurn
 
+        // Apply PTT timestamp filter to exclude words outside the PTT time window
+        let filteredWords = filterWordsForPTT(turn.words)
+
         let fallbackTranscript = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
-        if !turn.words.isEmpty {
-            currentWords = turn.words
+        if !filteredWords.isEmpty {
+            currentWords = filteredWords
             if !fallbackTranscript.isEmpty {
-                currentTranscript = fallbackTranscript
+                // Rebuild transcript from filtered words if we removed any
+                if filteredWords.count != turn.words.count {
+                    currentTranscript = assembleDisplayText(from: filteredWords)
+                } else {
+                    currentTranscript = fallbackTranscript
+                }
             } else {
-                currentTranscript = assembleDisplayText(from: turn.words)
+                currentTranscript = assembleDisplayText(from: filteredWords)
             }
-        } else if !fallbackTranscript.isEmpty {
+        } else if !fallbackTranscript.isEmpty && turn.words.isEmpty {
+            // Only use fallback if original turn had no words (not filtered out)
             currentWords = []
             currentTranscript = fallbackTranscript
+        } else if filteredWords.isEmpty && !turn.words.isEmpty {
+            // All words were filtered out by PTT - ignore this turn's content
+            // but still process for timing/state updates
+            currentWords = []
+            currentTranscript = ""
         }
 
         let initialMode = microphoneMode
@@ -1204,13 +1681,16 @@ class AppState: ObservableObject {
             processVoiceCommands(turn)
         }
 
-        // In dictation mode, still check for "say" escape keyword (but skip other commands)
+        // In dictation mode, still check for "say" escape keyword and note-taking commands
         if initialMode == .on && activeBehavior == .dictation && !currentUtteranceIsLiteral {
             detectSayPrefix(turn)
+            detectNoteTakingCommands(turn)
         }
 
         if microphoneMode == .on && activeBehavior != .command {
-            if liveDictationEnabled {
+            if (isPTTSessionActive || isPTTProcessing) && shouldBufferPTTOutput {
+                handleDictationTurn(turn, isForceEnd: isForceEndTurn)
+            } else if liveDictationEnabled {
                 handleLiveDictationTurn(turn, isForceEnd: isForceEndTurn)
             } else {
                 handleDictationTurn(turn, isForceEnd: isForceEndTurn)
@@ -1231,7 +1711,17 @@ class AppState: ObservableObject {
                 }
             }
 
+            // Capture this before reset clears it
+            let shouldAutoSubmit = autoSubmitEnabled && microphoneMode == .on && didTypeDictationThisUtterance
+            let shouldPTTAutoSubmit = pttAutoSubmitEnabled
+                && (isPTTSessionActive || isPTTProcessing)
+                && (didTypeDictationThisUtterance || !pttBufferedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
             if shouldAddToHistory {
+                // Preserve transcript in Sleep mode so force send can use it
+                if microphoneMode == .sleep && !currentTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    lastSleepModeTranscript = currentTranscript
+                }
                 // Flush any buffered terminal newlines before resetting state
                 // This ensures newlines are sent after the full utterance is typed
                 flushBufferedTerminalNewlines()
@@ -1241,13 +1731,37 @@ class AppState: ObservableObject {
             didTriggerSayKeyword = false
             turnHandledBySpecialCommand = false
 
-            // Handle pending PTT sleep - switch to sleep after finalized text is received
-            if pendingPTTSleep {
-                logDebug("PTT: Received finalized text, switching to sleep")
-                pendingPTTSleep = false
-                pttSleepTimeoutTask?.cancel()
-                pttSleepTimeoutTask = nil
-                setMode(.sleep)
+            // Auto-submit: start timer after utterance ends (for vibe coding mode)
+            if shouldAutoSubmit {
+                startAutoSubmitTimer()
+            }
+
+            // Handle pending PTT return - switch to target mode after finalized text is received
+            if isPTTProcessing {
+                if shouldAddToHistory {
+                    let returnMode = pttReturnMode ?? .sleep
+                    logDebug("PTT: Received finalized text, switching to \(returnMode.rawValue)")
+                    isPTTProcessing = false
+                    pttReturnMode = nil
+                    pttSleepTimeoutTask?.cancel()
+                    pttSleepTimeoutTask = nil
+                    let delayNs = UInt64(max(0, pttCommitDelayMs)) * 1_000_000
+                    Task { @MainActor in
+                        if delayNs > 0 {
+                            try? await Task.sleep(nanoseconds: delayNs)
+                        }
+                        if self.shouldBufferPTTOutput {
+                            self.commitPTTBufferIfNeeded()
+                        }
+                        if shouldPTTAutoSubmit {
+                            self.typeText("\n", appendSpace: false)
+                        }
+                        self.isPTTPreviewVisible = false
+                        self.setMode(returnMode)
+                    }
+                } else {
+                    logDebug("PTT: End-of-turn received, waiting for formatted text")
+                }
             }
         }
     }
@@ -1357,6 +1871,10 @@ class AppState: ObservableObject {
         }
 
         var processedText = preprocessDictation(textToType, forceLiteral: isLiteralTurn, words: wordsForKeywords)
+        if isLiteralTurn {
+            NSLog("[VoiceFlow] 🔤 handleDictationTurn literal: raw='%@' -> processed='%@'",
+                  String(textToType.prefix(60)), String(processedText.prefix(60)))
+        }
 
         // Apply AI formatting if enabled (quick local heuristics for now)
         if aiFormatterEnabled {
@@ -1370,12 +1888,43 @@ class AppState: ObservableObject {
         }
 
         let trimmedProcessed = processedText.trimmingCharacters(in: .whitespaces)
+        // DIAGNOSTIC: Log the full dictation path for newline debugging (VoiceFlow-qs3)
+        NSLog("[VoiceFlow] 📝 handleDictationTurn: isFormatted=%@, endOfTurn=%@, turnOrder=%@, rawTranscript='%@', processedText='%@', bufferedNewlines=%d, isTerminal=%@",
+              turn.isFormatted ? "YES" : "NO", turn.endOfTurn ? "YES" : "NO",
+              turn.turnOrder.map { String($0) } ?? "nil",
+              String(rawTranscript.prefix(60)), String(processedText.prefix(60)),
+              bufferedTerminalNewlines, focusContextManager.isCurrentAppTerminal() ? "YES" : "NO")
         guard !trimmedProcessed.isEmpty else {
+            NSLog("[VoiceFlow] ⚠️ handleDictationTurn: processedText EMPTY after preprocessing, bufferedNewlines=%d (will flush at utterance end without typing text)", bufferedTerminalNewlines)
             return
         }
 
         // Track utterance in focus context for future formatting decisions
         focusContextManager.addUtterance(trimmedProcessed)
+
+        // Capture for note-taking/transcription modes
+        if isCapturingNote {
+            captureNoteUtterance(trimmedProcessed)
+        } else if isCapturingLongNote {
+            appendToLongNote(trimmedProcessed)
+        } else if isContinuousNote {
+            appendToContinuousNote(trimmedProcessed)
+        }
+        if isTranscribing {
+            appendToTranscript(trimmedProcessed)
+        }
+
+        if (isPTTSessionActive || isPTTProcessing) && shouldBufferPTTOutput {
+            appendPTTBuffer(processedText)
+            if let turnOrder = turn.turnOrder {
+                lastTypedTurnOrder = turnOrder
+            }
+            if isForceEnd {
+                forceEndPending = false
+                forceEndRequestedAt = nil
+            }
+            return
+        }
 
         typeText(processedText, appendSpace: true)
         if !trimmedProcessed.isEmpty {
@@ -1392,14 +1941,39 @@ class AppState: ObservableObject {
         }
     }
 
-    private func applyKeywordReplacements(_ text: String, words: [TranscriptWord]?, isLiteral: Bool) -> (String, String?) {
-        guard !isLiteral else { return (text, nil) }
+    private func applyKeywordReplacements(_ text: String, words: [TranscriptWord]?, isLiteral: Bool) -> (String, String?, Bool) {
+        guard !isLiteral else { return (text, nil, false) }
         if let words, !words.isEmpty {
             return applyKeywordReplacementsFromWords(words)
         }
 
         var result = text
         var keyword: String? = nil
+
+        func consumeLeadingBackspace(_ input: String) -> (remaining: String, count: Int)? {
+            let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawTokens = trimmed.split(whereSeparator: \.isWhitespace)
+            guard !rawTokens.isEmpty else { return nil }
+            let firstToken = normalizeToken(String(rawTokens[0]))
+            var consumed = 0
+            if firstToken == "backspace" {
+                consumed = 1
+            } else if firstToken == "back", rawTokens.count > 1, normalizeToken(String(rawTokens[1])) == "space" {
+                consumed = 2
+            } else {
+                return nil
+            }
+            var count = 1
+            if rawTokens.count > consumed {
+                let numberToken = normalizeToken(String(rawTokens[consumed]))
+                if let num = parseNumberWord(numberToken) {
+                    count = num
+                    consumed += 1
+                }
+            }
+            let remainder = rawTokens.dropFirst(consumed).joined(separator: " ")
+            return (remainder, count)
+        }
         
         // "no caps" directive (string fallback)
         if let regex = try? NSRegularExpression(pattern: "(?i)^\\s*no\\s*caps\\b[\\.,!?]?\\s*", options: []) {
@@ -1428,6 +2002,12 @@ class AppState: ObservableObject {
                     result = remainder
                 }
             }
+        }
+
+        if let consumed = consumeLeadingBackspace(result) {
+            keyword = keyword ?? (consumed.count == 1 ? "Backspace" : "Backspace \(consumed.count)")
+            sendBackspaceKeypresses(consumed.count)
+            result = consumed.remaining
         }
 
         // Match "new line" or "newline" with optional trailing punctuation
@@ -1554,7 +2134,7 @@ class AppState: ObservableObject {
             result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "$1")
         }
 
-        return (result, keyword)
+        return (result, keyword, false)
     }
 
     private func timeScale(for word: TranscriptWord) -> Double {
@@ -1575,52 +2155,76 @@ class AppState: ObservableObject {
         return max(0, scaledGap) <= keywordMaxGapSeconds
     }
 
-    private func applyKeywordReplacementsFromWords(_ words: [TranscriptWord]) -> (String, String?) {
+    private func applyKeywordReplacementsFromWords(_ words: [TranscriptWord]) -> (String, String?, Bool) {
         var output = ""
         var keyword: String? = nil
         var lowercaseNext = false
         var letterNext = false
         var suppressNextSpace = false  // For "no space" command
+        var escapeNextKeywordLiteral = false  // One-shot escape activated by inline "say"
         let maxTagWords = 4
         var consumedFirstWordForCrossUtterance = false
 
         // === CROSS-UTTERANCE KEYWORD HANDLING ===
-        // Check if we have a pending "new" from the previous utterance and current starts with "line"
-        if let pending = pendingCrossUtteranceKeyword,
+        // Disabled in simplicity mode to avoid out-of-order rewriting of trailing "new".
+        if crossUtteranceNewlineEnabled,
+           let pending = pendingCrossUtteranceKeyword,
            let pendingTime = pendingCrossUtteranceTime,
            Date().timeIntervalSince(pendingTime) < crossUtteranceKeywordWindowSeconds,
            !words.isEmpty {
             let firstToken = normalizeToken(words[0].text)
             if pending == "new" && firstToken == "line" {
                 logDebug("Cross-utterance 'new line' detected! Previous utterance ended with 'new', this one starts with 'line'")
-                // We'll prepend a newline and skip the first word
-                output = "\n"
+                if focusContextManager.isCurrentAppTerminal() {
+                    bufferedTerminalNewlines += 1
+                    NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=cross_utterance terminal=YES action=buffer_flush buffered=%d", bufferedTerminalNewlines)
+                    logDebug("Buffering cross-utterance newline for terminal")
+                } else {
+                    NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=cross_utterance terminal=NO action=inline_newline")
+                    output = "\n"
+                }
                 keyword = "New line"
                 consumedFirstWordForCrossUtterance = true
                 triggerKeywordFlash(name: "New line")
             } else {
-                // The pending keyword wasn't completed, output it
                 logDebug("Cross-utterance keyword '\(pending)' not continued (got '\(firstToken)'), outputting it")
                 output = pending + " "
             }
             pendingCrossUtteranceKeyword = nil
             pendingCrossUtteranceTime = nil
-        } else if pendingCrossUtteranceKeyword != nil {
-            // Pending keyword timed out
+        } else if crossUtteranceNewlineEnabled, pendingCrossUtteranceKeyword != nil {
             logDebug("Cross-utterance keyword timed out")
             if let pending = pendingCrossUtteranceKeyword {
                 output = pending + " "
             }
             pendingCrossUtteranceKeyword = nil
             pendingCrossUtteranceTime = nil
+        } else if !crossUtteranceNewlineEnabled {
+            pendingCrossUtteranceKeyword = nil
+            pendingCrossUtteranceTime = nil
         }
 
-        func appendNewline() {
+        func appendNewline(isTrailing: Bool = false) {
             while output.last == " " {
                 output.removeLast()
             }
-            if output.last != "\n" {
+            // Terminal: always keep \n in output for snappy delivery via typeText segments logic.
+            // Non-terminal trailing: buffer for flush (timing-based)
+            // Mid-utterance: insert inline so typeText sends Enter at the right position
+            if focusContextManager.isCurrentAppTerminal() {
+                if output.last != "\n" {
+                    output.append("\n")
+                }
+                NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=keyword_append terminal=YES action=inline_in_text trailing=%@", isTrailing ? "YES" : "NO")
+            } else if isTrailing && trailingNewlineSendsEnter {
+                bufferedTerminalNewlines += 1
+                NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=keyword_append terminal=NO action=buffer_flush trailing=YES buffered=%d",
+                      bufferedTerminalNewlines)
+                logDebug("Buffering trailing newline (non-terminal, total buffered: \(bufferedTerminalNewlines))")
+            } else if output.last != "\n" {
                 output.append("\n")
+                NSLog("[VoiceFlow] ⏎ NEWLINE_PATH source=keyword_append terminal=NO action=inline_newline trailing=NO")
+                logDebug("Inserting inline newline (non-terminal)")
             }
         }
 
@@ -1696,7 +2300,7 @@ class AppState: ObservableObject {
             let commandStarters: Set<String> = [
                 "window", "focus", "press", "copy", "paste", "cut", "undo", "redo", "select",
                 "save", "tab", "go", "scroll", "cancel", "stop", "microphone", "flow", "speech",
-                "wake", "submit", "send"
+                "submit", "send"
             ]
             return commandStarters.contains(token)
         }
@@ -1746,6 +2350,32 @@ class AppState: ObservableObject {
         while index < words.count {
             let word = words[index]
             let token = normalizeToken(word.text)
+
+            // Inline "say" escape:
+            // - consume "say" itself
+            // - make the next keyword candidate literal
+            // - then resume normal keyword processing
+            if token == "say" {
+                let hasContentAfterSay = words[(index + 1)...].contains { !normalizeToken($0.text).isEmpty }
+                if hasContentAfterSay {
+                    keyword = keyword ?? "Say"
+                    escapeNextKeywordLiteral = true
+                    index += 1
+                    continue
+                } else {
+                    // Standalone "say" is regular dictation text
+                    appendProcessedToken(word.text)
+                    index += 1
+                    continue
+                }
+            }
+
+            if escapeNextKeywordLiteral {
+                appendToken(word.text)
+                escapeNextKeywordLiteral = false
+                index += 1
+                continue
+            }
 
             if token == "no", index + 1 < words.count {
                 let next = words[index + 1]
@@ -1809,8 +2439,19 @@ class AppState: ObservableObject {
 
             if token == "newline" {
                 keyword = keyword ?? "New line"
-                appendNewline()
-                index += 1
+                // Check if trailing: at end OR followed only by punctuation at end
+                let isTrailing = index == words.count - 1 ||
+                    (index + 1 < words.count && isSkippablePunctuation(words[index + 1].text) && index + 1 == words.count - 1)
+                NSLog("[VoiceFlow] ⏎ Newline keyword detected: token='newline', wordIndex=%d, totalWords=%d, isEndOfUtterance=%@",
+                      index, words.count, isTrailing ? "YES" : "no")
+                triggerKeywordFlash(name: "New line")
+                appendNewline(isTrailing: isTrailing)
+                // Skip trailing punctuation if present
+                if index + 1 < words.count && isSkippablePunctuation(words[index + 1].text) {
+                    index += 2
+                } else {
+                    index += 1
+                }
                 continue
             }
 
@@ -1823,8 +2464,14 @@ class AppState: ObservableObject {
                         // Always treat "new line" as a newline command when spoken together
                         // Users can say "say new line" if they want the literal text
                         keyword = keyword ?? "New line"
+                        // Check if this is trailing - "new line" at end, or followed only by punctuation
+                        let isTrailing = index + 1 >= words.count - 1 ||
+                            (index + 2 < words.count && isSkippablePunctuation(words[index + 2].text) && index + 2 == words.count - 1)
+                        NSLog("[VoiceFlow] ⏎ Newline keyword detected: token='new line', wordIndex=%d, totalWords=%d, isEndOfUtterance=%@",
+                              index, words.count, isTrailing ? "YES" : "no")
                         logDebug("Keyword \"new line\" detected at word index \(index), appending newline")
-                        appendNewline()
+                        triggerKeywordFlash(name: "New line")
+                        appendNewline(isTrailing: isTrailing)
                         if index + 2 < words.count, isSkippablePunctuation(words[index + 2].text) {
                             index += 3
                         } else {
@@ -1876,6 +2523,88 @@ class AppState: ObservableObject {
                 }
             }
 
+            // "backspace" or "backspace N" - delete previous character(s) from output
+            if token == "backspace" {
+                var count = 1
+                var wordsConsumed = 1
+
+                // Check if next word is a number (e.g., "backspace 3" or "backspace three")
+                if index + 1 < words.count {
+                    let nextWord = words[index + 1]
+                    let nextToken = normalizeToken(nextWord.text)
+                    if let num = parseNumberWord(nextToken), isKeywordGapAcceptable(previous: word, next: nextWord) {
+                        count = num
+                        wordsConsumed = 2
+                    }
+                }
+
+                keyword = keyword ?? (count == 1 ? "Backspace" : "Backspace \(count)")
+                let toRemove = min(count, output.count)
+                if toRemove > 0 {
+                    output.removeLast(toRemove)
+                }
+                let remaining = count - toRemove
+                if remaining > 0 {
+                    sendBackspaceKeypresses(remaining)
+                }
+                triggerKeywordFlash(name: count == 1 ? "Backspace" : "⌫\(count)")
+                index += wordsConsumed
+                continue
+            }
+
+            // "back space" or "back space N" - two word variant
+            if token == "back", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "space", isKeywordGapAcceptable(previous: word, next: next) {
+                    var count = 1
+                    var wordsConsumed = 2
+
+                    // Check if word after "back space" is a number
+                    if index + 2 < words.count {
+                        let numWord = words[index + 2]
+                        let numToken = normalizeToken(numWord.text)
+                        if let num = parseNumberWord(numToken), isKeywordGapAcceptable(previous: next, next: numWord) {
+                            count = num
+                            wordsConsumed = 3
+                        }
+                    }
+
+                    keyword = keyword ?? (count == 1 ? "Backspace" : "Backspace \(count)")
+                    let toRemove = min(count, output.count)
+                    if toRemove > 0 {
+                        output.removeLast(toRemove)
+                    }
+                    let remaining = count - toRemove
+                    if remaining > 0 {
+                        sendBackspaceKeypresses(remaining)
+                    }
+                    triggerKeywordFlash(name: count == 1 ? "Backspace" : "⌫\(count)")
+                    index += wordsConsumed
+                    continue
+                }
+            }
+
+            // "press enter" / "press return" - sends Enter key (useful for submitting in terminals)
+            if token == "press", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if (nextToken == "enter" || nextToken == "return"), isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Press enter"
+                    NSLog("[VoiceFlow] ⏎ Press enter keyword detected at word index %d", index)
+                    triggerKeywordFlash(name: "Press enter")
+                    // "press enter/return" always sends Enter key (acts as trailing)
+                    appendNewline(isTrailing: true)
+                    // Skip trailing punctuation if present
+                    if index + 2 < words.count && isSkippablePunctuation(words[index + 2].text) {
+                        index += 3
+                    } else {
+                        index += 2
+                    }
+                    continue
+                }
+            }
+
             // Parentheses: "open paren" / "close paren"
             if (token == "open" || token == "left"), index + 1 < words.count {
                 let next = words[index + 1]
@@ -1923,56 +2652,340 @@ class AppState: ObservableObject {
                 }
             }
 
+            // === SPOKEN PUNCTUATION KEYWORDS ===
+            // These allow users to insert punctuation by saying the punctuation name
+
+            // Period / dot / full stop
+            if token == "period" || token == "dot" {
+                keyword = keyword ?? "Period"
+                appendToken(".")
+                index += 1
+                continue
+            }
+            if token == "full", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "stop", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Full stop"
+                    appendToken(".")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Comma
+            if token == "comma" {
+                keyword = keyword ?? "Comma"
+                appendToken(",")
+                index += 1
+                continue
+            }
+
+            // Colon
+            if token == "colon" {
+                keyword = keyword ?? "Colon"
+                appendToken(":")
+                index += 1
+                continue
+            }
+
+            // Semicolon / semi colon
+            if token == "semicolon" {
+                keyword = keyword ?? "Semicolon"
+                appendToken(";")
+                index += 1
+                continue
+            }
+            if token == "semi", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "colon", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Semicolon"
+                    appendToken(";")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Question mark
+            if token == "question", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "mark", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Question mark"
+                    appendToken("?")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Exclamation point / exclamation mark
+            if token == "exclamation", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if (nextToken == "point" || nextToken == "mark"), isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Exclamation point"
+                    appendToken("!")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Dash / hyphen
+            if token == "dash" || token == "hyphen" {
+                keyword = keyword ?? "Dash"
+                appendToken("-")
+                index += 1
+                continue
+            }
+
+            // Quote / double quote
+            if token == "quote" {
+                keyword = keyword ?? "Quote"
+                appendToken("\"")
+                index += 1
+                continue
+            }
+            if token == "double", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "quote", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Double quote"
+                    appendToken("\"")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Single quote / apostrophe
+            if token == "apostrophe" {
+                keyword = keyword ?? "Apostrophe"
+                appendToken("'")
+                index += 1
+                continue
+            }
+            if token == "single", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "quote", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Single quote"
+                    appendToken("'")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Ellipsis
+            if token == "ellipsis" {
+                keyword = keyword ?? "Ellipsis"
+                appendToken("...")
+                index += 1
+                continue
+            }
+
+            // Underscore
+            if token == "underscore" {
+                keyword = keyword ?? "Underscore"
+                appendToken("_")
+                index += 1
+                continue
+            }
+
+            // Asterisk / star
+            if token == "asterisk" || token == "star" {
+                keyword = keyword ?? "Asterisk"
+                appendToken("*")
+                index += 1
+                continue
+            }
+
+            // Ampersand
+            if token == "ampersand" {
+                keyword = keyword ?? "Ampersand"
+                appendToken("&")
+                index += 1
+                continue
+            }
+
+            // Percent / percent sign
+            if token == "percent" {
+                keyword = keyword ?? "Percent"
+                appendToken("%")
+                index += 1
+                continue
+            }
+
+            // Dollar / dollar sign
+            if token == "dollar" {
+                keyword = keyword ?? "Dollar"
+                appendToken("$")
+                index += 1
+                continue
+            }
+
+            // Slash / forward slash
+            if token == "slash" {
+                keyword = keyword ?? "Slash"
+                appendToken("/")
+                index += 1
+                continue
+            }
+            if token == "forward", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "slash", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Forward slash"
+                    appendToken("/")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Backslash / back slash
+            if token == "backslash" {
+                keyword = keyword ?? "Backslash"
+                appendToken("\\")
+                index += 1
+                continue
+            }
+            if token == "back", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "slash", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Backslash"
+                    appendToken("\\")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Pipe / vertical bar
+            if token == "pipe" {
+                keyword = keyword ?? "Pipe"
+                appendToken("|")
+                index += 1
+                continue
+            }
+
+            // Tilde
+            if token == "tilde" {
+                keyword = keyword ?? "Tilde"
+                appendToken("~")
+                index += 1
+                continue
+            }
+
+            // Caret
+            if token == "caret" {
+                keyword = keyword ?? "Caret"
+                appendToken("^")
+                index += 1
+                continue
+            }
+
+            // Backtick / back tick
+            if token == "backtick" {
+                keyword = keyword ?? "Backtick"
+                appendToken("`")
+                index += 1
+                continue
+            }
+            if token == "back", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "tick", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Backtick"
+                    appendToken("`")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Plus / plus sign
+            if token == "plus" {
+                keyword = keyword ?? "Plus"
+                appendToken("+")
+                index += 1
+                continue
+            }
+
+            // Equals / equal sign
+            if token == "equals" || token == "equal" {
+                keyword = keyword ?? "Equals"
+                appendToken("=")
+                index += 1
+                continue
+            }
+
+            // Less than / left angle
+            if token == "less", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "than", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Less than"
+                    appendToken("<")
+                    index += 2
+                    continue
+                }
+            }
+
+            // Greater than / right angle
+            if token == "greater", index + 1 < words.count {
+                let next = words[index + 1]
+                let nextToken = normalizeToken(next.text)
+                if nextToken == "than", isKeywordGapAcceptable(previous: word, next: next) {
+                    keyword = keyword ?? "Greater than"
+                    appendToken(">")
+                    index += 2
+                    continue
+                }
+            }
+
             appendProcessedToken(word.text)
             index += 1
         }
 
         // === CROSS-UTTERANCE PENDING DETECTION ===
-        // Check if output ends with "new" (without "line" following) - set as pending for next utterance
-        // This handles the case where "new line" is split across utterance boundaries
-        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        let outputWords = trimmedOutput.lowercased().split(separator: " ")
-        if let lastWord = outputWords.last, lastWord == "new" {
-            // Check if this "new" is isolated at the end (not part of "new line" which was already processed)
-            // We should only set pending if:
-            // 1. The output ends with "new"
-            // 2. There's no "line" after it (which there shouldn't be if we're here)
-            logDebug("Utterance ends with 'new' - saving as pending for potential cross-utterance 'new line'")
-            pendingCrossUtteranceKeyword = "new"
-            pendingCrossUtteranceTime = Date()
-            // Remove "new" from output - we'll output it later if needed
-            if let range = output.range(of: "new", options: [.backwards, .caseInsensitive]) {
-                // Only remove if it's at the end (possibly with trailing space)
-                let afterNew = output[range.upperBound...]
-                if afterNew.trimmingCharacters(in: .whitespaces).isEmpty {
-                    output = String(output[..<range.lowerBound])
-                    logDebug("Removed trailing 'new' from output, will be handled in next utterance")
+        if crossUtteranceNewlineEnabled {
+            let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let outputWords = trimmedOutput.lowercased().split(separator: " ")
+            if let lastWord = outputWords.last, lastWord == "new" {
+                logDebug("Utterance ends with 'new' - saving as pending for potential cross-utterance 'new line'")
+                pendingCrossUtteranceKeyword = "new"
+                pendingCrossUtteranceTime = Date()
+                if let range = output.range(of: "new", options: [.backwards, .caseInsensitive]) {
+                    let afterNew = output[range.upperBound...]
+                    if afterNew.trimmingCharacters(in: .whitespaces).isEmpty {
+                        output = String(output[..<range.lowerBound])
+                        logDebug("Removed trailing 'new' from output, will be handled in next utterance")
+                    }
                 }
             }
         }
 
-        return (output, keyword)
+        return (output, keyword, false)
     }
 
     private func preprocessDictation(_ text: String, forceLiteral: Bool = false, words: [TranscriptWord]? = nil) -> String {
         var processed = text
         
         // 1. Handle "say" prefix (escape mode)
-        // Use regex to find "say" at the beginning, ignoring optional trailing punctuation and whitespace
+        // Only treat "say" as escape prefix when additional content follows it.
         var isLiteral = forceLiteral
-        let sayPattern = "^say[\\.,?!]?(\\s+|$)"
-        if let regex = try? NSRegularExpression(pattern: sayPattern, options: [.caseInsensitive]),
-           let match = regex.firstMatch(in: processed, options: [], range: NSRange(location: 0, length: processed.utf16.count)) {
+        if let afterSay = hasContentAfterSayPrefix(processed) {
             isLiteral = true
-            // Remove the "say" prefix and the following whitespace/punctuation
-            processed = (processed as NSString).substring(from: match.range.length)
+            processed = afterSay
             if !didTriggerSayKeyword {
                 triggerKeywordFlash(name: "Say")
                 didTriggerSayKeyword = true
             }
-        } else if processed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "say" {
+        } else if !forceLiteral, let words, let first = words.first, normalizeToken(first.text) == "say",
+                  words.dropFirst().contains(where: { !normalizeToken($0.text).isEmpty }) {
+            // Fallback: word-level "say" prefix when transcript doesn't reflect it
             isLiteral = true
-            processed = ""
+            // Best-effort removal of leading "say"
+            let tokens = processed.split(whereSeparator: \.isWhitespace)
+            processed = tokens.dropFirst().joined(separator: " ")
             if !didTriggerSayKeyword {
                 triggerKeywordFlash(name: "Say")
                 didTriggerSayKeyword = true
@@ -1992,52 +3005,62 @@ class AppState: ObservableObject {
             return "" // Handled by processVoiceCommands
         }
 
+        // 1c. Apply custom vocabulary substitutions (only if not literal)
+        if !isLiteral {
+            processed = applyVocabularySubstitutions(processed)
+        }
+
         // 2. Handle inline text replacements (only if not literal)
         if !isLiteral {
-            let (keywordProcessed, keyword) = applyKeywordReplacements(processed, words: words, isLiteral: isLiteral)
+            let (keywordProcessed, keyword, didDetectSay) = applyKeywordReplacements(processed, words: words, isLiteral: isLiteral)
             processed = keywordProcessed
             if let keyword {
                 triggerKeywordFlash(name: keyword)
             }
-
-            // 3. Strip wake-up phrases that might leak through after mode switch
-            let wakeUpPhrases = ["wake up", "microphone on", "flow on"]
-            for phrase in wakeUpPhrases {
-                if processed.lowercased().hasPrefix(phrase) {
-                    processed = String(processed.dropFirst(phrase.count))
-                    processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
-                    break
-                }
+            if didDetectSay {
+                isLiteral = true
             }
 
-            // 4. Handle trailing mode-switch commands if they are at the very end
-            // This allows "Hello world microphone off" to just type "Hello world"
-            let trailingCommands = ["microphone off", "flow off", "stop dictation", "go to sleep", "flow sleep", "submit dictation", "send dictation"]
-            for cmd in trailingCommands {
-                if processed.lowercased().hasSuffix(cmd) {
-                    processed = String(processed.prefix(processed.count - cmd.count))
-                    processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
-                    break
+            if !isLiteral {
+                // 3. Strip wake-up phrases that might leak through after mode switch
+                let wakeUpPhrases = ["wake up", "microphone on", "flow on"]
+                for phrase in wakeUpPhrases {
+                    if processed.lowercased().hasPrefix(phrase) {
+                        processed = String(processed.dropFirst(phrase.count))
+                        processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
+                        break
+                    }
                 }
-            }
 
-            // Strip system command phrases that might leak through
-            let systemCommandPhrases = [
-                "window recent two", "window recent 2", "window recent", "flip",
-                "window previous", "window next",
-                "cancel that", "no wait",
-                "submit dictation", "send dictation",
-                "save to idea flow",
-                "copy that", "paste that", "cut that", "undo that", "redo that",
-                "select all", "save that",
-                "tab back", "tab forward", "new tab", "close tab",
-                "go back", "go forward", "page up", "page down",
-                "scroll up", "scroll down", "press escape", "press enter"
-            ]
-            for phrase in systemCommandPhrases {
-                if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b", options: []) {
-                    let range = NSRange(processed.startIndex..<processed.endIndex, in: processed)
-                    processed = regex.stringByReplacingMatches(in: processed, options: [], range: range, withTemplate: "")
+                // 4. Handle trailing mode-switch commands if they are at the very end
+                // This allows "Hello world microphone off" to just type "Hello world"
+                let trailingCommands = ["microphone off", "flow off", "stop dictation", "go to sleep", "flow sleep", "submit dictation", "send dictation"]
+                for cmd in trailingCommands {
+                    if processed.lowercased().hasSuffix(cmd) {
+                        processed = String(processed.prefix(processed.count - cmd.count))
+                        processed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
+                        break
+                    }
+                }
+
+                // Strip system command phrases that might leak through
+                let systemCommandPhrases = [
+                    "window recent two", "window recent 2", "window recent", "flip",
+                    "window previous", "window next",
+                    "cancel that",
+                    "submit dictation", "send dictation",
+                    "save to idea flow",
+                    "copy that", "paste that", "cut that", "undo that", "redo that",
+                    "select all", "save that",
+                    "tab back", "tab forward", "new tab", "close tab",
+                    "go back", "go forward", "page up", "page down",
+                    "scroll up", "scroll down", "press escape", "press enter"
+                ]
+                for phrase in systemCommandPhrases {
+                    if let regex = try? NSRegularExpression(pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: phrase))[.,!?]?\\b", options: []) {
+                        let range = NSRange(processed.startIndex..<processed.endIndex, in: processed)
+                        processed = regex.stringByReplacingMatches(in: processed, options: [], range: range, withTemplate: "")
+                    }
                 }
             }
             
@@ -2133,6 +3156,11 @@ class AppState: ObservableObject {
         var startIndex = max(typedFinalWordCount, lastCommandEndIndex + 1)
         let isLiteral = currentUtteranceIsLiteral  // Use the flag set by processVoiceCommands
 
+        if isLiteral {
+            NSLog("[VoiceFlow] 🔤 handleLiveDictationTurn: isLiteral=true, literalStartWordIndex=%d, startIndex=%d, transcript='%@'",
+                  literalStartWordIndex, startIndex, String(turn.transcript.prefix(60)))
+        }
+
         // If literal mode was triggered by "say" after wake commands (e.g., "speech on say press enter"),
         // skip all words up to and including "say"
         if isLiteral && literalStartWordIndex > startIndex {
@@ -2150,20 +3178,32 @@ class AppState: ObservableObject {
             return words  // Now handled by startIndex adjustment
         }
 
+        let startsWithNoSpaceCommand: ([String]) -> Bool = { [self] words in
+            guard !isLiteral, let first = words.first else { return false }
+            let firstToken = self.normalizeToken(first)
+            if firstToken == "nospace" {
+                return true
+            }
+            if firstToken == "no", words.count > 1 {
+                return self.normalizeToken(words[1]) == "space"
+            }
+            return false
+        }
+
         // Helper to process inline replacements
         let processInlineReplacements: (String, [TranscriptWord]?, Bool) -> String = { text, words, isLiteral in
-            let (keywordProcessed, keyword) = self.applyKeywordReplacements(text, words: words, isLiteral: isLiteral)
+            let (keywordProcessed, keyword, didDetectSay) = self.applyKeywordReplacements(text, words: words, isLiteral: isLiteral)
             var result = keywordProcessed
             if let keyword {
                 self.triggerKeywordFlash(name: keyword)
             }
             // Strip system command phrases that might leak through - BUT NOT in literal mode!
             // In literal mode (after "say"), we want to type these phrases, not strip them
-            if !isLiteral {
+            if !isLiteral && !didDetectSay {
                 let systemCommandPhrases = [
                     "window recent two", "window recent 2", "window recent", "flip",
                     "window previous", "window next",
-                    "cancel that", "no wait",
+                    "cancel that",
                     "submit dictation", "send dictation",
                     "save to idea flow",
                     "copy that", "paste that", "cut that", "undo that", "redo that",
@@ -2178,26 +3218,58 @@ class AppState: ObservableObject {
                         result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
                     }
                 }
+                result = self.applyVocabularySubstitutions(result)
             }
             return result.trimmingCharacters(in: .whitespaces)
         }
 
         // If it's a formatted turn (Cloud model with formatting ON)
         if turn.isFormatted {
-            let finalWords = effectiveWords.filter { $0.isFinal == true }.map { $0.text }
-            guard finalWords.count > startIndex else { return }
-            var newWords = finalWords[startIndex...].filter(filterPunctuation)
+            let finalWordObjects = effectiveWords.enumerated().filter { $0.element.isFinal == true }
+            let finalWords = finalWordObjects.map { $0.element.text }
+            NSLog("[VoiceFlow] 📝 formatted turn: endOfTurn=%@, finalWords=%@, startIndex=%d, typedFinalWordCount=%d, isTerminal=%@, bufferedNewlines=%d",
+                  turn.endOfTurn ? "YES" : "NO", finalWords.joined(separator: "|"), startIndex, typedFinalWordCount,
+                  isFrontmostAppTerminal() ? "YES" : "NO", bufferedTerminalNewlines)
+            var finalStartIndex = startIndex
+            if isLiteral {
+                // literalStartWordIndex refers to effectiveWords indices; map it to finalWords indices
+                let literalFinalIndex = finalWordObjects.firstIndex { $0.offset >= literalStartWordIndex } ?? finalWordObjects.count
+                if literalFinalIndex > finalStartIndex {
+                    finalStartIndex = literalFinalIndex
+                }
+            }
+            guard finalWords.count > finalStartIndex else {
+                if turn.endOfTurn {
+                    NSLog("[VoiceFlow] ⚠️ formatted endOfTurn: NO NEW WORDS (finalWords.count=%d <= startIndex=%d)", finalWords.count, finalStartIndex)
+                }
+                return
+            }
+            var newWords = finalWords[finalStartIndex...].filter(filterPunctuation)
             newWords = stripLeadingSay(Array(newWords))
             guard !newWords.isEmpty else { return }
-            
-            let needsSpace = startIndex > 0 || hasTypedInSession
+
+            let suppressLeadingSpace = startsWithNoSpaceCommand(newWords)
+            let needsSpace = (finalStartIndex > 0 || hasTypedInSession) && !suppressLeadingSpace
             let prefix = needsSpace ? " " : ""
             let rawText = prefix + newWords.joined(separator: " ")
-            let finalWordObjects = effectiveWords.filter { $0.isFinal == true }
-            let wordSlice = Array(finalWordObjects[startIndex...].filter { filterPunctuation($0.text) })
+            let wordSlice = Array(finalWordObjects[finalStartIndex...].map { $0.element }.filter { filterPunctuation($0.text) })
             var textToType = processInlineReplacements(rawText, wordSlice, isLiteral)
+            NSLog("[VoiceFlow] 📝 formatted: newWords=%@, rawText='%@', textToType='%@', bufferedNewlines=%d",
+                  Array(newWords).joined(separator: "|"), rawText, textToType, bufferedTerminalNewlines)
             if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
                 textToType = " " + textToType
+            }
+            // Handle trailing newline: in terminal mode, keep \n in text for snappy delivery
+            // (text + Return serialized on terminalTypingQueue). Non-terminal: buffer for flush.
+            if trailingNewlineSendsEnter && textToType.hasSuffix("\n") {
+                if focusContextManager.isCurrentAppTerminal() {
+                    // Keep \n - typeText will deliver text + physical Return key snappily on terminalTypingQueue
+                    NSLog("[VoiceFlow] ⏎ Trailing newline: snappy terminal delivery via typeText")
+                } else {
+                    textToType = String(textToType.dropLast())
+                    bufferedTerminalNewlines += 1
+                    NSLog("[VoiceFlow] ⏎ Trailing newline char detected in output, buffering Enter")
+                }
             }
             logDebug("Live typing delta (formatted): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
@@ -2209,27 +3281,143 @@ class AppState: ObservableObject {
             return
         }
 
-        // If it's unformatted (Live Dictation mode)
-        if turn.endOfTurn {
+        // AGGRESSIVE LIVE MODE: Type immediately from partials, correct if words change
+        // Skip aggressive mode only in terminals where backspace corrections don't work properly
+        // AGGRESSIVE LIVE MODE requirements:
+        // 1. Setting is enabled
+        // 2. Corrections are allowed (without corrections, partial typing causes duplicates)
+        // 3. Not in a terminal (terminals don't handle backspace well)
+        // If any requirement is not met, we fall through to wait for endOfTurn.
+        let isInTerminal = isFrontmostAppTerminal()
+        let canUseAggressiveMode = aggressiveLiveMode && aggressiveAllowCorrections && !isInTerminal
+
+        if canUseAggressiveMode && !turn.endOfTurn {
             let allWords = effectiveWords.map { $0.text }
+            guard allWords.count > startIndex else { return }
+            var newWords = Array(allWords[startIndex...]).filter(filterPunctuation)
+            newWords = stripLeadingSay(newWords)
+            guard !newWords.isEmpty else { return }
+
+            // Find common prefix between what we typed and what we see now
+            var commonPrefixLength = 0
+            for i in 0..<min(lastTypedPartialWords.count, newWords.count) {
+                if lastTypedPartialWords[i].lowercased() == newWords[i].lowercased() {
+                    commonPrefixLength = i + 1
+                } else {
+                    break
+                }
+            }
+
+            // If nothing changed or we've typed more than what's in partial, skip
+            if newWords.count <= lastTypedPartialWords.count && commonPrefixLength == newWords.count {
+                return
+            }
+
+            // If words diverged (ASR changed its mind), backspace and retype
+            // Only do corrections if the setting allows it
+            if commonPrefixLength < lastTypedPartialWords.count {
+                if aggressiveAllowCorrections {
+                    // Calculate how much to delete
+                    let wordsToDelete = Array(lastTypedPartialWords[commonPrefixLength...])
+                    let textToDelete = wordsToDelete.joined(separator: " ")
+                    let deleteCount = textToDelete.count + (wordsToDelete.count > 0 ? 1 : 0)  // +1 for leading space
+
+                    if deleteCount > 0 {
+                        NSLog("[VoiceFlow] 🔄 Aggressive live: correcting %d chars (\"%@\" → \"%@\")",
+                              deleteCount, wordsToDelete.joined(separator: " "),
+                              newWords[commonPrefixLength...].joined(separator: " "))
+                        sendBackspaceKeypresses(deleteCount)
+                    }
+                    lastTypedPartialWords = Array(lastTypedPartialWords.prefix(commonPrefixLength))
+                } else {
+                    // Corrections disabled - update tracking to common prefix without backspacing
+                    // This may cause some duplicated text when ASR changes its mind
+                    NSLog("[VoiceFlow] ⚠️ Aggressive live: skipping correction (disabled in settings)")
+                    lastTypedPartialWords = Array(lastTypedPartialWords.prefix(commonPrefixLength))
+                }
+            }
+
+            // Type new words beyond what we've already typed
+            if newWords.count > lastTypedPartialWords.count {
+                let wordsToType = Array(newWords[lastTypedPartialWords.count...])
+                let needsSpace = !lastTypedPartialWords.isEmpty || hasTypedInSession
+                let prefix = needsSpace ? " " : ""
+                let textToType = prefix + wordsToType.joined(separator: " ")
+
+                NSLog("[VoiceFlow] ⚡ Aggressive live: typing \"%@\"", textToType)
+                typeText(textToType, appendSpace: false)
+
+                lastTypedPartialWords = newWords
+                lastTypedPartialText = newWords.joined(separator: " ")
+                didTypeDictationThisUtterance = true
+                hasTypedInSession = true
+            }
+            return
+        }
+
+        // If it's unformatted (Live Dictation mode) - wait for endOfTurn
+        if turn.endOfTurn {
+            // Reset aggressive mode tracking on utterance end
+            lastTypedPartialWords = []
+            lastTypedPartialText = ""
+
+            let allWords = effectiveWords.map { $0.text }
+            // DIAGNOSTIC: Log full turn state for newline debugging (VoiceFlow-qs3)
+            let isInTerminal = isFrontmostAppTerminal()
+            NSLog("[VoiceFlow] 📝 endOfTurn: allWords=%@, startIndex=%d, typedFinalWordCount=%d, isTerminal=%@, isFormatted=%@, bufferedNewlines=%d",
+                  allWords.joined(separator: "|"), startIndex, typedFinalWordCount, isInTerminal ? "YES" : "NO",
+                  turn.isFormatted ? "YES" : "NO", bufferedTerminalNewlines)
+
             guard allWords.count > startIndex else {
+                NSLog("[VoiceFlow] ⚠️ endOfTurn: NO WORDS to type (allWords.count=%d <= startIndex=%d)", allWords.count, startIndex)
                 typedFinalWordCount = 0
                 return
             }
             var newWords = allWords[startIndex...].filter(filterPunctuation)
             newWords = stripLeadingSay(Array(newWords))
             guard !newWords.isEmpty else {
+                NSLog("[VoiceFlow] ⚠️ endOfTurn: newWords empty after filtering (allWords=%@)", allWords.joined(separator: "|"))
                 typedFinalWordCount = 0
                 return
             }
-            
-            let needsSpace = startIndex > 0 || hasTypedInSession
+
+            // In aggressive mode (when actually used), we already typed everything
+            // Aggressive mode requires: enabled + corrections allowed + not in terminal
+            // If any condition was false, aggressive mode was skipped and we type final text here
+            let wasAggressiveModeUsed = aggressiveLiveMode && aggressiveAllowCorrections && !isInTerminal
+
+            if wasAggressiveModeUsed && !lastTypedPartialWords.isEmpty {
+                // We used aggressive mode and typed something - just log finalization
+                NSLog("[VoiceFlow] ✅ Aggressive live: utterance finalized")
+                typedFinalWordCount = 0
+                return
+            }
+
+            let suppressLeadingSpace = startsWithNoSpaceCommand(newWords)
+            let needsSpace = (startIndex > 0 || hasTypedInSession) && !suppressLeadingSpace
             let prefix = needsSpace ? " " : ""
             let rawText = prefix + newWords.joined(separator: " ")
             let wordSlice = Array(effectiveWords[startIndex...].filter { filterPunctuation($0.text) })
             var textToType = processInlineReplacements(rawText, wordSlice, isLiteral)
+            NSLog("[VoiceFlow] 📝 endOfTurn: newWords=%@, rawText='%@', textToType='%@', bufferedNewlines=%d",
+                  Array(newWords).joined(separator: "|"), rawText, textToType, bufferedTerminalNewlines)
+            if isLiteral {
+                NSLog("[VoiceFlow] 🔤 endOfTurn literal path: rawText='%@' -> textToType='%@'", rawText, textToType)
+            }
             if needsSpace, !textToType.isEmpty, textToType.first != "\n", textToType.first != " " {
                 textToType = " " + textToType
+            }
+            // Handle trailing newline: in terminal mode, keep \n in text for snappy delivery
+            // (text + Return serialized on terminalTypingQueue). Non-terminal: buffer for flush.
+            if trailingNewlineSendsEnter && textToType.hasSuffix("\n") {
+                if isInTerminal {
+                    // Keep \n - typeText will deliver text + physical Return key snappily on terminalTypingQueue
+                    NSLog("[VoiceFlow] ⏎ Trailing newline: snappy terminal delivery via typeText")
+                } else {
+                    textToType = String(textToType.dropLast())
+                    bufferedTerminalNewlines += 1
+                    NSLog("[VoiceFlow] ⏎ Trailing newline char detected in output, buffering Enter")
+                }
             }
             logDebug("Live typing delta (final): \"\(textToType)\"")
             typeText(textToType, appendSpace: false)
@@ -2261,71 +3449,285 @@ class AppState: ObservableObject {
 
     /// Detect "say" prefix for literal/escape mode (used in dictation mode where full command processing is skipped)
     private func detectSayPrefix(_ turn: TranscriptTurn) {
-        // Check if previous turn ended with "say" alone - restore literal mode
-        if pendingLiteralMode {
-            currentUtteranceIsLiteral = true
-            pendingLiteralMode = false
-            literalStartWordIndex = 0  // Start from beginning since "say" was in previous turn
-            NSLog("[VoiceFlow] detectSayPrefix: restored literal mode from pending (cross-turn 'say')")
-        }
-
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         let transcriptForPrefix = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
-        // Check both transcript prefix AND first word token (transcript may not reflect words accurately)
-        let hasSayPrefix = isSayPrefix(transcriptForPrefix)
-            || normalizedTokens.first?.token == "say"
+        let transcriptHasSayWithContent = hasContentAfterSayPrefix(transcriptForPrefix) != nil
+        let tokenHasSayWithContent = normalizedTokens.first?.token == "say"
+            && normalizedTokens.dropFirst().contains(where: { !$0.token.isEmpty })
+        let hasSayPrefix = transcriptHasSayWithContent || tokenHasSayWithContent
 
         if hasSayPrefix {
             currentUtteranceIsLiteral = true
-            let firstWordIndex = normalizedTokens.first?.wordIndex ?? 0
-            literalStartWordIndex = firstWordIndex + 1  // Start after the first word ("say")
+            if normalizedTokens.first?.token == "say" {
+                let firstWordIndex = normalizedTokens.first?.wordIndex ?? 0
+                literalStartWordIndex = firstWordIndex + 1  // Start after the first word ("say")
+            } else {
+                // If words don't include "say", avoid skipping the first content word.
+                literalStartWordIndex = 0
+            }
             if !didTriggerSayKeyword {
                 triggerKeywordFlash(name: "Say")
                 didTriggerSayKeyword = true
             }
             NSLog("[VoiceFlow] detectSayPrefix: detected 'say' in dictation mode, entering literal mode")
+        }
+    }
 
-            // If turn ends with just "say" (no content after), set pending for next turn
-            let wordsAfterSay = normalizedTokens.dropFirst()
-            if turn.endOfTurn && wordsAfterSay.isEmpty {
-                pendingLiteralMode = true
-                NSLog("[VoiceFlow] detectSayPrefix: 'say' alone at end of turn, setting pendingLiteralMode")
+    /// Detect note-taking commands even during dictation mode
+    private func detectNoteTakingCommands(_ turn: TranscriptTurn) {
+        let lowerTranscript = (turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript).lowercased()
+
+        // "take a note" / "voiceflow make a note" - capture this utterance as note
+        if lowerTranscript.hasPrefix("take a note") || lowerTranscript.hasPrefix("voiceflow make a note") || lowerTranscript.hasPrefix("voice flow make a note") {
+            if turn.endOfTurn {
+                // Extract the note content (everything after the command)
+                var noteContent = lowerTranscript
+                if noteContent.hasPrefix("take a note") {
+                    noteContent = String(noteContent.dropFirst("take a note".count))
+                } else if noteContent.hasPrefix("voiceflow make a note") {
+                    noteContent = String(noteContent.dropFirst("voiceflow make a note".count))
+                } else if noteContent.hasPrefix("voice flow make a note") {
+                    noteContent = String(noteContent.dropFirst("voice flow make a note".count))
+                }
+                noteContent = noteContent.trimmingCharacters(in: .whitespaces)
+
+                if !noteContent.isEmpty {
+                    // Save the note content directly
+                    saveNote(noteContent)
+                    triggerCommandFlash(name: "Note Saved")
+                } else {
+                    // No content after command - start capture mode for next utterance
+                    startCapturingNote()
+                }
+
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'take a note' detected, content='%@'", noteContent)
             }
+            return
+        }
+
+        // "voiceflow make a long note" - capture until 10s pause
+        if lowerTranscript.hasPrefix("voiceflow make a long note") || lowerTranscript.hasPrefix("voice flow make a long note") {
+            if turn.endOfTurn {
+                startCapturingLongNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_long_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow make a long note' detected")
+            }
+            return
+        }
+
+        // "voiceflow start making a note" - continuous note until stop
+        if lowerTranscript.hasPrefix("voiceflow start making a note") || lowerTranscript.hasPrefix("voice flow start making a note") {
+            if turn.endOfTurn {
+                startContinuousNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_continuous_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow start making a note' detected")
+            }
+            return
+        }
+
+        // "voiceflow stop making a note" / "stop making a note"
+        if lowerTranscript.hasPrefix("voiceflow stop making a note") || lowerTranscript.hasPrefix("voice flow stop making a note") || lowerTranscript.hasPrefix("stop making a note") {
+            if turn.endOfTurn {
+                stopContinuousNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_continuous_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow stop making a note' detected")
+            }
+            return
+        }
+
+        // "voiceflow start transcribing" - continuous transcription until stop
+        if lowerTranscript.hasPrefix("voiceflow start transcribing") || lowerTranscript.hasPrefix("voice flow start transcribing") {
+            if turn.endOfTurn {
+                startTranscribing()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_transcribing"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow start transcribing' detected")
+            }
+            return
+        }
+
+        // "voiceflow stop transcribing" / "stop transcribing"
+        if lowerTranscript.hasPrefix("voiceflow stop transcribing") || lowerTranscript.hasPrefix("voice flow stop transcribing") || lowerTranscript.hasPrefix("stop transcribing") {
+            if turn.endOfTurn {
+                stopTranscribing()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_transcribing"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow stop transcribing' detected")
+            }
+            return
+        }
+
+        // "voiceflow open notes panel" - open the notes panel (check BEFORE open notes folder)
+        if lowerTranscript.hasPrefix("voiceflow open notes panel") || lowerTranscript.hasPrefix("voice flow open notes panel") {
+            if turn.endOfTurn {
+                openNotesPanel()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_notes_panel"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow open notes panel' detected")
+            }
+            return
+        }
+
+        // "voiceflow open notes" / "voice flow open note(s)" - open notes folder in Finder
+        if lowerTranscript.hasPrefix("voiceflow open note") || lowerTranscript.hasPrefix("voice flow open note") || lowerTranscript.hasPrefix("open note") {
+            if turn.endOfTurn {
+                openNotesFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_notes"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow open notes' detected")
+            }
+            return
+        }
+
+        // "voiceflow open recordings" / "voice flow open recording(s)" - open recordings folder
+        if lowerTranscript.hasPrefix("voiceflow open recording") || lowerTranscript.hasPrefix("voice flow open recording") || lowerTranscript.hasPrefix("open recording") {
+            if turn.endOfTurn {
+                openRecordingsFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_recordings"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow open recordings' detected")
+            }
+            return
+        }
+
+        // "voiceflow open transcripts panel" - open the transcripts panel (check BEFORE open transcripts folder)
+        if lowerTranscript.hasPrefix("voiceflow open transcripts panel") || lowerTranscript.hasPrefix("voice flow open transcripts panel") {
+            if turn.endOfTurn {
+                openTranscriptsPanel()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_transcripts_panel"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow open transcripts panel' detected")
+            }
+            return
+        }
+
+        // "voiceflow open transcripts" - open transcripts folder
+        if lowerTranscript.hasPrefix("voiceflow open transcript") || lowerTranscript.hasPrefix("voice flow open transcript") || lowerTranscript.hasPrefix("open transcript") {
+            if turn.endOfTurn {
+                openTranscriptsFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_transcripts"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow open transcripts' detected")
+            }
+            return
+        }
+
+        // "voiceflow vocabulary" / "voiceflow open vocabulary" - open the custom vocabulary panel
+        if lowerTranscript.hasPrefix("voiceflow vocabulary") || lowerTranscript.hasPrefix("voice flow vocabulary") ||
+           lowerTranscript.hasPrefix("voiceflow open vocabulary") || lowerTranscript.hasPrefix("voice flow open vocabulary") {
+            if turn.endOfTurn {
+                openVocabularyPanel()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_vocabulary"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow vocabulary' detected")
+            }
+            return
+        }
+
+        // "voiceflow send" - retype/paste the last utterance
+        if lowerTranscript.hasPrefix("voiceflow send") || lowerTranscript.hasPrefix("voice flow send") {
+            if turn.endOfTurn {
+                pasteLastUtterance()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_send"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                NSLog("[VoiceFlow] detectNoteTakingCommands: 'voiceflow send' detected")
+            }
+            return
         }
     }
 
     private func processVoiceCommands(_ turn: TranscriptTurn) {
-        // Check if previous turn ended with "say" alone - restore literal mode
-        if pendingLiteralMode {
-            currentUtteranceIsLiteral = true
-            pendingLiteralMode = false
-            literalStartWordIndex = 0  // Start from beginning since "say" was in previous turn
-            NSLog("[VoiceFlow] processVoiceCommands: restored literal mode from pending (cross-turn 'say')")
-        }
-
         let normalizedTokens = normalizedWordTokens(from: turn.words)
         let transcriptForPrefix = turn.transcript.isEmpty ? (turn.utterance ?? "") : turn.transcript
-        // Check both transcript AND first token (transcript may not match words accurately)
-        let hasSayPrefix = isSayPrefix(transcriptForPrefix)
-            || normalizedTokens.first?.token == "say"
-        NSLog("[VoiceFlow] processVoiceCommands: transcript=\"%@\", hasSayPrefix=%d", String(transcriptForPrefix.prefix(60)), hasSayPrefix ? 1 : 0)
+        let transcriptHasSayWithContent = hasContentAfterSayPrefix(transcriptForPrefix) != nil
+        let tokenHasSayWithContent = normalizedTokens.first?.token == "say"
+            && normalizedTokens.dropFirst().contains(where: { !$0.token.isEmpty })
+        let hasSayPrefix = transcriptHasSayWithContent || tokenHasSayWithContent
+        NSLog("[VoiceFlow] processVoiceCommands: transcript=\"%@\", hasSayPrefix=%d, endOfTurn=%d", String(transcriptForPrefix.prefix(60)), hasSayPrefix ? 1 : 0, turn.endOfTurn ? 1 : 0)
 
         if hasSayPrefix {
             currentUtteranceIsLiteral = true
-            let firstWordIndex = normalizedTokens.first?.wordIndex ?? 0
-            literalStartWordIndex = firstWordIndex + 1  // Start after the first word ("say")
+            if normalizedTokens.first?.token == "say" {
+                let firstWordIndex = normalizedTokens.first?.wordIndex ?? 0
+                literalStartWordIndex = firstWordIndex + 1  // Start after the first word ("say")
+            } else {
+                literalStartWordIndex = 0
+            }
             if !didTriggerSayKeyword {
                 triggerKeywordFlash(name: "Say")
                 didTriggerSayKeyword = true
             }
             logger.debug("Utterance starts with 'say', skipping command processing")
-
-            // If turn ends with just "say" (no content after), set pending for next turn
-            let wordsAfterSay = normalizedTokens.dropFirst()
-            if turn.endOfTurn && wordsAfterSay.isEmpty {
-                pendingLiteralMode = true
-                NSLog("[VoiceFlow] processVoiceCommands: 'say' alone at end of turn, setting pendingLiteralMode")
-            }
             return
         }
         if currentUtteranceIsLiteral {
@@ -2340,7 +3742,7 @@ class AppState: ObservableObject {
 
         // Check if "say" appears at the start OR after wake/mode commands
         // This handles "speech on say press enter" → escape "press enter"
-        let wakeCommands = Set(["speech", "wake", "flow", "microphone"])
+        let wakeCommands = Set(["speech", "flow", "microphone"])
         let modifiers = Set(["on", "up"])
         var sayIndex: Int? = nil
 
@@ -2350,7 +3752,8 @@ class AppState: ObservableObject {
                 let precedingTokens = normalizedTokens.prefix(index).map { $0.token }
                 let allPrecedingAreWakeWords = precedingTokens.allSatisfy { wakeCommands.contains($0) || modifiers.contains($0) }
                 NSLog("[VoiceFlow] Found 'say' at index %d, preceding=[%@], allWake=%d", index, precedingTokens.joined(separator: ", "), allPrecedingAreWakeWords ? 1 : 0)
-                if allPrecedingAreWakeWords {
+                let hasWordsAfterSay = normalizedTokens[(index + 1)...].contains { !$0.token.isEmpty }
+                if allPrecedingAreWakeWords && hasWordsAfterSay {
                     sayIndex = index
                     break
                 }
@@ -2481,11 +3884,356 @@ class AppState: ObservableObject {
             }
         }
 
+        // Extended Command Mode handling - when active, buffer text and check for stop keywords
+        if isExtendedCommandMode {
+            // Check for stop keywords
+            if lowerTranscript.contains("stop command") || lowerTranscript.contains("stop listening") {
+                // Extract text before stop keyword and send
+                let stopIndex = lowerTranscript.range(of: "stop command") ?? lowerTranscript.range(of: "stop listening")
+                if let idx = stopIndex {
+                    let textBeforeStop = String(turn.transcript[..<idx.lowerBound]).trimmingCharacters(in: .whitespaces)
+                    if !textBeforeStop.isEmpty {
+                        extendedCommandBuffer += (extendedCommandBuffer.isEmpty ? "" : " ") + textBeforeStop
+                    }
+                }
+                finishExtendedCommand()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.extended_command"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+
+            // Buffer the text
+            if !turn.transcript.isEmpty {
+                extendedCommandBuffer += (extendedCommandBuffer.isEmpty ? "" : " ") + turn.transcript
+                resetExtendedCommandTimer()
+            }
+
+            // Mark turn as handled to prevent dictation
+            turnHandledBySpecialCommand = true
+            return
+        }
+
+        // Extended Command Mode - "long command [initial text]" starts extended capture
+        if lowerTranscript.hasPrefix("long command") {
+            // Extract initial text after "long command"
+            let initialText = String(turn.transcript.dropFirst(12)).trimmingCharacters(in: .whitespaces)
+
+            if turn.endOfTurn {
+                // Start extended command mode
+                startExtendedCommand(initialText: initialText)
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.extended_command"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // VoiceFlow Recording Commands - "voiceflow start/stop recording"
+        if lowerTranscript.hasPrefix("voiceflow start recording") || lowerTranscript.hasPrefix("voice flow start recording") {
+            if turn.endOfTurn {
+                startAudioRecording()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_recording"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        if lowerTranscript.hasPrefix("voiceflow stop recording") || lowerTranscript.hasPrefix("voice flow stop recording") {
+            if turn.endOfTurn {
+                stopAudioRecording()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_recording"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // VoiceFlow Note-Taking Commands
+        // "take a note" / "voiceflow make a note" - capture this utterance as note
+        if lowerTranscript.hasPrefix("take a note") || lowerTranscript.hasPrefix("voiceflow make a note") || lowerTranscript.hasPrefix("voice flow make a note") {
+            if turn.endOfTurn {
+                // Extract note content (everything after the command)
+                var noteContent = lowerTranscript
+                if noteContent.hasPrefix("take a note") {
+                    noteContent = String(noteContent.dropFirst("take a note".count))
+                } else if noteContent.hasPrefix("voiceflow make a note") {
+                    noteContent = String(noteContent.dropFirst("voiceflow make a note".count))
+                } else if noteContent.hasPrefix("voice flow make a note") {
+                    noteContent = String(noteContent.dropFirst("voice flow make a note".count))
+                }
+                noteContent = noteContent.trimmingCharacters(in: .whitespaces)
+
+                if !noteContent.isEmpty {
+                    // Save the note content directly
+                    saveNote(noteContent)
+                    triggerCommandFlash(name: "Note Saved")
+                } else {
+                    // No content after command - start capture mode for next utterance
+                    startCapturingNote()
+                }
+
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // "voiceflow make a long note" - capture until 10s pause
+        if lowerTranscript.hasPrefix("voiceflow make a long note") || lowerTranscript.hasPrefix("voice flow make a long note") {
+            if turn.endOfTurn {
+                startCapturingLongNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_long_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // "voiceflow start making a note" - continuous note until stop
+        if lowerTranscript.hasPrefix("voiceflow start making a note") || lowerTranscript.hasPrefix("voice flow start making a note") {
+            if turn.endOfTurn {
+                startContinuousNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_continuous_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // "voiceflow stop making a note" / "stop making a note"
+        if lowerTranscript.hasPrefix("voiceflow stop making a note") || lowerTranscript.hasPrefix("voice flow stop making a note") || lowerTranscript.hasPrefix("stop making a note") {
+            if turn.endOfTurn {
+                stopContinuousNote()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_continuous_note"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // VoiceFlow Transcribing Commands
+        if lowerTranscript.hasPrefix("voiceflow start transcribing") || lowerTranscript.hasPrefix("voice flow start transcribing") {
+            if turn.endOfTurn {
+                startTranscribing()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_transcribing"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        if lowerTranscript.hasPrefix("voiceflow stop transcribing") || lowerTranscript.hasPrefix("voice flow stop transcribing") || lowerTranscript.hasPrefix("stop transcribing") {
+            if turn.endOfTurn {
+                stopTranscribing()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_transcribing"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // VoiceFlow Open Folder Commands
+        if lowerTranscript.hasPrefix("voiceflow open note") || lowerTranscript.hasPrefix("voice flow open note") || lowerTranscript.hasPrefix("open note") {
+            if turn.endOfTurn {
+                openNotesFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_notes"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        if lowerTranscript.hasPrefix("voiceflow open recording") || lowerTranscript.hasPrefix("voice flow open recording") || lowerTranscript.hasPrefix("open recording") {
+            if turn.endOfTurn {
+                openRecordingsFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_recordings"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        if lowerTranscript.hasPrefix("voiceflow open transcript") || lowerTranscript.hasPrefix("voice flow open transcript") || lowerTranscript.hasPrefix("open transcript") {
+            if turn.endOfTurn {
+                openTranscriptsFolder()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_open_transcripts"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        if lowerTranscript.hasPrefix("voiceflow send") || lowerTranscript.hasPrefix("voice flow send") {
+            if turn.endOfTurn {
+                pasteLastUtterance()
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.voiceflow_send"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        let debugMarkerPrefixes = ["voiceflow debug marker", "voice flow debug marker", "debug marker"]
+        if let matchedPrefix = debugMarkerPrefixes.first(where: { lowerTranscript.hasPrefix($0) }) {
+            if turn.endOfTurn {
+                let note = String(turn.transcript.dropFirst(matchedPrefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                addDebugMarker(note: note, source: "voice")
+                triggerCommandFlash(name: "Debug Marker")
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.debug_marker"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
+        // Claude Code Command Mode - "command [text]" sends to Claude Code
+        NSLog("[VoiceFlow] 🔍 Checking command prefix: transcript=\"%@\", hasPrefix=%@, isLiteral=%@", String(lowerTranscript.prefix(40)), lowerTranscript.hasPrefix("command ") ? "true" : "false", currentUtteranceIsLiteral ? "true" : "false")
+        if lowerTranscript.hasPrefix("command ") {
+            let commandText = String(turn.transcript.dropFirst(8)).trimmingCharacters(in: .whitespaces)
+            if turn.endOfTurn {
+                // Check for "command open" or "command close"
+                let commandLower = commandText.lowercased()
+                if commandLower == "open" || commandLower.isEmpty {
+                    logDebug("Opening command panel")
+                    if isCommandPanelVisible {
+                        // Panel already open - just focus the input
+                        NotificationCenter.default.post(name: NSNotification.Name("CommandPanelShouldFocusInput"), object: nil)
+                    } else {
+                        openCommandPanel()
+                    }
+                    triggerCommandFlash(name: "Command Open")
+                } else if commandLower == "close" {
+                    logDebug("Closing command panel")
+                    closeCommandPanel()
+                    triggerCommandFlash(name: "Command Close")
+                } else if commandLower.hasPrefix("make an issue for voiceflow") ||
+                          commandLower.hasPrefix("create an issue for voiceflow") ||
+                          commandLower.hasPrefix("make issue for voiceflow") ||
+                          commandLower.hasPrefix("create issue for voiceflow") ||
+                          commandLower.hasPrefix("new issue for voiceflow") {
+                    // Special handler: Create beads issue for VoiceFlow project
+                    let patterns = [
+                        "make an issue for voiceflow",
+                        "create an issue for voiceflow",
+                        "make issue for voiceflow",
+                        "create issue for voiceflow",
+                        "new issue for voiceflow"
+                    ]
+                    var issueDescription = commandLower
+                    for pattern in patterns {
+                        if commandLower.hasPrefix(pattern) {
+                            issueDescription = String(commandText.dropFirst(pattern.count)).trimmingCharacters(in: .whitespaces)
+                            break
+                        }
+                    }
+                    if issueDescription.isEmpty {
+                        issueDescription = "New issue from voice command"
+                    }
+                    logDebug("Creating VoiceFlow issue: \"\(issueDescription)\"")
+                    createBeadsIssue(title: issueDescription, projectPath: "~/code/VoiceFlow")
+                    triggerCommandFlash(name: "VoiceFlow Issue")
+                } else if commandLower == "format" || commandLower == "format that" ||
+                          commandLower == "improve" || commandLower == "improve that" ||
+                          commandLower == "improve this" || commandLower == "format this" {
+                    // AI text improvement - copies selected text, improves, and pastes back
+                    logDebug("Improving selected text via command prefix")
+                    improveSelectedText()
+                } else {
+                    // Execute inline command
+                    logDebug("Executing command: \"\(commandText)\"")
+                    executeInlineCommand(commandText)
+                    triggerCommandFlash(name: "Command")
+                }
+                if !turn.words.isEmpty {
+                    let endIndex = max(0, turn.words.count - 1)
+                    lastExecutedEndWordIndexByCommand["system.command"] = endIndex
+                    currentUtteranceHadCommand = true
+                    lastHaltingCommandEndIndex = max(lastHaltingCommandEndIndex, endIndex)
+                }
+                turnHandledBySpecialCommand = true
+                return
+            }
+        }
+
         let tokenStrings = normalizedTokens.map { $0.token }
+        let wakeCommandPhrases = ["wake up", "microphone on", "flow on", "speech on"]
+        let hasWakeCommandPrefix = wakeCommandPhrases.contains { phrase in
+            let phraseTokens = tokenizePhrase(phrase)
+            guard tokenStrings.count >= phraseTokens.count else { return false }
+            return Array(tokenStrings.prefix(phraseTokens.count)) == phraseTokens
+        }
 
         var matches: [PendingCommandMatch] = []
-        
-        if microphoneMode == .on {
+
+        let allowPressCommandsInSleep = microphoneMode == .sleep && hasWakeCommandPrefix
+        if microphoneMode == .on || allowPressCommandsInSleep {
+            // Log tokens for press command debugging (VoiceFlow-3o0)
+            if tokenStrings.contains("press") {
+                NSLog("[VoiceFlow] 🔍 Pre-pressCommandMatches: detected 'press' in tokens [%@]", tokenStrings.joined(separator: ", "))
+            }
             matches.append(contentsOf: pressCommandMatches(from: normalizedTokens, turn: turn))
         }
 
@@ -2498,6 +4246,9 @@ class AppState: ObservableObject {
                 (phrase: "microphone on", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
                 (phrase: "flow on", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
                 (phrase: "speech on", key: "system.wake_up", name: "On", haltsProcessing: false, action: { [weak self] in self?.setMode(.on) } as () -> Void),
+                // Status check
+                (phrase: "are you listening", key: "system.status_check", name: "Status", haltsProcessing: true, action: { [weak self] in self?.confirmListening() } as () -> Void),
+                (phrase: "are you there", key: "system.status_check", name: "Status", haltsProcessing: true, action: { [weak self] in self?.confirmListening() } as () -> Void),
                 // Also allow turning off from sleep mode
                 (phrase: "microphone off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in self?.setMode(.off) } as () -> Void),
                 (phrase: "flow off", key: "system.microphone_off", name: "Off", haltsProcessing: true, action: { [weak self] in self?.setMode(.off) } as () -> Void),
@@ -2537,7 +4288,6 @@ class AppState: ObservableObject {
                     }
                 } as () -> Void),
                 (phrase: "cancel that", key: "system.cancel_command", name: "Cancel", haltsProcessing: true, action: { [weak self] in self?.cancelLastCommandIfRecent() } as () -> Void),
-                (phrase: "no wait", key: "system.cancel_command", name: "Cancel", haltsProcessing: true, action: { [weak self] in self?.cancelLastCommandIfRecent() } as () -> Void),
                 (phrase: "submit dictation", key: "system.force_end_utterance", name: "Submit", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance(contactServices: true) } as () -> Void),
                 (phrase: "send dictation", key: "system.force_end_utterance", name: "Send", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance(contactServices: true) } as () -> Void),
                 (phrase: "submit", key: "system.force_end_utterance", name: "Submit", haltsProcessing: false, action: { [weak self] in self?.forceEndUtterance(contactServices: true) } as () -> Void),
@@ -2553,14 +4303,34 @@ class AppState: ObservableObject {
                     self?.executeKeyboardShortcut(KeyboardShortcut(keyCode: UInt16(kVK_ANSI_Grave), modifiers: [.command, .shift]))
                 } as () -> Void),
                 (phrase: "save to idea flow", key: "system.save_ideaflow", name: "Idea Flow", haltsProcessing: true, action: { [weak self] in self?.saveToIdeaFlow() } as () -> Void),
-                
+
+                // VoiceFlow Issue Creation - sends to Claude Code to create beads issue
+                (phrase: "voiceflow issue", key: "system.voiceflow_issue", name: "VF Issue", haltsProcessing: true, action: { [weak self] in self?.createVoiceFlowIssue() } as () -> Void),
+                (phrase: "voice flow issue", key: "system.voiceflow_issue", name: "VF Issue", haltsProcessing: true, action: { [weak self] in self?.createVoiceFlowIssue() } as () -> Void),
+                (phrase: "make an issue for voiceflow", key: "system.voiceflow_issue", name: "VF Issue", haltsProcessing: true, action: { [weak self] in self?.createVoiceFlowIssue() } as () -> Void),
+                (phrase: "make an issue for voice flow", key: "system.voiceflow_issue", name: "VF Issue", haltsProcessing: true, action: { [weak self] in self?.createVoiceFlowIssue() } as () -> Void),
+                (phrase: "create voiceflow issue", key: "system.voiceflow_issue", name: "VF Issue", haltsProcessing: true, action: { [weak self] in self?.createVoiceFlowIssue() } as () -> Void),
+
                 // Dictation Provider Switching
                 (phrase: "use online model", key: "system.provider_online", name: "Online Model", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.online) } as () -> Void),
                 (phrase: "use offline model", key: "system.provider_offline", name: "Offline Model", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.offline) } as () -> Void),
                 (phrase: "use auto model", key: "system.provider_auto", name: "Auto Model", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.auto) } as () -> Void),
                 (phrase: "use deepgram", key: "system.provider_deepgram", name: "Deepgram", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.deepgram) } as () -> Void),
-                (phrase: "switch to deepgram", key: "system.provider_deepgram", name: "Deepgram", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.deepgram) } as () -> Void)
+                (phrase: "switch to deepgram", key: "system.provider_deepgram", name: "Deepgram", haltsProcessing: true, action: { [weak self] in self?.saveDictationProvider(.deepgram) } as () -> Void),
+
+                // AI Text Improvement - improves selected text (requires pause to avoid false positives)
+                (phrase: "improve that", key: "system.improve_text", name: "Improve", haltsProcessing: true, action: { [weak self] in self?.improveSelectedText() } as () -> Void),
+                (phrase: "improve this", key: "system.improve_text", name: "Improve", haltsProcessing: true, action: { [weak self] in self?.improveSelectedText() } as () -> Void),
+                (phrase: "format that", key: "system.improve_text", name: "Improve", haltsProcessing: true, action: { [weak self] in self?.improveSelectedText() } as () -> Void),
+                (phrase: "format this", key: "system.improve_text", name: "Improve", haltsProcessing: true, action: { [weak self] in self?.improveSelectedText() } as () -> Void)
             ])
+        }
+
+        // Commands that require end-of-turn to avoid false positives or ordering races.
+        var pauseRequiredKeys: Set<String> = ["system.improve_text"]
+        if isFrontmostAppTerminal() {
+            // In terminal contexts, "submit/send" should not fire mid-turn.
+            pauseRequiredKeys.insert("system.force_end_utterance")
         }
 
         for systemCommand in systemCommands {
@@ -2570,18 +4340,22 @@ class AppState: ObservableObject {
                 let endTokenIndex = range.upperBound - 1
                 let startWordIndex = normalizedTokens[startTokenIndex].wordIndex
                 let endWordIndex = normalizedTokens[endTokenIndex].wordIndex
+
                 let isPrefixed = startTokenIndex > 0 && normalizedTokens[startTokenIndex - 1].token == commandPrefixToken
                 let wordIndices = normalizedTokens[range].map { $0.wordIndex }
                 let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
-                // Submit/send commands should execute even if words aren't final
-                let skipStability = systemCommand.key == "system.force_end_utterance"
+                // Submit/send can skip stability in non-terminal apps for responsiveness.
+                // In terminals we require stability to avoid early submits.
+                let skipStability = systemCommand.key == "system.force_end_utterance" && !isFrontmostAppTerminal()
+                // Some commands require a pause to avoid false positives
+                let needsPause = pauseRequiredKeys.contains(systemCommand.key)
                 matches.append(PendingCommandMatch(
                     key: systemCommand.key,
                     startWordIndex: startWordIndex,
                     endWordIndex: endWordIndex,
                     isPrefixed: isPrefixed,
                     isStable: isStable,
-                    requiresPause: false,
+                    requiresPause: needsPause,
                     haltsProcessing: systemCommand.haltsProcessing,
                     skipStabilityCheck: skipStability,
                     turn: turn,
@@ -2638,6 +4412,9 @@ class AppState: ObservableObject {
 
         for (index, match) in matches.enumerated() {
             guard match.isStable || match.skipStabilityCheck else { continue }
+            if match.requiresPause && !match.turn.endOfTurn {
+                continue
+            }
             let lastEndIndex = lastExecutedEndWordIndexByCommand[match.key] ?? -1
             guard match.endWordIndex > lastEndIndex else { continue }
 
@@ -2680,9 +4457,47 @@ class AppState: ObservableObject {
         forceEndPending = false
         forceEndRequestedAt = nil
         suppressNextAutoCap = false
+        // Reset aggressive live mode tracking
+        lastTypedPartialWords = []
+        lastTypedPartialText = ""
         // Note: We intentionally DON'T reset these flags here because they persist across utterances:
         // - pendingCrossUtteranceKeyword: for cross-utterance keyword detection (e.g., "new" + "line")
-        // - pendingLiteralMode: for cross-turn "say" escape (e.g., "say" + [pause] + "newline")
+    }
+
+    /// Known terminal app bundle identifiers where backspace corrections don't work reliably
+    private static let terminalBundleIds: Set<String> = [
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+        "dev.warp.Warp-Stable",
+        "dev.warp.Warp",
+        "net.kovidgoyal.kitty",
+        "io.alacritty",
+        "co.zeit.hyper",
+        "com.github.atom",  // Atom terminal
+        "com.microsoft.VSCode",  // VS Code integrated terminal
+        "com.sublimetext.4",  // Sublime Text console
+        "org.gnu.Emacs",  // Emacs terminal modes
+        "com.jetbrains.intellij",  // IntelliJ terminal
+        "com.jetbrains.pycharm",
+        "com.jetbrains.WebStorm",
+        "com.todesktop.230313mzl4w4u92",  // Cursor (VS Code fork)
+    ]
+
+    /// Check if the frontmost application is a terminal where backspace corrections are unreliable
+    private func isFrontmostAppTerminal() -> Bool {
+        guard let frontApp = NSWorkspace.shared.frontmostApplication,
+              let bundleId = frontApp.bundleIdentifier else {
+            return false
+        }
+        // Check exact matches
+        if Self.terminalBundleIds.contains(bundleId) {
+            return true
+        }
+        // Check for JetBrains IDEs (all have terminal)
+        if bundleId.hasPrefix("com.jetbrains.") {
+            return true
+        }
+        return false
     }
 
     private func isSayPrefix(_ text: String) -> Bool {
@@ -2691,7 +4506,25 @@ class AppState: ObservableObject {
             return false
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return regex.firstMatch(in: trimmed, options: [], range: NSRange(location: 0, length: trimmed.utf16.count)) != nil
+        let result = regex.firstMatch(in: trimmed, options: [], range: NSRange(location: 0, length: trimmed.utf16.count)) != nil
+        NSLog("[VoiceFlow] 🔍 isSayPrefix: text=\"%@\", result=%@", String(trimmed.prefix(40)), result ? "true" : "false")
+        return result
+    }
+
+    /// Returns content after a leading "say" prefix, or nil when "say" is not a prefix
+    /// or has no content after it (standalone "say").
+    private func hasContentAfterSayPrefix(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sayPattern = "^say[\\.,?!]?(\\s+|$)"
+        guard let regex = try? NSRegularExpression(pattern: sayPattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        guard let match = regex.firstMatch(in: trimmed, options: [], range: NSRange(location: 0, length: trimmed.utf16.count)) else {
+            return nil
+        }
+        let remainder = (trimmed as NSString).substring(from: match.range.length)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return remainder.isEmpty ? nil : remainder
     }
 
     private func executeMatch(_ match: PendingCommandMatch) {
@@ -2815,10 +4648,13 @@ class AppState: ObservableObject {
         executeKeyboardShortcut(undoShortcut)
     }
 
-    private func triggerCommandFlash(name: String) {
+    func triggerCommandFlash(name: String) {
         lastCommandName = name
         isCommandFlashActive = true
-        
+
+        // Log command to debug history
+        logDebug("⚡ Command: \(name)")
+
         // Reset flash after a short delay
         DispatchQueue.main.asyncAfter(deadline: .now() + commandFlashDurationSeconds) { [weak self] in
             self?.isCommandFlashActive = false
@@ -2828,10 +4664,439 @@ class AppState: ObservableObject {
     private func triggerKeywordFlash(name: String) {
         lastKeywordName = name
         isKeywordFlashActive = true
-        
+
+        // Log keyword to debug history
+        logDebug("🎯 Keyword: \(name)")
+
         DispatchQueue.main.asyncAfter(deadline: .now() + keywordFlashDurationSeconds) { [weak self] in
             self?.isKeywordFlashActive = false
         }
+    }
+
+    /// Provides audio/visual confirmation that VoiceFlow is listening
+    func confirmListening() {
+        // Play system sound for audio feedback
+        NSLog("[VoiceFlow] 🔔 BEEP: confirmListening() - user asked 'are you listening'")
+        NSSound.beep()
+
+        // Show visual flash with current mode status
+        let statusText: String
+        switch microphoneMode {
+        case .on:
+            statusText = "Listening ✓"
+        case .sleep:
+            statusText = "Sleep Mode"
+        case .off:
+            statusText = "Mic Off"
+        }
+        triggerCommandFlash(name: statusText)
+    }
+
+    // MARK: - Extended Command Mode ("long command")
+
+    /// Start extended command capture mode
+    private func startExtendedCommand(initialText: String) {
+        logDebug("Starting extended command mode with initial: \"\(initialText)\"")
+        isExtendedCommandMode = true
+        extendedCommandBuffer = initialText
+        triggerCommandFlash(name: "Long Command...")
+
+        // Start the pause timer
+        resetExtendedCommandTimer()
+    }
+
+    /// Reset the extended command pause timer (called when speech is received)
+    private func resetExtendedCommandTimer() {
+        extendedCommandPauseTimer?.invalidate()
+        extendedCommandPauseTimer = Timer.scheduledTimer(
+            withTimeInterval: extendedCommandPauseThreshold,
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.finishExtendedCommand()
+            }
+        }
+    }
+
+    /// Finish extended command mode and send buffered text to Claude
+    private func finishExtendedCommand() {
+        extendedCommandPauseTimer?.invalidate()
+        extendedCommandPauseTimer = nil
+
+        let commandText = extendedCommandBuffer.trimmingCharacters(in: .whitespaces)
+        logDebug("Finishing extended command: \"\(commandText)\"")
+
+        isExtendedCommandMode = false
+        extendedCommandBuffer = ""
+
+        if !commandText.isEmpty {
+            executeInlineCommand(commandText)
+            triggerCommandFlash(name: "Long Command ✓")
+        } else {
+            triggerCommandFlash(name: "Long Command (empty)")
+        }
+    }
+
+    /// Cancel extended command mode without sending
+    func cancelExtendedCommand() {
+        guard isExtendedCommandMode else { return }
+
+        logDebug("Cancelling extended command mode")
+        extendedCommandPauseTimer?.invalidate()
+        extendedCommandPauseTimer = nil
+        isExtendedCommandMode = false
+        extendedCommandBuffer = ""
+        triggerCommandFlash(name: "Command Cancelled")
+    }
+
+    // MARK: - Audio Recording ("voiceflow start/stop recording")
+
+    /// Start recording audio to a file
+    func startAudioRecording() {
+        guard !isRecordingAudio else {
+            logDebug("Already recording audio")
+            return
+        }
+
+        logDebug("Starting audio recording")
+        recordingAudioBuffer.removeAll()
+        recordingStartTime = Date()
+        isRecordingAudio = true
+        triggerCommandFlash(name: "Recording...")
+
+        // Play a sound to indicate recording started
+        NSLog("[VoiceFlow] 🔔 BEEP: startAudioRecording() - voice command 'voiceflow start recording'")
+        NSSound.beep()
+    }
+
+    /// Stop recording and save the audio file
+    func stopAudioRecording() {
+        guard isRecordingAudio else {
+            logDebug("Not currently recording audio")
+            return
+        }
+
+        logDebug("Stopping audio recording")
+        isRecordingAudio = false
+
+        guard !recordingAudioBuffer.isEmpty else {
+            logDebug("No audio data captured")
+            triggerCommandFlash(name: "Recording Empty")
+            recordingStartTime = nil
+            return
+        }
+
+        // Combine all audio data
+        var combinedData = Data()
+        for chunk in recordingAudioBuffer {
+            combinedData.append(chunk)
+        }
+        recordingAudioBuffer.removeAll()
+
+        // Create filename with timestamp
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let filename = "recording_\(formatter.string(from: recordingStartTime ?? Date())).wav"
+        let fileURL = recordingsDirectory.appendingPathComponent(filename)
+
+        // Create WAV file with header
+        // Format: 16-bit PCM mono at 16kHz (same as AudioCaptureManager)
+        let wavData = createWAVFile(from: combinedData, sampleRate: 16000, channels: 1, bitsPerSample: 16)
+
+        do {
+            try wavData.write(to: fileURL)
+            let durationSec = Double(combinedData.count) / (16000.0 * 2.0)  // 16kHz * 2 bytes per sample
+            logDebug("Saved recording: \(filename) (\(String(format: "%.1f", durationSec))s)")
+            triggerCommandFlash(name: "Recording Saved")
+
+            // Play a sound to indicate recording saved
+            NSLog("[VoiceFlow] 🔔 BEEP: stopAudioRecording() - recording saved to \(filename)")
+            NSSound.beep()
+        } catch {
+            logDebug("Failed to save recording: \(error)")
+            triggerCommandFlash(name: "Save Failed")
+        }
+
+        recordingStartTime = nil
+    }
+
+    /// Create a WAV file with proper header from raw PCM data
+    private func createWAVFile(from pcmData: Data, sampleRate: Int, channels: Int, bitsPerSample: Int) -> Data {
+        var wavData = Data()
+
+        let byteRate = sampleRate * channels * bitsPerSample / 8
+        let blockAlign = channels * bitsPerSample / 8
+        let dataSize = pcmData.count
+        let fileSize = 36 + dataSize  // 44 bytes header - 8 for RIFF header itself + data
+
+        // RIFF header
+        wavData.append(contentsOf: "RIFF".utf8)
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt32(fileSize).littleEndian) { Array($0) })
+        wavData.append(contentsOf: "WAVE".utf8)
+
+        // fmt subchunk
+        wavData.append(contentsOf: "fmt ".utf8)
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })  // Subchunk1Size (16 for PCM)
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian) { Array($0) })   // AudioFormat (1 = PCM)
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt16(channels).littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt32(sampleRate).littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt32(byteRate).littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt16(blockAlign).littleEndian) { Array($0) })
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt16(bitsPerSample).littleEndian) { Array($0) })
+
+        // data subchunk
+        wavData.append(contentsOf: "data".utf8)
+        wavData.append(contentsOf: withUnsafeBytes(of: UInt32(dataSize).littleEndian) { Array($0) })
+        wavData.append(pcmData)
+
+        return wavData
+    }
+
+    /// Buffer audio data for recording (called from onAudioData callbacks)
+    func bufferAudioForRecording(_ data: Data) {
+        guard isRecordingAudio else { return }
+        recordingAudioBuffer.append(data)
+    }
+
+    // MARK: - Note Taking ("take a note", "voiceflow make a note")
+
+    /// Start capturing next utterance as a note (single utterance mode)
+    func startCapturingNote() {
+        logDebug("Starting note capture (single utterance)")
+        isCapturingNote = true
+        noteBuffer = ""
+        triggerCommandFlash(name: "Note...")
+        NSLog("[VoiceFlow] 🔔 BEEP: startCapturingNote() - 'take a note' command")
+        NSSound.beep()
+    }
+
+    /// Called when a complete utterance is received while in note capture mode
+    func captureNoteUtterance(_ text: String) {
+        guard isCapturingNote else { return }
+
+        isCapturingNote = false
+        saveNote(text)
+    }
+
+    /// Start capturing a long note (timeout-based, 10s pause to finish)
+    func startCapturingLongNote() {
+        logDebug("Starting long note capture (10s timeout)")
+        isCapturingLongNote = true
+        noteBuffer = ""
+        triggerCommandFlash(name: "Long Note...")
+        NSLog("[VoiceFlow] 🔔 BEEP: startCapturingLongNote() - 'voiceflow make a long note' command")
+        NSSound.beep()
+        resetNotePauseTimer()
+    }
+
+    /// Add text to long note buffer and reset timer
+    func appendToLongNote(_ text: String) {
+        guard isCapturingLongNote else { return }
+
+        if !noteBuffer.isEmpty {
+            noteBuffer += " "
+        }
+        noteBuffer += text
+        resetNotePauseTimer()
+    }
+
+    /// Reset the pause timer for long note
+    private func resetNotePauseTimer() {
+        notePauseTimer?.invalidate()
+        notePauseTimer = Timer.scheduledTimer(withTimeInterval: notePauseThreshold, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.finishLongNote()
+            }
+        }
+    }
+
+    /// Finish and save the long note
+    private func finishLongNote() {
+        guard isCapturingLongNote else { return }
+
+        notePauseTimer?.invalidate()
+        notePauseTimer = nil
+        isCapturingLongNote = false
+
+        if noteBuffer.isEmpty {
+            triggerCommandFlash(name: "Note Empty")
+        } else {
+            saveNote(noteBuffer)
+        }
+        noteBuffer = ""
+    }
+
+    /// Start continuous note mode (until "stop making a note")
+    func startContinuousNote() {
+        logDebug("Starting continuous note")
+        isContinuousNote = true
+        noteBuffer = ""
+        triggerCommandFlash(name: "Note On...")
+        NSLog("[VoiceFlow] 🔔 BEEP: startContinuousNote() - 'voiceflow start making a note' command")
+        NSSound.beep()
+    }
+
+    /// Add text to continuous note buffer
+    func appendToContinuousNote(_ text: String) {
+        guard isContinuousNote else { return }
+
+        if !noteBuffer.isEmpty {
+            noteBuffer += " "
+        }
+        noteBuffer += text
+    }
+
+    /// Stop continuous note and save
+    func stopContinuousNote() {
+        guard isContinuousNote else {
+            logDebug("Not in continuous note mode")
+            return
+        }
+
+        logDebug("Stopping continuous note")
+        isContinuousNote = false
+
+        if noteBuffer.isEmpty {
+            triggerCommandFlash(name: "Note Empty")
+        } else {
+            saveNote(noteBuffer)
+        }
+        noteBuffer = ""
+    }
+
+    /// Save note to file
+    private func saveNote(_ text: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let filename = "note_\(formatter.string(from: Date())).txt"
+        let fileURL = notesDirectory.appendingPathComponent(filename)
+
+        do {
+            try text.write(to: fileURL, atomically: true, encoding: .utf8)
+            logDebug("Saved note: \(filename)")
+            triggerCommandFlash(name: "Note Saved")
+        } catch {
+            logDebug("Failed to save note: \(error)")
+            triggerCommandFlash(name: "Note Failed")
+        }
+    }
+
+    // MARK: - Transcribing ("voiceflow start/stop transcribing")
+
+    /// Start transcribing mode - saves all speech to transcript file
+    func startTranscribing() {
+        logDebug("Starting transcription")
+        isTranscribing = true
+        transcriptBuffer = ""
+        triggerCommandFlash(name: "Transcribing...")
+        NSLog("[VoiceFlow] 🔔 BEEP: startTranscribing() - 'voiceflow start transcribing' command")
+        NSSound.beep()
+    }
+
+    /// Add text to transcript buffer
+    func appendToTranscript(_ text: String) {
+        guard isTranscribing else { return }
+
+        if !transcriptBuffer.isEmpty {
+            transcriptBuffer += "\n"
+        }
+        transcriptBuffer += text
+    }
+
+    /// Stop transcribing and save
+    func stopTranscribing() {
+        guard isTranscribing else {
+            logDebug("Not transcribing")
+            return
+        }
+
+        logDebug("Stopping transcription")
+        isTranscribing = false
+
+        if transcriptBuffer.isEmpty {
+            triggerCommandFlash(name: "Transcript Empty")
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+            let filename = "transcript_\(formatter.string(from: Date())).txt"
+            let fileURL = transcriptsDirectory.appendingPathComponent(filename)
+
+            do {
+                try transcriptBuffer.write(to: fileURL, atomically: true, encoding: .utf8)
+                logDebug("Saved transcript: \(filename)")
+                triggerCommandFlash(name: "Transcript Saved")
+                NSLog("[VoiceFlow] 🔔 BEEP: stopTranscribing() - transcript saved to \(filename)")
+                NSSound.beep()
+            } catch {
+                logDebug("Failed to save transcript: \(error)")
+                triggerCommandFlash(name: "Save Failed")
+            }
+        }
+        transcriptBuffer = ""
+    }
+
+    // MARK: - Folder Opening Commands
+
+    /// Open the notes folder in Finder
+    func openNotesFolder() {
+        NSWorkspace.shared.open(notesDirectory)
+        triggerCommandFlash(name: "Opening Notes")
+    }
+
+    /// Open the Notes panel
+    func openNotesPanel() {
+        // Post notification to VoiceFlowApp to show the panel
+        NotificationCenter.default.post(
+            name: NSNotification.Name("VoiceFlowShowNotesPanel"),
+            object: nil
+        )
+        triggerCommandFlash(name: "Notes Panel")
+    }
+
+    /// Open the Transcripts panel
+    func openTranscriptsPanel() {
+        // Post notification to VoiceFlowApp to show the panel
+        NotificationCenter.default.post(
+            name: NSNotification.Name("VoiceFlowShowTranscriptsPanel"),
+            object: nil
+        )
+        triggerCommandFlash(name: "Transcripts Panel")
+    }
+
+    /// Open the Tickets panel
+    func openTicketsPanel() {
+        // Post notification to VoiceFlowApp to show the panel
+        NotificationCenter.default.post(
+            name: NSNotification.Name("VoiceFlowShowTicketsPanel"),
+            object: nil
+        )
+        triggerCommandFlash(name: "Tickets Panel")
+    }
+
+    /// Open the Vocabulary panel
+    func openVocabularyPanel() {
+        // Post notification to VoiceFlowApp to show the panel
+        NotificationCenter.default.post(
+            name: NSNotification.Name("VoiceFlowShowVocabularyPanel"),
+            object: nil
+        )
+        triggerCommandFlash(name: "Vocabulary")
+    }
+
+    /// Open the recordings folder in Finder
+    func openRecordingsFolder() {
+        let recordingsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/VoiceFlow/Recordings")
+        // Create if doesn't exist
+        try? FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(recordingsDir)
+        triggerCommandFlash(name: "Opening Recordings")
+    }
+
+    /// Open the transcripts folder in Finder
+    func openTranscriptsFolder() {
+        NSWorkspace.shared.open(transcriptsDirectory)
+        triggerCommandFlash(name: "Opening Transcripts")
     }
 
     func showPanelWindow() {
@@ -2850,6 +5115,28 @@ class AppState: ObservableObject {
 
     private func normalizeToken(_ text: String) -> String {
         text.lowercased().trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+    }
+
+    /// Parse a number word or digit string to an integer (1-99), or nil if not a number
+    private func parseNumberWord(_ text: String) -> Int? {
+        let normalized = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Try parsing as digit first
+        if let num = Int(normalized), num >= 1 && num <= 99 {
+            return num
+        }
+
+        // Word to number mapping
+        let wordNumbers: [String: Int] = [
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+            "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+            "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+            "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+            "seventy": 70, "eighty": 80, "ninety": 90
+        ]
+
+        return wordNumbers[normalized]
     }
 
     private struct NormalizedToken {
@@ -3085,10 +5372,18 @@ class AppState: ObservableObject {
 
             let keyToken = normalizedTokens[cursor].token
             let nextToken = (cursor + 1 < normalizedTokens.count) ? normalizedTokens[cursor + 1].token : nil
+
+            // Diagnostic logging for cmd+k bug (VoiceFlow-3o0)
+            let tokenSequence = normalizedTokens[index...min(cursor, normalizedTokens.count - 1)].map { $0.token }.joined(separator: " ")
+            NSLog("[VoiceFlow] 🔍 pressCommandMatches: parsing tokens [%@], keyToken='%@', modifiers=%@", tokenSequence, keyToken, String(describing: modifiers))
+
             guard let keyInfo = keyCodeForToken(keyToken, nextToken: nextToken) else {
+                NSLog("[VoiceFlow] 🔍 pressCommandMatches: keyToken '%@' not recognized by keyCodeForToken", keyToken)
                 index += 1
                 continue
             }
+
+            NSLog("[VoiceFlow] 🔍 pressCommandMatches: keyCodeForToken returned keyCode=%d (0x%02X) for '%@'", keyInfo.keyCode, keyInfo.keyCode, keyToken)
 
             if modifiers.isEmpty && (keyToken == "escape" || keyToken == "esc" || keyToken == "enter" || keyToken == "return") {
                 index += 1
@@ -3108,6 +5403,7 @@ class AppState: ObservableObject {
             let isStable = isPrefixed || isStableMatch(words: turn.words, wordIndices: wordIndices)
             let shortcut = KeyboardShortcut(keyCode: keyInfo.keyCode, modifiers: modifiers)
             let label = "Press \(shortcutDisplayName(shortcut))"
+            NSLog("[VoiceFlow] 🔍 pressCommandMatches: creating match for '%@' with keyCode=%d (0x%02X), isStable=%@", label, shortcut.keyCode, shortcut.keyCode, isStable ? "true" : "false")
 
             matches.append(PendingCommandMatch(
                 key: "system.press",
@@ -3268,7 +5564,239 @@ class AppState: ObservableObject {
         return result
     }
 
+    private func performTerminalTyping(_ block: () -> Void) {
+        if DispatchQueue.getSpecific(key: terminalTypingQueueKey) != nil {
+            block()
+        } else {
+            terminalTypingQueue.sync(execute: block)
+        }
+    }
+
+    private func nextTerminalSubmitAttemptID() -> Int {
+        terminalSubmitAttemptCounter += 1
+        return terminalSubmitAttemptCounter
+    }
+
+    private func logTerminalSubmitAttempt(
+        id: Int,
+        path: String,
+        reason: String,
+        trailing: Bool,
+        minDelayBeforeSubmit: TimeInterval,
+        elapsedSinceLastKey: TimeInterval?,
+        appliedWait: TimeInterval,
+        bufferedNewlines: Int
+    ) {
+        let elapsedMsText: String
+        if let elapsedSinceLastKey {
+            elapsedMsText = String(format: "%.0f", elapsedSinceLastKey * 1000)
+        } else {
+            elapsedMsText = "none"
+        }
+
+        NSLog("[VoiceFlow] ⏎ SUBMIT_ATTEMPT id=%d path=%@ reason=%@ trailing=%@ minDelayMs=%.0f elapsedMs=%@ waitMs=%.0f buffered=%d didTypeThisUtterance=%@ submitSettingMs=%.0f",
+              id,
+              path,
+              reason,
+              trailing ? "YES" : "NO",
+              minDelayBeforeSubmit * 1000,
+              elapsedMsText,
+              appliedWait * 1000,
+              bufferedNewlines,
+              didTypeDictationThisUtterance ? "YES" : "NO",
+              terminalSubmitDelayMs)
+    }
+
+    @discardableResult
+    private func tryTerminalAccessibilityReturnSubmit(
+        submitAttemptID: Int?,
+        reason: String,
+        trailing: Bool
+    ) -> Bool {
+        guard terminalAccessibilitySubmitEnabled else { return false }
+        guard let frontApp = NSWorkspace.shared.frontmostApplication else {
+            let attemptLabel = submitAttemptID.map(String.init) ?? "na"
+            NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_METHOD id=%@ method=ax_action_failed reason=%@ trailing=%@ error=no_frontmost_app",
+                  attemptLabel,
+                  reason,
+                  trailing ? "YES" : "NO")
+            return false
+        }
+        let appName = frontApp.localizedName ?? "Unknown"
+        let bundleId = frontApp.bundleIdentifier ?? "unknown"
+        let attemptLabel = submitAttemptID.map(String.init) ?? "na"
+        let actions: [(String, CFString)] = [
+            ("kAXConfirmAction", kAXConfirmAction as CFString),
+            ("kAXPressAction", kAXPressAction as CFString)
+        ]
+
+        var candidateElement: AXUIElement?
+
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedRef: AnyObject?
+        let focusedResult = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+        if focusedResult == .success, let focusedRef {
+            candidateElement = unsafeBitCast(focusedRef, to: AXUIElement.self)
+        }
+
+        if candidateElement == nil {
+            let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
+            var appFocusedRef: AnyObject?
+            let appFocusedResult = AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &appFocusedRef)
+            if appFocusedResult == .success, let appFocusedRef {
+                candidateElement = unsafeBitCast(appFocusedRef, to: AXUIElement.self)
+            }
+        }
+
+        guard let element = candidateElement else {
+            NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_METHOD id=%@ method=ax_action_failed reason=%@ trailing=%@ app=%@ bundle=%@ error=no_focused_element",
+                  attemptLabel,
+                  reason,
+                  trailing ? "YES" : "NO",
+                  appName,
+                  bundleId)
+            return false
+        }
+
+        for (actionName, actionRef) in actions {
+            let actionResult = AXUIElementPerformAction(element, actionRef)
+            if actionResult == .success {
+                NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_METHOD id=%@ method=ax_action reason=%@ trailing=%@ app=%@ bundle=%@ action=%@",
+                      attemptLabel,
+                      reason,
+                      trailing ? "YES" : "NO",
+                      appName,
+                      bundleId,
+                      actionName)
+                return true
+            }
+        }
+
+        NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_METHOD id=%@ method=ax_action_failed reason=%@ trailing=%@ app=%@ bundle=%@ error=action_unsupported",
+              attemptLabel,
+              reason,
+              trailing ? "YES" : "NO",
+              appName,
+              bundleId)
+        return false
+    }
+
+    private func postReturnViaCGEvent(isTerminal: Bool) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
+        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+        if isTerminal {
+            var cr: UniChar = 0x0D
+            keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+            keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+        }
+        keyDown?.post(tap: .cghidEventTap)
+        keyUp?.post(tap: .cghidEventTap)
+    }
+
+    private func pasteTextViaClipboard(_ text: String) {
+        let pb = NSPasteboard.general
+        let oldClipboard = pb.string(forType: .string) ?? ""
+        
+        // 1. Set clipboard to new text
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        
+        // 2. Send Cmd+V
+        let source = CGEventSource(stateID: .hidSystemState)
+        let vDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true) // kVK_ANSI_V
+        let vUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
+        vDown?.flags = .maskCommand
+        vUp?.flags = .maskCommand
+        vDown?.post(tap: .cghidEventTap)
+        vUp?.post(tap: .cghidEventTap)
+        
+        // 3. Wait for TUI to 'inhale' the paste (Verified 100ms)
+        Thread.sleep(forTimeInterval: 0.1)
+        
+        // 4. Restore original clipboard contents
+        pb.clearContents()
+        pb.setString(oldClipboard, forType: .string)
+    }
+
+    private func postReturnWithPreferredMethod(
+        isTerminal: Bool,
+        submitAttemptID: Int?,
+        reason: String,
+        trailing: Bool,
+        allowAccessibility: Bool = true
+    ) {
+        if isTerminal,
+           allowAccessibility,
+           tryTerminalAccessibilityReturnSubmit(submitAttemptID: submitAttemptID, reason: reason, trailing: trailing) {
+            lastKeyEventTime = Date()
+            return
+        }
+
+        if isTerminal, allowAccessibility, terminalAccessibilitySubmitEnabled {
+            let attemptLabel = submitAttemptID.map(String.init) ?? "na"
+            NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_METHOD id=%@ method=cgevent_fallback reason=%@ trailing=%@",
+                  attemptLabel,
+                  reason,
+                  trailing ? "YES" : "NO")
+        } else if isTerminal, !allowAccessibility {
+            let attemptLabel = submitAttemptID.map(String.init) ?? "na"
+            NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_METHOD id=%@ method=cgevent_locked reason=%@ trailing=%@",
+                  attemptLabel,
+                  reason,
+                  trailing ? "YES" : "NO")
+        }
+
+        postReturnViaCGEvent(isTerminal: isTerminal)
+        lastKeyEventTime = Date()
+    }
+
+    private func chunkForUnicodeInjection(_ text: String, maxCharacters: Int) -> [String] {
+        guard !text.isEmpty else { return [] }
+        guard text.count > maxCharacters else { return [text] }
+
+        var chunks: [String] = []
+        chunks.reserveCapacity((text.count / maxCharacters) + 1)
+        var start = text.startIndex
+
+        while start < text.endIndex {
+            let end = text.index(start, offsetBy: maxCharacters, limitedBy: text.endIndex) ?? text.endIndex
+            chunks.append(String(text[start..<end]))
+            start = end
+        }
+
+        return chunks
+    }
+
+    @discardableResult
+    private func postUnicodeStringEvent(_ text: String, source: CGEventSource?) -> Bool {
+        guard !text.isEmpty else { return true }
+        let utf16Units = Array(text.utf16)
+        guard !utf16Units.isEmpty else { return true }
+
+        return utf16Units.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return false }
+            guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                  let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
+                return false
+            }
+
+            keyDown.keyboardSetUnicodeString(stringLength: utf16Units.count, unicodeString: base)
+            keyUp.keyboardSetUnicodeString(stringLength: utf16Units.count, unicodeString: base)
+            keyDown.flags = []
+            keyUp.flags = []
+            keyDown.post(tap: .cghidEventTap)
+            keyUp.post(tap: .cghidEventTap)
+            return true
+        }
+    }
+
     private func typeText(_ text: String, appendSpace: Bool) {
+        // DIAGNOSTIC: Log if typing during Sleep/Off mode (shouldn't happen - investigating clunk sounds)
+        if microphoneMode != .on {
+            NSLog("[VoiceFlow] ⚠️ DIAGNOSTIC: typeText called during \(microphoneMode.rawValue) mode! text=\"\(text.prefix(50))...\"")
+        }
+
         // Check accessibility first
         guard AXIsProcessTrusted() else {
             let msg = "Cannot type - Accessibility permission NOT granted"
@@ -3281,9 +5809,24 @@ class AppState: ObservableObject {
         if let frontApp = NSWorkspace.shared.frontmostApplication {
             let appName = frontApp.localizedName ?? "Unknown"
             let bundleId = frontApp.bundleIdentifier ?? "?"
-            logDebug("Target app: \(appName) (\(bundleId))")
+            let isActive = frontApp.isActive
+            logDebug("Target app: \(appName) (\(bundleId)) active=\(isActive)")
         } else {
             logDebug("Target app: Unknown (no frontmost app)")
+        }
+
+        // Check if we can get focused element info (for debugging clunk sounds)
+        if let systemWide = AXUIElementCreateSystemWide() as AXUIElement? {
+            var focusedElement: AnyObject?
+            let result = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedElement)
+            if result == .success, let element = focusedElement {
+                var roleValue: AnyObject?
+                AXUIElementCopyAttributeValue(element as! AXUIElement, kAXRoleAttribute as CFString, &roleValue)
+                let role = roleValue as? String ?? "unknown"
+                logDebug("Focused element role: \(role)")
+            } else {
+                logDebug("Focused element: none (may cause clunk)")
+            }
         }
 
         // Don't append space after newlines - it looks wrong
@@ -3315,87 +5858,137 @@ class AppState: ObservableObject {
 
         // Terminal UIs (Claude Code, Gemini CLI) need longer delay before Enter for reliable submission
         // Regular apps work fine with shorter delay
-        let isTerminal = focusContextManager.isCurrentAppTerminal()
-        let minDelayBeforeReturn: TimeInterval = isTerminal ? 0.05 : 0.02  // 50ms for terminals (using AppleScript), 20ms otherwise
+        let frontmostBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+        let isTerminal = focusContextManager.isCurrentAppTerminal() || 
+                         frontmostBundleId == "com.googlecode.iterm2" || 
+                         frontmostBundleId == "com.apple.Terminal"
 
-        for char in output {
-            if char == "\n" {
-                logDebug("Sending Return key for newline (isTerminal=\(isTerminal))")
-                // Ensure sufficient delay before Return key, even across typeText calls
-                // This fixes inconsistent newline submission at end of utterances
-                // Terminal UIs (like Claude Code) need time to process the keypress as "submit"
-                if let lastTime = lastKeyEventTime {
-                    let elapsed = Date().timeIntervalSince(lastTime)
-                    let neededDelay = max(0, minDelayBeforeReturn - elapsed)
-                    if neededDelay > 0 {
-                        Thread.sleep(forTimeInterval: neededDelay)
+        // TERMINAL MODE: Use direct Unicode injection, never clipboard.
+        // This avoids clipboard races and keeps ordering deterministic by serializing on
+        // terminalTypingQueue for all terminal text and newline delivery.
+        if isTerminal {
+            performTerminalTyping {
+                let segments = output.components(separatedBy: "\n")
+
+                for (i, segment) in segments.enumerated() {
+                    let followedByNewline = (i < segments.count - 1)
+
+                    // 1. Deliver text segment via Fast Unicode Blast (Yesterday's method)
+                    if !segment.isEmpty {
+                        let chunks = chunkForUnicodeInjection(segment, maxCharacters: 120) 
+                        for chunk in chunks {
+                            if postUnicodeStringEvent(chunk, source: source) {
+                                eventsPosted += chunk.count
+                            }
+                            lastKeyEventTime = Date()
+                        }
+                        NSLog("[VoiceFlow] ⌨️ Baseline: Blasted %d chars via Unicode", segment.count)
                     }
-                } else {
-                    // Always delay before Enter, even if this is the first/only keypress
-                    // This ensures terminal UIs have time to be ready for the submission
-                    Thread.sleep(forTimeInterval: minDelayBeforeReturn)
+
+                    // 2. Handle Newline if present (Today's verified method)
+                    if followedByNewline {
+                        let isTrailingReturn = (i == segments.count - 2) && (segments.last?.isEmpty == true)
+                        let submitReason = isTrailingReturn ? "trailing_newline_baseline" : "inline_newline_baseline"
+                        
+                        // Physical Air Gap (500ms safety)
+                        if let lastTime = lastKeyEventTime {
+                            let elapsed = Date().timeIntervalSince(lastTime)
+                            // 1000ms absolute safety gap
+                            let neededDelay = max(1.0, (terminalSubmitDelayMs / 1000.0) - elapsed)
+                            Thread.sleep(forTimeInterval: neededDelay)
+                            NSLog("[VoiceFlow] ⏎ Post-Text Gap: waiting %.0fms", neededDelay * 1000)
+                        } else {
+                            Thread.sleep(forTimeInterval: 1.0)
+                        }
+
+                        // Submit via Physical Return key (VK 36)
+                        NSLog("[VoiceFlow] ⏎ Submitting via Physical Key (reason=%@)", submitReason)
+                        postReturnWithPreferredMethod(
+                            isTerminal: true,
+                            submitAttemptID: nextTerminalSubmitAttemptID(),
+                            reason: submitReason,
+                            trailing: isTrailingReturn,
+                            allowAccessibility: false
+                        )
+                        lastKeyEventTime = Date()
+                        
+                        // Brief pause after Return
+                        Thread.sleep(forTimeInterval: 0.05)
+                    }
                 }
 
-                // For terminals (especially ink/React apps like Claude Code), we need to ensure
-                // the Return key sends \r (carriage return), not \n (line feed).
-                // Ink's useInput hook checks key.return which expects \r for submit.
-                // If \n is received, it's treated as regular input (just a newline character).
-                if isTerminal {
-                    // Send Return key with explicit \r character and clear modifier flags
+                logger.debug("Successfully delivered \(eventsPosted) terminal characters via Hybrid Baseline mode")
+            }
+            if eventsPosted > 0 {
+                lastTerminalTextTypeCompletionTime = Date()
+            }
+        } else {
+            // NON-TERMINAL MODE: Use per-character CGEvents (reliable for GUI apps)
+            let minDelayBeforeReturn: TimeInterval = 0.02
+
+            for char in output {
+                if char == "\n" {
+                    if let lastTime = lastKeyEventTime {
+                        let elapsed = Date().timeIntervalSince(lastTime)
+                        let neededDelay = max(0, minDelayBeforeReturn - elapsed)
+                        if neededDelay > 0 {
+                            Thread.sleep(forTimeInterval: neededDelay)
+                        }
+                    } else {
+                        Thread.sleep(forTimeInterval: minDelayBeforeReturn)
+                    }
+
                     let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
                     let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+                    keyDown?.post(tap: .cghidEventTap)
+                    keyUp?.post(tap: .cghidEventTap)
+                    lastKeyEventTime = Date()
+                    continue
+                }
 
-                    // Explicitly set the character to \r (carriage return) for terminal apps
-                    var cr: UniChar = 0x0D  // \r = carriage return
-                    keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
-                    keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &cr)
+                if let unicodeScalar = char.unicodeScalars.first {
+                    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
+                    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
 
-                    // Clear any modifier flags to avoid Shift+Enter being interpreted as newline
-                    keyDown?.flags = []
-                    keyUp?.flags = []
+                    var unichar = UniChar(unicodeScalar.value)
+                    keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unichar)
+                    keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unichar)
 
                     keyDown?.post(tap: .cghidEventTap)
                     keyUp?.post(tap: .cghidEventTap)
-                } else {
-                    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-                    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-                    keyDown?.post(tap: .cghidEventTap)
-                    keyUp?.post(tap: .cghidEventTap)
-                }
-                lastKeyEventTime = Date()
-                continue
-            }
+                    lastKeyEventTime = Date()
+                    eventsPosted += 1
 
-            if let unicodeScalar = char.unicodeScalars.first {
-                let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
-                let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-
-                var unichar = UniChar(unicodeScalar.value)
-                keyDown?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unichar)
-                keyUp?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unichar)
-
-                keyDown?.post(tap: .cghidEventTap)
-                keyUp?.post(tap: .cghidEventTap)
-                lastKeyEventTime = Date()
-                eventsPosted += 1
-
-                // Apply inter-character delay for apps that need slower typing (Google Docs, etc.)
-                if interCharDelay > 0 {
-                    Thread.sleep(forTimeInterval: interCharDelay)
+                    if interCharDelay > 0 {
+                        Thread.sleep(forTimeInterval: interCharDelay)
+                    }
                 }
             }
+            logger.debug("Successfully posted \(eventsPosted) character events")
         }
-        logger.debug("Successfully posted \(eventsPosted) character events")
     }
 
     /// Send Return key via AppleScript (System Events)
     /// This uses a different mechanism than CGEvent and may be more reliable for some apps
-    private func sendReturnViaAppleScript() {
-        let script = """
-        tell application "System Events"
-            keystroke return
-        end tell
-        """
+    /// The delay parameter adds a pause INSIDE AppleScript before keystroke - this is more
+    /// reliable than Thread.sleep because it happens in the same event context as the keystroke
+    private func sendReturnViaAppleScript(delaySeconds: Double = 0) {
+        let script: String
+        if delaySeconds > 0 {
+            script = """
+            tell application "System Events"
+                delay \(delaySeconds)
+                keystroke return
+            end tell
+            """
+            NSLog("[VoiceFlow] ⏎ AppleScript: delay %.0fms then return", delaySeconds * 1000)
+        } else {
+            script = """
+            tell application "System Events"
+                keystroke return
+            end tell
+            """
+        }
         if let appleScript = NSAppleScript(source: script) {
             var error: NSDictionary?
             appleScript.executeAndReturnError(&error)
@@ -3410,52 +6003,153 @@ class AppState: ObservableObject {
     private func flushBufferedTerminalNewlines() {
         guard bufferedTerminalNewlines > 0 else { return }
 
-        logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s)")
-
-        let minDelayBeforeReturn: TimeInterval = 0.05
-
-        for i in 0..<bufferedTerminalNewlines {
-            // Ensure sufficient delay before Return key
-            if let lastTime = lastKeyEventTime {
-                let elapsed = Date().timeIntervalSince(lastTime)
-                let neededDelay = max(0, minDelayBeforeReturn - elapsed)
-                if neededDelay > 0 {
-                    Thread.sleep(forTimeInterval: neededDelay)
-                }
-            } else if i > 0 {
-                Thread.sleep(forTimeInterval: minDelayBeforeReturn)
-            }
-
-            // For terminals, try AppleScript which uses a different keystroke mechanism
-            // This is consistent with how we send newlines in typeText
-            let isTerminal = focusContextManager.isCurrentAppTerminal()
-            if isTerminal {
-                sendReturnViaAppleScript()
-            } else {
-                let source = CGEventSource(stateID: .hidSystemState)
-                let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-                let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
-                keyDown?.post(tap: .cghidEventTap)
-                keyUp?.post(tap: .cghidEventTap)
-            }
-            lastKeyEventTime = Date()
+        let isTerminal = focusContextManager.isCurrentAppTerminal()
+        logDebug("Flushing \(bufferedTerminalNewlines) buffered terminal newline(s) (isTerminal=\(isTerminal))")
+        if isTerminal, terminalSimpleSubmitEnabled {
+            logDebug("Simple terminal submit active: fixed \(Int(terminalSimpleSubmitPauseMs))ms pause before Enter")
         }
 
-        bufferedTerminalNewlines = 0
+        let flushBlock = {
+            if isTerminal, self.terminalSimpleSubmitEnabled {
+                let simpleDelay = max(0, self.terminalSimpleSubmitPauseMs / 1000.0)
+                let submitAttemptID = self.nextTerminalSubmitAttemptID()
+                self.logTerminalSubmitAttempt(
+                    id: submitAttemptID,
+                    path: "flush_simple",
+                    reason: self.didTypeDictationThisUtterance ? "simple_mode_same_turn" : "simple_mode_followup_turn",
+                    trailing: true,
+                    minDelayBeforeSubmit: simpleDelay,
+                    elapsedSinceLastKey: self.lastKeyEventTime.map { Date().timeIntervalSince($0) },
+                    appliedWait: simpleDelay,
+                    bufferedNewlines: self.bufferedTerminalNewlines
+                )
+                NSLog("[VoiceFlow] ⏎ SIMPLE_TERMINAL_SUBMIT wait=%.0fms buffered=%d", simpleDelay * 1000, self.bufferedTerminalNewlines)
+                Thread.sleep(forTimeInterval: simpleDelay)
+
+                for i in 0..<self.bufferedTerminalNewlines {
+                    if i > 0 {
+                        Thread.sleep(forTimeInterval: 0.05)
+                    }
+                    self.logDebug("Simple terminal submit: posting Enter now (\(i + 1)/\(self.bufferedTerminalNewlines))")
+                    self.postReturnWithPreferredMethod(
+                        isTerminal: true,
+                        submitAttemptID: submitAttemptID,
+                        reason: self.didTypeDictationThisUtterance ? "simple_mode_same_turn" : "simple_mode_followup_turn",
+                        trailing: true,
+                        allowAccessibility: false
+                    )
+                    self.logDebug("Simple terminal submit: Enter posted")
+                }
+
+                self.bufferedTerminalNewlines = 0
+                return
+            }
+
+            // Wait for text to be fully processed before sending Return.
+            // For terminal TUIs we combine:
+            // 1) time since the last injected key event
+            // 2) split-turn protection for newline-only utterances (e.g. "hello" then "newline")
+            let baseDelay: TimeInterval = isTerminal ? self.terminalFlushBaseDelay : 0.05
+            let minSinceLastChar: TimeInterval = isTerminal ? (self.terminalSubmitDelayMs / 1000.0) : 0.10
+            var actualDelay = baseDelay
+            if let lastTime = self.lastKeyEventTime {
+                let elapsed = Date().timeIntervalSince(lastTime)
+                // 1000ms absolute safety gap
+                actualDelay = max(1.0, (self.terminalSubmitDelayMs / 1000.0) - elapsed)
+                NSLog("[VoiceFlow] ⏎ Flush delay: elapsed=%.0fms since last char, waiting %.0fms (min %.0fms from last char)",
+                      elapsed * 1000, actualDelay * 1000, self.terminalSubmitDelayMs)
+            } else {
+                actualDelay = 1.0
+                NSLog("[VoiceFlow] ⏎ Flush delay: no prior keystrokes, using base delay 1000ms")
+            }
+
+            if isTerminal,
+               !self.didTypeDictationThisUtterance,
+               let lastTypedAt = self.lastTerminalTextTypeCompletionTime {
+                let sinceLastTypeCompletion = Date().timeIntervalSince(lastTypedAt)
+                if sinceLastTypeCompletion <= self.terminalSplitNewlineFollowupWindow {
+                    let followupDelay = self.terminalSubmitDelayMs / 1000.0
+                    if followupDelay > actualDelay {
+                        NSLog("[VoiceFlow] ⏎ Split-turn newline protection: last terminal text completed %.0fms ago, enforcing %.0fms minimum wait",
+                              sinceLastTypeCompletion * 1000, followupDelay * 1000)
+                    }
+                    actualDelay = max(actualDelay, followupDelay)
+                }
+            }
+
+            if isTerminal, !self.didTypeDictationThisUtterance, self.bufferedTerminalNewlines > 0 {
+                if self.terminalNewlineOnlyAbsoluteMinDelay > actualDelay {
+                    NSLog("[VoiceFlow] ⏎ Newline-only utterance protection: enforcing absolute min %.0fms wait from flush start",
+                          self.terminalNewlineOnlyAbsoluteMinDelay * 1000)
+                }
+                actualDelay = max(actualDelay, self.terminalNewlineOnlyAbsoluteMinDelay)
+            }
+            let submitAttemptID = self.nextTerminalSubmitAttemptID()
+            let submitReason = self.didTypeDictationThisUtterance ? "buffered_newline_same_turn" : "newline_only_followup_turn"
+            self.logTerminalSubmitAttempt(
+                id: submitAttemptID,
+                path: "flush",
+                reason: submitReason,
+                trailing: true,
+                minDelayBeforeSubmit: minSinceLastChar,
+                elapsedSinceLastKey: self.lastKeyEventTime.map { Date().timeIntervalSince($0) },
+                appliedWait: actualDelay,
+                bufferedNewlines: self.bufferedTerminalNewlines
+            )
+            Thread.sleep(forTimeInterval: actualDelay)
+
+            for i in 0..<self.bufferedTerminalNewlines {
+                if i > 0 {
+                    Thread.sleep(forTimeInterval: 0.05) // gap between multiple Returns
+                }
+                self.postReturnWithPreferredMethod(
+                    isTerminal: isTerminal,
+                    submitAttemptID: submitAttemptID,
+                    reason: submitReason,
+                    trailing: true,
+                    allowAccessibility: false
+                )
+            }
+
+            self.bufferedTerminalNewlines = 0
+        }
+
+        if isTerminal {
+            performTerminalTyping(flushBlock)
+        } else {
+            flushBlock()
+        }
     }
 
     /// Send a single Enter key press (for explicit "press enter" / "submit" command)
     private func sendEnterKey() {
-        logDebug("Sending explicit Enter key")
         let isTerminal = focusContextManager.isCurrentAppTerminal()
+        logDebug("Sending explicit Enter key (isTerminal=\(isTerminal))")
+        let sendBlock = {
+            self.postReturnWithPreferredMethod(
+                isTerminal: isTerminal,
+                submitAttemptID: nil,
+                reason: "explicit_enter_command",
+                trailing: true
+            )
+        }
+
         if isTerminal {
-            sendReturnViaAppleScript()
+            performTerminalTyping(sendBlock)
         } else {
-            let source = CGEventSource(stateID: .hidSystemState)
-            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: true)
-            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Return), keyDown: false)
+            sendBlock()
+        }
+    }
+
+    private func sendBackspaceKeypresses(_ count: Int) {
+        guard count > 0 else { return }
+        let source = CGEventSource(stateID: .hidSystemState)
+        for _ in 0..<count {
+            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Delete), keyDown: true)
+            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_Delete), keyDown: false)
             keyDown?.post(tap: .cghidEventTap)
             keyUp?.post(tap: .cghidEventTap)
+            usleep(10000)
         }
         lastKeyEventTime = Date()
     }
@@ -3478,6 +6172,7 @@ class AppState: ObservableObject {
 
         let keyName = KeyboardShortcut.keyCodeToString(shortcut.keyCode)
         logDebug("Sending Event: \(flagNames.joined(separator: "+")) + \(keyName) (code: \(shortcut.keyCode))")
+        NSLog("[VoiceFlow] executeKeyboardShortcut: keyCode=%d (0x%02X), flags=%llu", shortcut.keyCode, shortcut.keyCode, flags.rawValue)
 
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: shortcut.keyCode, keyDown: true)
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: shortcut.keyCode, keyDown: false)
@@ -3485,15 +6180,17 @@ class AppState: ObservableObject {
         keyDown?.flags = flags
         keyUp?.flags = flags
 
+        // Post keyDown, wait briefly, then keyUp (more realistic timing)
         keyDown?.post(tap: .cghidEventTap)
+        usleep(10000)  // 10ms delay between keyDown and keyUp
         keyUp?.post(tap: .cghidEventTap)
     }
 
     // MARK: - Persistence
 
     private func loadAPIKey() {
-        apiKey = UserDefaults.standard.string(forKey: "assemblyai_api_key") ?? "73686868686868686868686868686868" // Default placeholder or real key if provided
-        deepgramApiKey = UserDefaults.standard.string(forKey: "deepgram_api_key") ?? "9988458f12e98ddd52fc20a9ed5eb089b22ca29e"
+        apiKey = UserDefaults.standard.string(forKey: "assemblyai_api_key") ?? ""
+        deepgramApiKey = UserDefaults.standard.string(forKey: "deepgram_api_key") ?? ""
     }
 
     func saveAPIKey(_ key: String) {
@@ -3501,7 +6198,7 @@ class AppState: ObservableObject {
         apiKey = key
         UserDefaults.standard.set(key, forKey: "assemblyai_api_key")
         
-        if previous != key && microphoneMode != .off && (dictationProvider == .online || dictationProvider == .auto) {
+        if previous != key && (microphoneMode == .on || microphoneMode == .sleep) && (dictationProvider == .online || dictationProvider == .auto) {
             logDebug("API Key changed: Restarting services")
             restartServicesIfActive()
         }
@@ -3512,7 +6209,7 @@ class AppState: ObservableObject {
         deepgramApiKey = key
         UserDefaults.standard.set(key, forKey: "deepgram_api_key")
         
-        if previous != key && microphoneMode != .off && dictationProvider == .deepgram {
+        if previous != key && (microphoneMode == .on || microphoneMode == .sleep) && dictationProvider == .deepgram {
             logDebug("Deepgram API Key changed: Restarting services")
             restartServicesIfActive()
         }
@@ -3531,14 +6228,180 @@ class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Custom Vocabulary
+
+    private func loadCustomVocabulary() {
+        if let data = UserDefaults.standard.data(forKey: "custom_vocabulary"),
+           let entries = try? JSONDecoder().decode([VocabularyEntry].self, from: data) {
+            customVocabulary = entries
+        }
+    }
+
+    /// Reload vocabulary from UserDefaults (called when CLI modifies vocabulary)
+    func reloadVocabulary() {
+        loadCustomVocabulary()
+        loadVocabularyPrompt()
+        // Reconnect to apply new vocabulary to AssemblyAI
+        if (microphoneMode == .on || microphoneMode == .sleep) && !effectiveIsOffline {
+            reconnect()
+        }
+    }
+
+    func saveCustomVocabulary() {
+        if let data = try? JSONEncoder().encode(customVocabulary) {
+            UserDefaults.standard.set(data, forKey: "custom_vocabulary")
+        }
+    }
+
+    func addVocabularyEntry(_ entry: VocabularyEntry) {
+        customVocabulary.append(entry)
+        saveCustomVocabulary()
+    }
+
+    func updateVocabularyEntry(_ entry: VocabularyEntry) {
+        if let index = customVocabulary.firstIndex(where: { $0.id == entry.id }) {
+            customVocabulary[index] = entry
+            saveCustomVocabulary()
+        }
+    }
+
+    func deleteVocabularyEntry(_ entry: VocabularyEntry) {
+        customVocabulary.removeAll { $0.id == entry.id }
+        saveCustomVocabulary()
+    }
+
+    /// Build a lookup dictionary from custom vocabulary for fast matching
+    func vocabularyLookup() -> [String: String] {
+        var lookup: [String: String] = [:]
+        for entry in customVocabulary where entry.isEnabled {
+            // Store with lowercased key for case-insensitive matching
+            lookup[entry.spokenPhrase.lowercased()] = entry.writtenForm
+        }
+        return lookup
+    }
+
+    /// Apply custom vocabulary substitutions to text
+    /// Replaces spoken phrases with their written forms (case-insensitive)
+    private func applyVocabularySubstitutions(_ text: String) -> String {
+        guard !customVocabulary.isEmpty else { return text }
+
+        var result = text
+
+        // Sort entries by spoken phrase length (longest first) to handle overlapping phrases
+        let sortedEntries = customVocabulary
+            .filter { $0.isEnabled }
+            .sorted { $0.spokenPhrase.count > $1.spokenPhrase.count }
+
+        for entry in sortedEntries {
+            let lowerResult = result.lowercased()
+            let spokenLower = entry.spokenPhrase.lowercased()
+            let containsSpoken = lowerResult.contains(spokenLower)
+
+            // Use word boundary matching to avoid partial word replacements
+            // The pattern matches the spoken phrase with optional surrounding punctuation
+            let pattern = "(?i)\\b\(NSRegularExpression.escapedPattern(for: entry.spokenPhrase))\\b"
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let range = NSRange(result.startIndex..<result.endIndex, in: result)
+                let matches = regex.matches(in: result, options: [], range: range)
+
+                if matches.isEmpty {
+                    if isDebugMode && containsSpoken {
+                        logDebug("Vocabulary: '\(entry.spokenPhrase)' seen but no word-boundary match in \"\(result.prefix(120))\"")
+                    }
+                    continue
+                }
+
+                // Replace from end to start to preserve indices
+                for match in matches.reversed() {
+                    if let matchRange = Range(match.range, in: result) {
+                        let originalText = String(result[matchRange])
+                        // Preserve the original case pattern for simple cases
+                        let replacement = preserveCase(original: originalText, replacement: entry.writtenForm)
+                        result.replaceSubrange(matchRange, with: replacement)
+                        logDebug("Vocabulary: '\(originalText)' → '\(replacement)'")
+                    }
+                }
+            }
+        }
+
+        return result
+    }
+
+    /// Attempt to preserve case pattern from original text in replacement
+    private func preserveCase(original: String, replacement: String) -> String {
+        // If original is all uppercase, make replacement all uppercase
+        if original == original.uppercased() && original != original.lowercased() {
+            return replacement.uppercased()
+        }
+        // If original is all lowercase, keep replacement as-is (it has the desired form)
+        if original == original.lowercased() {
+            return replacement
+        }
+        // If original is capitalized (first letter upper, rest lower), capitalize replacement
+        if original.first?.isUppercase == true &&
+           String(original.dropFirst()) == String(original.dropFirst()).lowercased() {
+            return replacement.prefix(1).uppercased() + replacement.dropFirst()
+        }
+        // Otherwise, use the replacement as defined
+        return replacement
+    }
+
     private func loadCommandDelay() {
         let stored = UserDefaults.standard.double(forKey: "command_delay_ms")
         commandDelayMs = stored
     }
 
+    private func loadTerminalSubmitDelay() {
+        guard let stored = UserDefaults.standard.object(forKey: "terminal_submit_delay_ms") as? Double else {
+            terminalSubmitDelayMs = 250
+            NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_DELAY effective=%.0fms source=default", terminalSubmitDelayMs)
+            return
+        }
+        let clamped = min(max(stored, 100), 5000)
+        terminalSubmitDelayMs = clamped
+        NSLog("[VoiceFlow] ⏎ TERMINAL_SUBMIT_DELAY effective=%.0fms source=userdefaults raw=%.0fms", clamped, stored)
+    }
+
+    private func loadTerminalSimpleSubmitSettings() {
+        terminalSimpleSubmitEnabled = UserDefaults.standard.object(forKey: "terminal_simple_submit_enabled") as? Bool ?? true
+        let storedPause = UserDefaults.standard.object(forKey: "terminal_simple_submit_pause_ms") as? Double ?? 250
+        terminalSimpleSubmitPauseMs = min(max(storedPause, 50), 5000)
+        NSLog("[VoiceFlow] ⏎ SIMPLE_TERMINAL_SUBMIT enabled=%@ pauseMs=%.0f",
+              terminalSimpleSubmitEnabled ? "YES" : "NO",
+              terminalSimpleSubmitPauseMs)
+    }
+
+    private func loadTerminalAccessibilitySubmitSetting() {
+        terminalAccessibilitySubmitEnabled = UserDefaults.standard.object(forKey: "terminal_accessibility_submit_enabled") as? Bool ?? false
+        NSLog("[VoiceFlow] ⏎ TERMINAL_AX_SUBMIT enabled=%@",
+              terminalAccessibilitySubmitEnabled ? "YES" : "NO")
+    }
+
     func saveCommandDelay(_ value: Double) {
         commandDelayMs = value
         UserDefaults.standard.set(value, forKey: "command_delay_ms")
+    }
+
+    func saveTerminalSubmitDelay(_ value: Double) {
+        let clamped = min(max(value, 300), 5000)
+        terminalSubmitDelayMs = clamped
+        UserDefaults.standard.set(clamped, forKey: "terminal_submit_delay_ms")
+    }
+
+    func saveTerminalSimpleSubmitEnabled(_ value: Bool) {
+        terminalSimpleSubmitEnabled = value
+        UserDefaults.standard.set(value, forKey: "terminal_simple_submit_enabled")
+    }
+
+    func saveTerminalSimpleSubmitPauseMs(_ value: Double) {
+        let clamped = min(max(value, 100), 5000)
+        terminalSimpleSubmitPauseMs = clamped
+        UserDefaults.standard.set(clamped, forKey: "terminal_simple_submit_pause_ms")
+    }
+
+    func saveTerminalAccessibilitySubmitEnabled(_ value: Bool) {
+        terminalAccessibilitySubmitEnabled = value
+        UserDefaults.standard.set(value, forKey: "terminal_accessibility_submit_enabled")
     }
 
     private func loadLiveDictationEnabled() {
@@ -3549,15 +6412,37 @@ class AppState: ObservableObject {
         let previousValue = liveDictationEnabled
         liveDictationEnabled = value
         UserDefaults.standard.set(value, forKey: "live_dictation_enabled")
-        
-        if previousValue != value && microphoneMode != .off {
+
+        if previousValue != value && (microphoneMode == .on || microphoneMode == .sleep) {
             logDebug("Live dictation changed: Restarting services")
             restartServicesIfActive()
         }
     }
 
+    private func loadAggressiveLiveMode() {
+        aggressiveLiveMode = UserDefaults.standard.bool(forKey: "aggressive_live_mode")
+    }
+
+    func saveAggressiveLiveMode(_ value: Bool) {
+        aggressiveLiveMode = value
+        UserDefaults.standard.set(value, forKey: "aggressive_live_mode")
+        // Reset tracking when toggled
+        lastTypedPartialWords = []
+        lastTypedPartialText = ""
+    }
+
+    private func loadAggressiveAllowCorrections() {
+        // Default to true - corrections enabled unless explicitly disabled
+        aggressiveAllowCorrections = UserDefaults.standard.object(forKey: "aggressive_allow_corrections") as? Bool ?? true
+    }
+
+    func saveAggressiveAllowCorrections(_ value: Bool) {
+        aggressiveAllowCorrections = value
+        UserDefaults.standard.set(value, forKey: "aggressive_allow_corrections")
+    }
+
     private func restartServicesIfActive() {
-        guard microphoneMode != .off else { return }
+        guard microphoneMode == .on || microphoneMode == .sleep else { return }
         let currentMode = microphoneMode
         stopListening()
         startListening(transcribeMode: currentMode == .on)
@@ -3580,6 +6465,48 @@ class AppState: ObservableObject {
             isLatencyDegraded = false
             logDebug("Latency recovered: \(latencyMs)ms")
         }
+
+        // Auto-switch to offline if enabled and latency exceeds threshold
+        if autoSwitchToOfflineOnHighLatency && !didAutoSwitchToOffline && latencyMs >= autoSwitchOfflineThresholdMs {
+            // Only switch if we're currently using an online provider
+            if dictationProvider != .offline && !effectiveIsOffline {
+                didAutoSwitchToOffline = true
+                logDebug("Auto-switching to offline due to high latency: \(latencyMs)ms")
+                NSLog("[VoiceFlow] Auto-switching to offline speech (latency: %dms > %dms threshold)", latencyMs, autoSwitchOfflineThresholdMs)
+
+                // Switch to offline provider
+                let wasOn = microphoneMode == .on
+                if wasOn {
+                    stopListening()
+                }
+                // Temporarily switch to offline
+                let previousProvider = dictationProvider
+                dictationProvider = .offline
+                if wasOn {
+                    startListening(transcribeMode: true)
+                }
+
+                // Flash notification
+                triggerCommandFlash(name: "Slow network → Offline")
+
+                // Restore original provider after some time (30 seconds) if latency improves
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 30_000_000_000)  // 30 seconds
+                    if self.didAutoSwitchToOffline {
+                        self.didAutoSwitchToOffline = false
+                        // Check if latency has improved
+                        if let currentLatency = self.connectionLatencyMs, currentLatency < self.autoSwitchOfflineThresholdMs {
+                            self.logDebug("Latency recovered, switching back to \(previousProvider.rawValue)")
+                            let wasOn = self.microphoneMode == .on
+                            if wasOn { self.stopListening() }
+                            self.dictationProvider = previousProvider
+                            if wasOn { self.startListening(transcribeMode: true) }
+                            self.triggerCommandFlash(name: "Online restored")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func loadUtteranceSettings() {
@@ -3594,6 +6521,15 @@ class AppState: ObservableObject {
         let storedSilence = UserDefaults.standard.integer(forKey: "custom_silence_threshold_ms")
         if storedSilence > 0 {
             customSilenceThresholdMs = storedSilence
+        }
+        let storedMaxSilence = UserDefaults.standard.integer(forKey: "custom_max_turn_silence_ms")
+        if storedMaxSilence > 0 {
+            customMaxTurnSilenceMs = storedMaxSilence
+        }
+        formatTurnsEnabled = UserDefaults.standard.object(forKey: "format_turns_enabled") as? Bool ?? true
+        if let presetString = UserDefaults.standard.string(forKey: "speed_preset"),
+           let preset = SpeedPreset(rawValue: presetString) {
+            speedPreset = preset
         }
     }
 
@@ -3629,6 +6565,63 @@ class AppState: ObservableObject {
         }
     }
 
+    func saveCustomMaxTurnSilence(_ value: Int) {
+        customMaxTurnSilenceMs = value
+        UserDefaults.standard.set(value, forKey: "custom_max_turn_silence_ms")
+        // Auto-switch to custom speed preset when manually adjusting
+        if speedPreset != .custom {
+            speedPreset = .custom
+            UserDefaults.standard.set(SpeedPreset.custom.rawValue, forKey: "speed_preset")
+        }
+    }
+
+    func saveFormatTurns(_ enabled: Bool) {
+        formatTurnsEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "format_turns_enabled")
+        // Auto-switch to custom speed preset when manually adjusting
+        if speedPreset != .custom {
+            speedPreset = .custom
+            UserDefaults.standard.set(SpeedPreset.custom.rawValue, forKey: "speed_preset")
+        }
+    }
+
+    /// Apply a speed preset, configuring all related settings at once
+    func applySpeedPreset(_ preset: SpeedPreset) {
+        speedPreset = preset
+        UserDefaults.standard.set(preset.rawValue, forKey: "speed_preset")
+
+        guard preset != .custom else { return }
+
+        // Apply all preset values
+        utteranceMode = preset.utteranceMode
+        UserDefaults.standard.set(preset.utteranceMode.rawValue, forKey: "utterance_mode")
+
+        customConfidenceThreshold = preset.confidenceThreshold
+        UserDefaults.standard.set(preset.confidenceThreshold, forKey: "custom_confidence_threshold")
+
+        customSilenceThresholdMs = preset.silenceThresholdMs
+        UserDefaults.standard.set(preset.silenceThresholdMs, forKey: "custom_silence_threshold_ms")
+
+        customMaxTurnSilenceMs = preset.maxTurnSilenceMs
+        UserDefaults.standard.set(preset.maxTurnSilenceMs, forKey: "custom_max_turn_silence_ms")
+
+        liveDictationEnabled = preset.liveDictationEnabled
+        UserDefaults.standard.set(preset.liveDictationEnabled, forKey: "live_dictation_enabled")
+
+        aggressiveLiveMode = preset.aggressiveLiveMode
+        UserDefaults.standard.set(preset.aggressiveLiveMode, forKey: "aggressive_live_mode")
+
+        formatTurnsEnabled = preset.formatTurns
+        UserDefaults.standard.set(preset.formatTurns, forKey: "format_turns_enabled")
+
+        logDebug("Applied speed preset: \(preset.displayName)")
+
+        // Restart services if connected to apply new settings
+        if isConnected {
+            restartServicesIfActive()
+        }
+    }
+
     private func loadActiveBehavior() {
         if let behaviorString = UserDefaults.standard.string(forKey: "active_behavior"),
            let behavior = ActiveBehavior(rawValue: behaviorString) {
@@ -3653,7 +6646,7 @@ class AppState: ObservableObject {
         dictationProvider = provider
         UserDefaults.standard.set(provider.rawValue, forKey: "dictation_provider")
         
-        if previous != provider && microphoneMode != .off {
+        if previous != provider && (microphoneMode == .on || microphoneMode == .sleep) {
             logDebug("Dictation provider changed: \(previous.rawValue) -> \(provider.rawValue)")
             restartServicesIfActive()
         }
@@ -3708,6 +6701,35 @@ class AppState: ObservableObject {
         setMode(.sleep)
     }
 
+    // MARK: - Auto-Submit Timer (Vibe Coding Mode)
+
+    private func startAutoSubmitTimer() {
+        cancelAutoSubmitTimer()
+        logDebug("Auto-submit: Starting \(autoSubmitDelaySeconds)s timer")
+        autoSubmitTimer = Timer.scheduledTimer(withTimeInterval: autoSubmitDelaySeconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleAutoSubmitTimeout()
+            }
+        }
+    }
+
+    private func cancelAutoSubmitTimer() {
+        if autoSubmitTimer != nil {
+            logDebug("Auto-submit: Timer cancelled")
+        }
+        autoSubmitTimer?.invalidate()
+        autoSubmitTimer = nil
+    }
+
+    private func handleAutoSubmitTimeout() {
+        guard autoSubmitEnabled && microphoneMode == .on else {
+            logDebug("Auto-submit: Skipped (mode=\(microphoneMode.rawValue), enabled=\(autoSubmitEnabled))")
+            return
+        }
+        logDebug("Auto-submit: Pressing Enter after silence")
+        typeText("\n", appendSpace: false)
+    }
+
     // MARK: - Auto-Off Timer Settings
 
     private func loadAutoOffSettings() {
@@ -3738,8 +6760,8 @@ class AppState: ObservableObject {
 
     private func resetAutoOffTimer() {
         stopAutoOffTimer()
-        // Auto-off runs when mic is On or Sleep (not Off)
-        guard autoOffEnabled && microphoneMode != .off else { return }
+        // Auto-off runs when mic is On or Sleep
+        guard autoOffEnabled && (microphoneMode == .on || microphoneMode == .sleep) else { return }
 
         let seconds = autoOffMinutes * 60
         autoOffTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
@@ -3755,7 +6777,7 @@ class AppState: ObservableObject {
     }
 
     private func handleAutoOffTimeout() {
-        guard microphoneMode != .off else { return }
+        guard microphoneMode == .on || microphoneMode == .sleep else { return }
         logDebug("Auto-off timeout: Turning microphone completely Off after \(Int(autoOffMinutes)) minutes")
         setMode(.off)
     }
@@ -3784,6 +6806,32 @@ class AppState: ObservableObject {
         aiFormatterService.config.apiKey = value
     }
 
+    // MARK: - Command Panel Settings
+
+    private func loadCommandPanelSettings() {
+        let storedSize = UserDefaults.standard.double(forKey: "command_panel_font_size")
+        commandPanelFontSize = storedSize > 0 ? storedSize : 14.0  // Default to 14 if not set
+        // Load session history
+        loadSessions()
+    }
+
+    func saveCommandPanelFontSize(_ value: Double) {
+        commandPanelFontSize = value
+        UserDefaults.standard.set(value, forKey: "command_panel_font_size")
+    }
+
+    // MARK: - Auto-Switch Offline Settings
+
+    private func loadAutoSwitchOfflineSettings() {
+        autoSwitchToOfflineOnHighLatency = UserDefaults.standard.bool(forKey: "auto_switch_offline_high_latency")
+    }
+
+    func saveAutoSwitchOfflineSetting(_ enabled: Bool) {
+        autoSwitchToOfflineOnHighLatency = enabled
+        UserDefaults.standard.set(enabled, forKey: "auto_switch_offline_high_latency")
+        logDebug("Auto-switch to offline on high latency: \(enabled)")
+    }
+
     private func loadDictationHistory() {
         if let history = UserDefaults.standard.stringArray(forKey: "dictation_history") {
             dictationHistory = history
@@ -3792,6 +6840,17 @@ class AppState: ObservableObject {
 
     func saveDictationHistory() {
         UserDefaults.standard.set(dictationHistory, forKey: "dictation_history")
+    }
+
+    /// Clear dictation history
+    func clearDictationHistory() {
+        dictationHistory.removeAll()
+        saveDictationHistory()
+    }
+
+    /// Retype/paste text (public interface for panels)
+    func retypeText(_ text: String) {
+        typeText(text, appendSpace: false)
     }
 
     private func loadVocabularyPrompt() {
@@ -3804,7 +6863,7 @@ class AppState: ObservableObject {
         vocabularyPrompt = value
         UserDefaults.standard.set(value, forKey: "vocabulary_prompt")
 
-        if previous != value && microphoneMode != .off && !effectiveIsOffline {
+        if previous != value && (microphoneMode == .on || microphoneMode == .sleep) && !effectiveIsOffline {
             logDebug("Vocabulary prompt changed: Restarting services")
             restartServicesIfActive()
         }
@@ -3816,7 +6875,7 @@ class AppState: ObservableObject {
     }
 
     /// Generates the effective vocabulary prompt combining user prompt + command phrases
-    var effectiveVocabularyPrompt: String {
+    private var effectiveVocabularyTerms: [String] {
         var terms: [String] = []
 
         // Add user-specified vocabulary (split by comma or newline)
@@ -3826,6 +6885,15 @@ class AppState: ObservableObject {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
             terms.append(contentsOf: userTerms)
+        }
+
+        // Add custom vocabulary entries (both spoken and written forms for better recognition)
+        for entry in customVocabulary where entry.isEnabled {
+            terms.append(entry.spokenPhrase)
+            // Also add written form if different (helps AssemblyAI recognize both)
+            if entry.writtenForm.lowercased() != entry.spokenPhrase.lowercased() {
+                terms.append(entry.writtenForm)
+            }
         }
 
         // Auto-populate with command phrases if enabled
@@ -3847,14 +6915,50 @@ class AppState: ObservableObject {
         }
 
         // Remove duplicates and limit to 100 terms (AssemblyAI limit)
-        let uniqueTerms = Array(Set(terms)).prefix(100)
+        return Array(Set(terms)).prefix(100).map { $0 }
+    }
 
+    /// Generates the effective vocabulary prompt combining user prompt + command phrases
+    var effectiveVocabularyPrompt: String {
+        let terms = effectiveVocabularyTerms
+        guard !terms.isEmpty else { return "" }
         // Format as JSON array for keyterms_prompt
-        if let jsonData = try? JSONSerialization.data(withJSONObject: Array(uniqueTerms)),
+        if let jsonData = try? JSONSerialization.data(withJSONObject: terms),
            let jsonString = String(data: jsonData, encoding: .utf8) {
             return jsonString
         }
         return ""
+    }
+
+    var hasUserVocabularyBiasTerms: Bool {
+        let hasPrompt = !vocabularyPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasCustom = customVocabulary.contains { $0.isEnabled }
+        return hasPrompt || hasCustom
+    }
+
+    var supportsVocabularyBiasForCurrentProvider: Bool {
+        if effectiveIsOffline || dictationProvider == .offline {
+            return false
+        }
+        if dictationProvider == .deepgram {
+            return true
+        }
+        return true
+    }
+
+    var vocabularyBiasSupportedProvidersLabel: String {
+        "AssemblyAI (Auto/Online) and Deepgram (Nova-2 keywords)"
+    }
+
+    var vocabularyBiasUnsupportedMessage: String? {
+        guard hasUserVocabularyBiasTerms else { return nil }
+        if effectiveIsOffline || dictationProvider == .offline {
+            if dictationProvider == .auto {
+                return "Vocabulary bias terms are ignored while offline (Auto uses Mac Speech)."
+            }
+            return "Vocabulary bias terms aren't supported in Mac Speech (Offline)."
+        }
+        return nil
     }
 
     private func loadIdeaFlowSettings() {
@@ -3880,18 +6984,50 @@ class AppState: ObservableObject {
     }
 
     private func loadLaunchMode() {
-        if let modeString = UserDefaults.standard.string(forKey: "launch_mode") {
-            // Case-insensitive matching
-            let normalized = modeString.lowercased()
+        // Priority: resume_mode > last_mode > sleep (default)
+        // resume_mode is set during in-app restart for one-time use
+        // last_mode persists across all restarts/crashes
+
+        NSLog("[VoiceFlow] loadLaunchMode: Starting, domain=%@", Bundle.main.bundleIdentifier ?? "nil")
+
+        // 1. Check for resume_mode first (set during in-app restart)
+        if let resumeMode = UserDefaults.standard.string(forKey: "resume_mode") {
+            // Clear it immediately so it's only used once
+            UserDefaults.standard.removeObject(forKey: "resume_mode")
+            UserDefaults.standard.synchronize()
+
+            let normalized = resumeMode.lowercased()
+            switch normalized {
+            case "on": launchMode = .on
+            case "off": launchMode = .off
+            case "sleep": launchMode = .sleep
+            default: break // Fall through to last_mode
+            }
+            if launchMode != .sleep || normalized == "sleep" {
+                NSLog("[VoiceFlow] loadLaunchMode: Using resume_mode=%@", launchMode.rawValue)
+                return
+            }
+        }
+
+        // 2. Check for last_mode (persisted whenever mode changes)
+        let lastModeValue = UserDefaults.standard.string(forKey: "last_mode")
+        NSLog("[VoiceFlow] loadLaunchMode: last_mode raw value=%@", lastModeValue ?? "nil")
+
+        if let lastMode = lastModeValue {
+            let normalized = lastMode.lowercased()
             switch normalized {
             case "on": launchMode = .on
             case "off": launchMode = .off
             case "sleep": launchMode = .sleep
             default: launchMode = .sleep
             }
-        } else {
-            launchMode = .sleep // Default to Sleep
+            NSLog("[VoiceFlow] loadLaunchMode: Restoring last_mode=%@", launchMode.rawValue)
+            return
         }
+
+        // 3. Default to Sleep mode
+        launchMode = .sleep
+        NSLog("[VoiceFlow] loadLaunchMode: No saved mode, defaulting to Sleep")
     }
 
     func saveLaunchMode(_ mode: MicrophoneMode) {
@@ -3934,6 +7070,62 @@ class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Dev Launch at Login (LaunchAgent)
+
+    private static let devLaunchAgentLabel = "com.jacobcole.VoiceFlow.dev"
+
+    private static var devLaunchAgentPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/Library/LaunchAgents/\(devLaunchAgentLabel).plist"
+    }
+
+    private func loadDevLaunchAtLogin() {
+        devLaunchAtLogin = FileManager.default.fileExists(atPath: Self.devLaunchAgentPath)
+    }
+
+    func saveDevLaunchAtLogin(_ enabled: Bool) {
+        devLaunchAtLogin = enabled
+        if enabled {
+            installDevLaunchAgent()
+        } else {
+            removeDevLaunchAgent()
+        }
+    }
+
+    private func installDevLaunchAgent() {
+        guard let execPath = Bundle.main.executableURL?.path ?? ProcessInfo.processInfo.arguments.first else {
+            logDebug("Dev launch agent: could not determine executable path")
+            devLaunchAtLogin = false
+            return
+        }
+
+        let plist: [String: Any] = [
+            "Label": Self.devLaunchAgentLabel,
+            "ProgramArguments": [execPath],
+            "RunAtLoad": true,
+            "ProcessType": "Interactive",
+            "StandardOutPath": "/tmp/VoiceFlow-dev.log",
+            "StandardErrorPath": "/tmp/VoiceFlow-dev.log",
+        ]
+
+        let launchAgentsDir = (Self.devLaunchAgentPath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: launchAgentsDir, withIntermediateDirectories: true)
+
+        let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        if let data = data {
+            FileManager.default.createFile(atPath: Self.devLaunchAgentPath, contents: data)
+            logDebug("Dev launch agent installed: \(execPath)")
+        } else {
+            logDebug("Dev launch agent: failed to serialize plist")
+            devLaunchAtLogin = false
+        }
+    }
+
+    private func removeDevLaunchAgent() {
+        try? FileManager.default.removeItem(atPath: Self.devLaunchAgentPath)
+        logDebug("Dev launch agent removed")
+    }
+
     private func loadInputDevice() {
         selectedInputDeviceId = UserDefaults.standard.string(forKey: "selected_input_device_id")
     }
@@ -3947,7 +7139,7 @@ class AppState: ObservableObject {
         }
         
         // Restart services if active to pick up the new device
-        if microphoneMode != .off {
+        if microphoneMode == .on || microphoneMode == .sleep {
             logDebug("Input device changed: Restarting services")
             restartServicesIfActive()
         }
@@ -3976,6 +7168,60 @@ class AppState: ObservableObject {
         }
     }
 
+    private func loadPTTSettings() {
+        pttBufferedOutputEnabled = UserDefaults.standard.object(forKey: "ptt_buffered_output_enabled") as? Bool ?? true
+        pttPreviewEnabled = UserDefaults.standard.object(forKey: "ptt_preview_enabled") as? Bool ?? true
+        pttStreamWhilePopupEnabled = UserDefaults.standard.object(forKey: "ptt_stream_while_popup_enabled") as? Bool ?? false
+        pttCommitDelayMs = UserDefaults.standard.double(forKey: "ptt_commit_delay_ms")
+        pttAutoSubmitEnabled = UserDefaults.standard.object(forKey: "ptt_auto_submit_enabled") as? Bool ?? false
+    }
+
+    func savePTTBufferedOutputEnabled(_ value: Bool) {
+        pttBufferedOutputEnabled = value
+        UserDefaults.standard.set(value, forKey: "ptt_buffered_output_enabled")
+    }
+
+    func savePTTPreviewEnabled(_ value: Bool) {
+        pttPreviewEnabled = value
+        UserDefaults.standard.set(value, forKey: "ptt_preview_enabled")
+        if value && (isPTTSessionActive || isPTTProcessing) {
+            isPTTPreviewVisible = true
+        }
+        if !value {
+            isPTTPreviewVisible = false
+        }
+    }
+
+    func savePTTStreamWhilePopupEnabled(_ value: Bool) {
+        pttStreamWhilePopupEnabled = value
+        UserDefaults.standard.set(value, forKey: "ptt_stream_while_popup_enabled")
+    }
+
+    func savePTTCommitDelayMs(_ value: Double) {
+        pttCommitDelayMs = value
+        UserDefaults.standard.set(value, forKey: "ptt_commit_delay_ms")
+    }
+
+    func savePTTAutoSubmitEnabled(_ value: Bool) {
+        pttAutoSubmitEnabled = value
+        UserDefaults.standard.set(value, forKey: "ptt_auto_submit_enabled")
+    }
+
+    func applyPTTPresetWispr() {
+        savePTTPreviewEnabled(true)
+        savePTTBufferedOutputEnabled(true)
+        savePTTStreamWhilePopupEnabled(false)
+        savePTTCommitDelayMs(0)
+    }
+
+    func applyPTTPresetHandsFree() {
+        savePTTPreviewEnabled(false)
+        savePTTBufferedOutputEnabled(false)
+        savePTTStreamWhilePopupEnabled(false)
+        savePTTCommitDelayMs(0)
+        saveLiveDictationEnabled(true)
+    }
+
     func savePTTShortcut(_ shortcut: KeyboardShortcut) {
         pttShortcut = shortcut
         if let data = try? JSONEncoder().encode(shortcut) {
@@ -3986,35 +7232,158 @@ class AppState: ObservableObject {
     /// Request graceful transition to sleep mode - waits for finalized text before switching
     /// Called when PTT is released so we don't cut off mid-word
     func requestGracefulSleep() {
+        requestPTTReturn(to: .sleep)
+    }
+
+    /// Request graceful transition to a target mode after PTT release
+    func requestPTTReturn(to mode: MicrophoneMode) {
         guard microphoneMode == .on else { return }
 
-        logDebug("PTT: Requesting graceful sleep, waiting for finalized text")
-        pendingPTTSleep = true
+        pttReturnMode = mode
+        logDebug("PTT: Requesting graceful return to \(mode.rawValue), waiting for finalized text")
+        isPTTProcessing = true
 
-        // Tell the speech service to finalize current utterance
-        assemblyAIService?.forceEndUtterance()
-        appleSpeechService?.forceEndUtterance()
-
-        // Set a timeout - if we don't get a final turn within 2 seconds, force sleep
+        // Set a timeout - if we don't get a final turn within 4 seconds, force return
         pttSleepTimeoutTask?.cancel()
         pttSleepTimeoutTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
-            if self.pendingPTTSleep {
-                self.logDebug("PTT: Timeout waiting for finalized text, forcing sleep")
-                self.pendingPTTSleep = false
-                self.setMode(.sleep)
+            try? await Task.sleep(nanoseconds: 4_000_000_000)  // 4 seconds
+            if self.isPTTProcessing {
+                let returnMode = self.pttReturnMode ?? .sleep
+                self.logDebug("PTT: Timeout waiting for finalized text, forcing \(returnMode.rawValue)")
+                self.isPTTProcessing = false
+                self.pttReturnMode = nil
+                if self.shouldBufferPTTOutput {
+                    self.commitPTTBufferIfNeeded()
+                }
+                self.isPTTPreviewVisible = false
+                self.setMode(returnMode)
             }
         }
     }
 
-    /// Cancel pending PTT sleep (e.g., if PTT is pressed again)
+    /// Cancel pending PTT return (e.g., if PTT is pressed again)
     func cancelPendingPTTSleep() {
-        if pendingPTTSleep {
-            logDebug("PTT: Cancelling pending sleep")
-            pendingPTTSleep = false
+        if isPTTProcessing {
+            logDebug("PTT: Cancelling pending return")
+            isPTTProcessing = false
+            pttReturnMode = nil
             pttSleepTimeoutTask?.cancel()
             pttSleepTimeoutTask = nil
+            pttBufferedText = ""
         }
+    }
+    
+    func startPTTSession(returnMode: MicrophoneMode, sticky: Bool) {
+        pttReturnMode = shouldUseLegacyPTT ? .sleep : returnMode
+        isPTTSticky = sticky
+        isPTTSessionActive = true
+        pttBufferedText = ""
+        currentTranscript = ""
+        currentWords = []
+        isPTTPreviewVisible = pttPreviewEnabled
+        setMode(.on, persist: shouldUseLegacyPTT)
+    }
+
+    func endPTTSession() {
+        guard microphoneMode == .on else { return }
+        isPTTSessionActive = false
+        isPTTSticky = false
+        requestPTTReturn(to: pttReturnMode ?? .sleep)
+    }
+
+    private func appendPTTBuffer(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if pttBufferedText.isEmpty {
+            pttBufferedText = text
+            return
+        }
+        let needsSpace = !pttBufferedText.hasSuffix(" ") && !pttBufferedText.hasSuffix("\n") && !text.hasPrefix(" ")
+        pttBufferedText += needsSpace ? " " + text : text
+    }
+
+    private func commitPTTBufferIfNeeded() {
+        let trimmed = pttBufferedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            pttBufferedText = ""
+            return
+        }
+        typeText(pttBufferedText, appendSpace: true)
+        pttBufferedText = ""
+    }
+
+    /// Called when PTT key is pressed - records the stream-relative timestamp
+    func recordPTTPress() {
+        isPTTActive = true
+        if let startTime = streamStartTime {
+            pttPressStreamTime = Date().timeIntervalSince(startTime)
+            pttReleaseStreamTime = nil  // Clear release time from previous PTT
+            logDebug("PTT: Press recorded at stream time \(String(format: "%.2f", pttPressStreamTime!))s")
+        } else {
+            logDebug("PTT: Press recorded (no stream start time yet)")
+            pttPressStreamTime = nil
+        }
+    }
+
+    /// Called when PTT key is released - records the stream-relative timestamp
+    func recordPTTRelease() {
+        isPTTActive = false
+        if let startTime = streamStartTime {
+            pttReleaseStreamTime = Date().timeIntervalSince(startTime)
+            logDebug("PTT: Release recorded at stream time \(String(format: "%.2f", pttReleaseStreamTime!))s")
+        } else {
+            logDebug("PTT: Release recorded (no stream start time)")
+        }
+    }
+
+    /// Filter words to exclude pre-press background speech
+    /// Only filters out words that started before PTT was pressed
+    /// Does NOT filter by release time - the graceful sleep mechanism handles capturing all speech
+    ///
+    /// **Provider requirement**: This filter requires word-level timestamps from the ASR provider.
+    /// Currently all providers return timestamps: AssemblyAI (word.start), Deepgram (word.start),
+    /// Apple Speech (segment.timestamp). If adding a provider without timestamps, words will
+    /// pass through unfiltered (see guard on line checking wordStart).
+    private func filterWordsForPTT(_ words: [TranscriptWord]) -> [TranscriptWord] {
+        // Only filter if PTT was pressed and we have a press timestamp
+        guard let pressTime = pttPressStreamTime else {
+            return words
+        }
+
+        // Don't filter while PTT is actively held - only filter completed PTT sessions
+        // This prevents filtering interim words while user is still speaking
+        guard !isPTTActive else {
+            return words
+        }
+
+        var excludedCount = 0
+        let filtered = words.filter { word in
+            // If word has no timing info, include it (can't filter)
+            // WARNING: Provider without timestamps will bypass PTT filtering entirely
+            guard let wordStart = word.startTime else { return true }
+
+            // Filter out words that started before PTT was pressed
+            // This excludes background speech detected before user pressed the key
+            if wordStart < pressTime {
+                excludedCount += 1
+                return false
+            }
+
+            return true
+        }
+
+        if excludedCount > 0 {
+            logDebug("PTT filter: Excluded \(excludedCount) pre-press words (press time: \(String(format: "%.2f", pressTime))s)")
+        }
+
+        return filtered
+    }
+
+    /// Reset PTT timestamps (called when stream restarts or mode changes)
+    private func resetPTTTimestamps() {
+        pttPressStreamTime = nil
+        pttReleaseStreamTime = nil
+        isPTTActive = false
     }
 
     func saveModeToggleShortcut(_ shortcut: KeyboardShortcut) {
@@ -4045,13 +7414,82 @@ class AppState: ObservableObject {
         }
     }
 
+    func shortcut(for mode: MicrophoneMode) -> KeyboardShortcut {
+        switch mode {
+        case .off: return modeOffShortcut
+        case .sleep: return modeSleepShortcut
+        case .on: return modeOnShortcut
+        }
+    }
+
+    func shortcutString(for mode: MicrophoneMode) -> String? {
+        shortcutString(for: shortcut(for: mode))
+    }
+
+    func shortcutString(for shortcut: KeyboardShortcut) -> String? {
+        shortcut.isEmpty ? nil : shortcut.description
+    }
+
+    func shortcutString(for shortcut: KeyboardShortcut?) -> String? {
+        guard let shortcut else { return nil }
+        return shortcutString(for: shortcut)
+    }
+
     private func flushDictationBuffer(isForceEnd: Bool) {
         logDebug("flushDictationBuffer called: transcript=\"\(currentTranscript.prefix(50))\", mode=\(microphoneMode.rawValue), isForceEnd=\(isForceEnd)")
-        guard !currentTranscript.isEmpty else {
-            logDebug("flushDictationBuffer: skipped - transcript is empty")
+
+        func emitPTTBufferOrType(_ text: String) {
+            if (isPTTSessionActive || isPTTProcessing) && shouldBufferPTTOutput {
+                appendPTTBuffer(text)
+            } else {
+                typeText(text, appendSpace: true)
+            }
+        }
+
+        // If buffer is empty but force end requested, try to use preserved Sleep mode transcript or last utterance
+        if currentTranscript.isEmpty {
+            if isForceEnd {
+                // First, try to use the preserved Sleep mode transcript
+                if !lastSleepModeTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    logDebug("flushDictationBuffer: buffer empty, using preserved Sleep mode transcript: \"\(lastSleepModeTranscript.prefix(50))\"")
+                    emitPTTBufferOrType(lastSleepModeTranscript)
+                    lastSleepModeTranscript = ""
+                    return
+                }
+
+                // Find the most complete utterance - history may have partials
+                // Look through recent non-command entries and find the longest one
+                // that's part of the same "utterance group" (similar prefix)
+                let recentUtterances = dictationHistory.prefix(20).filter { !$0.hasPrefix("[Command]") }
+
+                if let firstUtterance = recentUtterances.first {
+                    // Find the longest version among similar entries
+                    var longestUtterance = firstUtterance
+                    for utterance in recentUtterances.dropFirst() {
+                        // Stop if we hit something that's clearly a different utterance
+                        // (doesn't share a common prefix with our candidate)
+                        let shorter = min(utterance.count, longestUtterance.count)
+                        let commonPrefix = String(utterance.prefix(shorter / 2))
+                        if !longestUtterance.hasPrefix(commonPrefix) && !utterance.hasPrefix(commonPrefix) {
+                            break
+                        }
+                        // Use the longer one if they seem related
+                        if utterance.count > longestUtterance.count && longestUtterance.hasPrefix(String(utterance.prefix(longestUtterance.count))) {
+                            longestUtterance = utterance
+                        } else if longestUtterance.hasPrefix(String(utterance.prefix(utterance.count / 2))) && utterance.count > longestUtterance.count {
+                            longestUtterance = utterance
+                        }
+                    }
+                    logDebug("flushDictationBuffer: buffer empty, resending utterance: \"\(longestUtterance.prefix(50))\" (found longest among \(recentUtterances.count) recent)")
+                    emitPTTBufferOrType(longestUtterance)
+                    return
+                }
+            }
+            logDebug("flushDictationBuffer: skipped - transcript is empty and no last utterance")
             return
         }
-        guard microphoneMode == .on else {
+        // Force send works in any mode when explicitly requested
+        guard microphoneMode == .on || isForceEnd else {
             logDebug("flushDictationBuffer: skipped - mode is \(microphoneMode.rawValue), not on")
             return
         }
@@ -4098,6 +7536,34 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Debug helper: inject a synthetic turn through the normal turn pipeline.
+    /// Useful for reproducible manual testing without speaking.
+    func injectDebugTurn(_ transcript: String, isFormatted: Bool = true, endOfTurn: Bool = true, source: String = "cli-debug") {
+        let words = transcript
+            .split(whereSeparator: \.isWhitespace)
+            .map { TranscriptWord(text: String($0), isFinal: true) }
+
+        let turn = TranscriptTurn(
+            transcript: transcript,
+            words: words,
+            endOfTurn: endOfTurn,
+            isFormatted: isFormatted,
+            turnOrder: lastTypedTurnOrder + 1,
+            utterance: transcript
+        )
+
+        NSLog("[VoiceFlow] 🧪 DEBUG_TURN source=%@ mode=%@ behavior=%@ isFormatted=%@ endOfTurn=%@ words=%d text='%@'",
+              source,
+              microphoneMode.rawValue,
+              activeBehavior.rawValue,
+              isFormatted ? "YES" : "NO",
+              endOfTurn ? "YES" : "NO",
+              words.count,
+              String(transcript.prefix(160)))
+
+        handleTurn(turn)
+    }
+
     func saveToIdeaFlow() {
         // Find the latest non-command history entry
         guard let latestNote = dictationHistory.first(where: { !$0.hasPrefix("[Command]") }) else {
@@ -4131,7 +7597,445 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
+    // MARK: - Improve Selected Text
+
+    /// Improve selected text using AI - copies, improves, and pastes back
+    /// Triggered by "improve that" voice command
+    func improveSelectedText() {
+        logDebug("Improve: Starting text improvement")
+        triggerCommandFlash(name: "Improving...")
+
+        // 1. Copy selected text (Cmd+C)
+        executeKeyboardShortcut(KeyboardShortcut(keyCode: UInt16(kVK_ANSI_C), modifiers: [.command]))
+
+        // 2. Wait for clipboard to update, then read and improve
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self = self else { return }
+
+            // Read from clipboard
+            guard let text = NSPasteboard.general.string(forType: .string),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                self.logDebug("Improve: No text selected or clipboard empty")
+                self.triggerCommandFlash(name: "No Selection")
+                return
+            }
+
+            self.logDebug("Improve: Got text \"\(text.prefix(30))...\"")
+
+            // 3. Call AI to improve
+            Task { @MainActor in
+                let improved = await self.aiFormatterService.improve(text)
+
+                if improved == text {
+                    self.logDebug("Improve: No changes made")
+                    self.triggerCommandFlash(name: "No Changes")
+                    return
+                }
+
+                self.logDebug("Improve: Text improved, pasting")
+
+                // 4. Write improved text to clipboard
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(improved, forType: .string)
+
+                // 5. Paste (Cmd+V)
+                self.executeKeyboardShortcut(KeyboardShortcut(keyCode: UInt16(kVK_ANSI_V), modifiers: [.command]))
+
+                self.triggerCommandFlash(name: "Improved")
+            }
+        }
+    }
+
+    /// Create a VoiceFlow issue from recent dictation using beads
+    func createVoiceFlowIssue() {
+        // Find the latest non-command dictation to use as issue context
+        let latestDictation = dictationHistory.first(where: { !$0.hasPrefix("[Command]") })
+
+        logDebug("VoiceFlow Issue: Creating issue from dictation")
+
+        // Use latest dictation as title, or generic title
+        let title: String
+        if let dictation = latestDictation, !dictation.isEmpty {
+            // Truncate to reasonable length for title
+            title = String(dictation.prefix(100))
+        } else {
+            title = "New issue from voice command"
+        }
+
+        // Create issue directly (faster, more reliable than via Claude)
+        createBeadsIssue(title: title, projectPath: "~/code/VoiceFlow")
+        triggerCommandFlash(name: "VoiceFlow Issue")
+    }
+
+    // MARK: - Command Panel (Claude Code)
+
+    /// Open the command panel and start Claude Code service
+    func openCommandPanel() {
+        guard !isCommandPanelVisible else { return }
+        isCommandPanelVisible = true
+
+        // Start Claude Code service if needed
+        if claudeCodeService == nil {
+            claudeCodeService = ClaudeCodeService(
+                workingDirectory: commandWorkingDirectory,
+                model: claudeModel.cliFlag
+            )
+            // Restore last session ID for context continuity
+            if let savedSessionId = UserDefaults.standard.string(forKey: "claude_session_id") {
+                claudeCodeService?.sessionId = savedSessionId
+                NSLog("[VoiceFlow] Restored session ID: \(savedSessionId)")
+            }
+            setupClaudeCodeEventHandler()
+        }
+        claudeCodeService?.start()
+
+        // Post notification for AppDelegate to show window
+        NotificationCenter.default.post(
+            name: NSNotification.Name("CommandPanelShouldOpen"),
+            object: nil
+        )
+    }
+
+    /// Close the command panel
+    func closeCommandPanel() {
+        guard isCommandPanelVisible else { return }
+        isCommandPanelVisible = false
+        claudeCodeService?.stop()
+
+        // Post notification for AppDelegate to hide window
+        NotificationCenter.default.post(
+            name: NSNotification.Name("CommandPanelShouldClose"),
+            object: nil
+        )
+    }
+
+    /// Toggle the command panel
+    func toggleCommandPanel() {
+        if isCommandPanelVisible {
+            closeCommandPanel()
+        } else {
+            openCommandPanel()
+        }
+    }
+
+    // MARK: - Session Management
+
+    /// Start a new Claude session
+    func startNewClaudeSession() {
+        // Save current session before starting new one
+        saveCurrentSession()
+
+        // Clear for new session
+        claudeCodeService?.clearSession()
+        currentSessionId = nil
+        commandMessages = []
+        NSLog("[VoiceFlow] New Claude session started")
+    }
+
+    /// Switch to a different session
+    func switchToSession(_ session: ClaudeSession) {
+        // Save current session first
+        saveCurrentSession()
+
+        // Load the selected session
+        currentSessionId = session.id
+        claudeCodeService?.sessionId = session.id
+        commandMessages = session.chatHistory
+
+        // Update last used time
+        if let index = claudeSessions.firstIndex(where: { $0.id == session.id }) {
+            claudeSessions[index].lastUsedAt = Date()
+            saveSessions()
+        }
+
+        NSLog("[VoiceFlow] Switched to session: \(session.name)")
+    }
+
+    /// Save the current session state
+    func saveCurrentSession() {
+        guard let sessionId = currentSessionId ?? claudeCodeService?.sessionId,
+              !commandMessages.isEmpty else { return }
+
+        if let index = claudeSessions.firstIndex(where: { $0.id == sessionId }) {
+            // Update existing session
+            claudeSessions[index].chatHistory = commandMessages
+            claudeSessions[index].lastUsedAt = Date()
+        } else {
+            // Create new session entry
+            let firstUserMessage = commandMessages.first(where: { $0.role == .user })?.content ?? "New conversation"
+            var newSession = ClaudeSession.create(id: sessionId, firstMessage: firstUserMessage)
+            newSession.chatHistory = commandMessages
+            claudeSessions.insert(newSession, at: 0)  // Most recent first
+        }
+
+        currentSessionId = sessionId
+        saveSessions()
+    }
+
+    /// Save sessions to UserDefaults
+    private func saveSessions() {
+        if let data = try? JSONEncoder().encode(claudeSessions) {
+            UserDefaults.standard.set(data, forKey: "claude_sessions")
+        }
+    }
+
+    /// Load sessions from UserDefaults
+    func loadSessions() {
+        if let data = UserDefaults.standard.data(forKey: "claude_sessions"),
+           let sessions = try? JSONDecoder().decode([ClaudeSession].self, from: data) {
+            claudeSessions = sessions
+            NSLog("[VoiceFlow] Loaded \(sessions.count) sessions")
+        }
+
+        // Also restore current session ID
+        if let savedId = UserDefaults.standard.string(forKey: "claude_session_id") {
+            currentSessionId = savedId
+            // Load chat history for current session
+            if let session = claudeSessions.first(where: { $0.id == savedId }) {
+                commandMessages = session.chatHistory
+            }
+        }
+    }
+
+    /// Get the current session (if any)
+    var currentSession: ClaudeSession? {
+        guard let id = currentSessionId else { return nil }
+        return claudeSessions.first(where: { $0.id == id })
+    }
+
+    /// Create a beads issue in a specific project directory
+    /// - Parameters:
+    ///   - title: The issue title/description
+    ///   - projectPath: Path to the project (e.g., "~/code/VoiceFlow")
+    ///   - type: Issue type (default: "task")
+    ///   - priority: Priority 0-4 (default: 2)
+    func createBeadsIssue(title: String, projectPath: String, type: String = "task", priority: Int = 2) {
+        let expandedPath = (projectPath as NSString).expandingTildeInPath
+
+        // Build the bd create command
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/bd")
+        process.arguments = ["create", "--title=\(title)", "--type=\(type)", "--priority=\(priority)"]
+        process.currentDirectoryURL = URL(fileURLWithPath: expandedPath)
+
+        // Inherit environment for PATH
+        var env = ProcessInfo.processInfo.environment
+        let homeDir = NSHomeDirectory()
+        let additionalPaths = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "\(homeDir)/.local/bin"
+        ]
+        if let existingPath = env["PATH"] {
+            env["PATH"] = additionalPaths.joined(separator: ":") + ":" + existingPath
+        }
+        process.environment = env
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+            let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+
+            if process.terminationStatus == 0 {
+                NSLog("[VoiceFlow] Beads issue created: %@", stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+                // Add to command messages for visibility
+                let successMsg = "✅ Created issue: \(title)\n\(stdout)"
+                DispatchQueue.main.async { [weak self] in
+                    self?.commandMessages.append(CommandMessage(role: .assistant, content: successMsg, isComplete: true))
+                }
+            } else {
+                NSLog("[VoiceFlow] Beads error: %@", stderr)
+                DispatchQueue.main.async { [weak self] in
+                    self?.commandError = "Failed to create issue: \(stderr)"
+                }
+            }
+        } catch {
+            NSLog("[VoiceFlow] Failed to run bd: %@", error.localizedDescription)
+            DispatchQueue.main.async { [weak self] in
+                self?.commandError = "Failed to run bd: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Execute an inline command (no panel needed for simple commands)
+    func executeInlineCommand(_ text: String) {
+        // Queue message if already processing
+        if isClaudeProcessing {
+            commandMessageQueue.append(text)
+            NSLog("[ClaudeCode] Queued message (queue size: \(commandMessageQueue.count))")
+            return
+        }
+
+        sendCommandMessage(text)
+    }
+
+    /// Internal: Actually send a command message (not queued)
+    private func sendCommandMessage(_ text: String) {
+        // Clear any previous error when sending new message
+        commandError = nil
+
+        // Ensure service is running
+        if claudeCodeService == nil {
+            claudeCodeService = ClaudeCodeService(
+                workingDirectory: commandWorkingDirectory,
+                model: claudeModel.cliFlag
+            )
+            // Restore last session ID for context continuity
+            if let savedSessionId = UserDefaults.standard.string(forKey: "claude_session_id") {
+                claudeCodeService?.sessionId = savedSessionId
+                NSLog("[VoiceFlow] Restored session ID: \(savedSessionId)")
+            }
+            setupClaudeCodeEventHandler()
+        }
+
+        // Add user message to history
+        commandMessages.append(CommandMessage.user(text))
+
+        // Create placeholder for response
+        let assistantMessage = CommandMessage.assistant()
+        commandMessages.append(assistantMessage)
+        inlineCommandResponse = assistantMessage
+        showInlineResponse = true
+
+        // Send to Claude (uses --resume for context continuity)
+        claudeCodeService?.send(text)
+    }
+
+    /// Process next message in queue if any
+    private func processCommandQueue() {
+        guard !commandMessageQueue.isEmpty else { return }
+        let nextMessage = commandMessageQueue.removeFirst()
+        NSLog("[ClaudeCode] Processing queued message (remaining: \(commandMessageQueue.count))")
+        sendCommandMessage(nextMessage)
+    }
+
+    private func setupClaudeCodeEventHandler() {
+        claudeCodeService?.onEvent = { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handleClaudeEvent(event)
+            }
+        }
+        claudeCodeService?.onDebugLog = { [weak self] logEntry in
+            Task { @MainActor [weak self] in
+                self?.claudeDebugLog.append(logEntry)
+                // Keep only last 200 entries
+                if self?.claudeDebugLog.count ?? 0 > 200 {
+                    self?.claudeDebugLog.removeFirst()
+                }
+            }
+        }
+    }
+
+    // DIAGNOSTIC VoiceFlow-ab1z: Track event handling for CPU spin debugging
+    private var claudeEventCount: Int = 0
+    private var lastClaudeEventTime: Date?
+
+    private func handleClaudeEvent(_ event: ClaudeCodeService.ClaudeEvent) {
+        // DIAGNOSTIC: Track event frequency (investigating CPU spin VoiceFlow-ab1z)
+        claudeEventCount += 1
+        let now = Date()
+        if let lastTime = lastClaudeEventTime {
+            let interval = now.timeIntervalSince(lastTime)
+            // Log if events are coming extremely fast (potential spin indicator)
+            if interval < 0.001 {
+                NSLog("[VoiceFlow] ⚠️ RAPID EVENTS: %d events, interval %.4fs - potential spin!", claudeEventCount, interval)
+            }
+        }
+        lastClaudeEventTime = now
+
+        switch event {
+        case .connected:
+            NSLog("[VoiceFlow] 🔌 Claude connected")
+            isClaudeConnected = true
+            commandError = nil
+
+        case .disconnected(let error):
+            NSLog("[VoiceFlow] 🔌 Claude disconnected (error: \(error?.localizedDescription ?? "none"))")
+            isClaudeConnected = false
+            if let error = error {
+                commandError = error.localizedDescription
+            }
+
+        case .textChunk(let text):
+            // Append to the last assistant message
+            if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
+                commandMessages[lastIndex].content += text
+                // Also update inline response if showing
+                if showInlineResponse {
+                    inlineCommandResponse?.content += text
+                }
+            }
+
+        case .textComplete(let text):
+            NSLog("[VoiceFlow] ✅ textComplete: %d chars", text.count)
+            // Set the complete text on the last assistant message
+            if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
+                commandMessages[lastIndex].content = text
+                commandMessages[lastIndex].isStreaming = false
+                commandMessages[lastIndex].isComplete = true
+            }
+
+        case .toolUseStart(_, let name, let input):
+            NSLog("[VoiceFlow] 🔧 Tool start: \(name)")
+            // Add tool use to the last assistant message
+            if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
+                let toolUse = CommandToolUse(toolName: name, input: input)
+                commandMessages[lastIndex].toolUses.append(toolUse)
+            }
+
+        case .toolUseEnd(_, let output):
+            NSLog("[VoiceFlow] 🔧 Tool end")
+            // Update tool use with output
+            if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
+                if var lastToolUse = commandMessages[lastIndex].toolUses.last {
+                    lastToolUse.output = output
+                    lastToolUse.endTime = Date()
+                    let toolIndex = commandMessages[lastIndex].toolUses.count - 1
+                    commandMessages[lastIndex].toolUses[toolIndex] = lastToolUse
+                }
+            }
+
+        case .messageComplete:
+            NSLog("[VoiceFlow] ✅ messageComplete - setting isClaudeProcessing=false")
+            isClaudeProcessing = false
+            // Mark the last assistant message as complete
+            if let lastIndex = commandMessages.lastIndex(where: { $0.role == .assistant }) {
+                commandMessages[lastIndex].isStreaming = false
+                commandMessages[lastIndex].isComplete = true
+            }
+            // Process any queued messages
+            NSLog("[VoiceFlow] ✅ Calling processCommandQueue...")
+            processCommandQueue()
+            NSLog("[VoiceFlow] ✅ processCommandQueue returned")
+
+        case .sessionId(let sessionId):
+            // Update current session and persist
+            currentSessionId = sessionId
+            UserDefaults.standard.set(sessionId, forKey: "claude_session_id")
+            // Save session with chat history
+            saveCurrentSession()
+            NSLog("[VoiceFlow] Session ID saved: \(sessionId)")
+
+        case .error(let errorMsg):
+            NSLog("[VoiceFlow] ❌ Claude error: \(errorMsg)")
+            commandError = errorMsg
+            isClaudeProcessing = false
+            // Process any queued messages even after error
+            processCommandQueue()
+        }
+        NSLog("[VoiceFlow] 📊 Event handled (count: \(claudeEventCount))")
+    }
+
     private func startBuildCheckTimer() {
         // Check every 5 seconds (for dev/local)
         buildCheckTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in

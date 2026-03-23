@@ -89,6 +89,12 @@ struct ModeButton: View {
         return mode.rawValue
     }
 
+    private var helpText: String {
+        let base = mode.description
+        guard let shortcut = appState.shortcutString(for: mode) else { return base }
+        return "\(base) (\(shortcut))"
+    }
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: compact ? 4 : 6) {
@@ -119,7 +125,7 @@ struct ModeButton: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
-        .help(mode.description)
+        .help(helpText)
     }
 }
 
@@ -226,7 +232,7 @@ struct StatusBar: View {
     }
 
     var statusColor: Color {
-        if appState.effectiveIsOffline && appState.microphoneMode != .off {
+        if appState.effectiveIsOffline && (appState.microphoneMode == .on || appState.microphoneMode == .sleep) {
             return .orange
         }
         switch appState.microphoneMode {
@@ -236,7 +242,7 @@ struct StatusBar: View {
     }
 
     var statusText: String {
-        if appState.effectiveIsOffline && appState.microphoneMode != .off {
+        if appState.effectiveIsOffline && (appState.microphoneMode == .on || appState.microphoneMode == .sleep) {
             return "Offline (Mac Speech)"
         }
         switch appState.microphoneMode {

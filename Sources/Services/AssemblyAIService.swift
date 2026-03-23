@@ -21,6 +21,36 @@ class AssemblyAIService: NSObject, ObservableObject {
     @Published var errorMessage: String?
     @Published var lastPingLatencyMs: Int?
 
+    /// Check if an error is a network-related error that should be silently handled (not shown to user)
+    /// These typically occur during sleep/wake cycles or network changes
+    private func isNetworkRelatedError(_ error: Error?) -> Bool {
+        guard let error = error else { return false }
+        let nsError = error as NSError
+
+        // POSIX errors that indicate network issues (sleep/wake, connection lost, etc.)
+        // Domain: NSPOSIXErrorDomain
+        // - 54: ECONNRESET (Connection reset by peer)
+        // - 57: ENOTCONN (Socket is not connected)
+        // - 60: ETIMEDOUT (Operation timed out)
+        // - 32: EPIPE (Broken pipe)
+        if nsError.domain == NSPOSIXErrorDomain {
+            let networkErrorCodes = [54, 57, 60, 32, 53, 61]  // Common network error codes
+            if networkErrorCodes.contains(nsError.code) {
+                NSLog("[AssemblyAI] Suppressing network error (code %d): %@", nsError.code, error.localizedDescription)
+                return true
+            }
+        }
+
+        // Also check for "connection reset" in the description (catches wrapped errors)
+        let desc = error.localizedDescription.lowercased()
+        if desc.contains("connection reset") || desc.contains("socket is not connected") || desc.contains("network") || desc.contains("timed out") {
+            NSLog("[AssemblyAI] Suppressing network-related error: %@", error.localizedDescription)
+            return true
+        }
+
+        return false
+    }
+
     private var transcribeMode = true
     private var formatTurns = true
     private var vocabularyPrompt: String?
@@ -60,6 +90,7 @@ class AssemblyAIService: NSObject, ObservableObject {
         guard socket == nil else { return }
 
         var urlComponents = URLComponents(string: endpoint)!
+        // NOTE: speaker_labels requires premium AssemblyAI plan - not available on standard streaming
         urlComponents.queryItems = [
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "format_turns", value: String(formatTurns)),
@@ -114,16 +145,18 @@ class AssemblyAIService: NSObject, ObservableObject {
     }
 
     /// Force end of current utterance immediately
+    /// AssemblyAI API uses "ForceEndpoint" message type
     func forceEndUtterance() {
         guard isConnected, let socket = socket else {
-            print("ForceEndUtterance skipped: not connected")
+            print("ForceEndpoint skipped: not connected")
             return
         }
-        let message: [String: Any] = ["type": "ForceEndUtterance"]
+        // Note: AssemblyAI API expects "ForceEndpoint", not "ForceEndUtterance"
+        let message: [String: Any] = ["type": "ForceEndpoint"]
         if let data = try? JSONSerialization.data(withJSONObject: message),
            let jsonString = String(data: data, encoding: .utf8) {
             socket.write(string: jsonString)
-            print("Sent ForceEndUtterance message")
+            print("Sent ForceEndpoint message to AssemblyAI")
         }
     }
 
@@ -239,7 +272,12 @@ class AssemblyAIService: NSObject, ObservableObject {
 
         case "Error":
             if let error = message["error"] as? String {
-                NSLog("[AssemblyAI] Error received: %@", error)
+                // Log full error details for debugging
+                NSLog("[AssemblyAI] ❌ Error received: %@", error)
+                if let jsonData = try? JSONSerialization.data(withJSONObject: message, options: .prettyPrinted),
+                   let jsonString = String(data: jsonData, encoding: .utf8) {
+                    NSLog("[AssemblyAI] ❌ Full error message: %@", jsonString)
+                }
                 // Check if this is a session expiration error - attempt automatic reconnection
                 let lowerError = error.lowercased()
                 if lowerError.contains("session expired") || lowerError.contains("maximum session duration") {
@@ -277,9 +315,14 @@ extension AssemblyAIService: WebSocketDelegate {
 
         case .disconnected(let reason, let code):
             print("WebSocket disconnected: \(reason) (code: \(code))")
+            // Suppress error message for expected disconnections (normal close, going away, etc.)
+            // These are not errors the user needs to see - the app will reconnect when needed
+            let suppressDisconnect = reason.isEmpty || code == 1000 || code == 1001
             DispatchQueue.main.async { [weak self] in
                 self?.isConnected = false
-                self?.errorMessage = "Disconnected: \(reason)"
+                if !suppressDisconnect {
+                    self?.errorMessage = "Disconnected: \(reason)"
+                }
             }
             stopPingTimer()
             stopExpirationTimer()
@@ -298,8 +341,12 @@ extension AssemblyAIService: WebSocketDelegate {
             print("Received binary data: \(data.count) bytes")
 
         case .error(let error):
+            // Only show error to user if it's NOT a network-related error (sleep/wake, etc.)
+            let suppressError = isNetworkRelatedError(error)
             DispatchQueue.main.async { [weak self] in
-                self?.errorMessage = error?.localizedDescription ?? "WebSocket error"
+                if !suppressError {
+                    self?.errorMessage = error?.localizedDescription ?? "WebSocket error"
+                }
                 self?.isConnected = false
             }
             print("WebSocket error: \(String(describing: error))")

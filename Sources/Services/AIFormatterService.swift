@@ -163,6 +163,93 @@ class AIFormatterService: ObservableObject {
         return prompt
     }
 
+    // MARK: - On-Demand Text Improvement
+
+    /// Improve selected text - fixes punctuation, capitalization, and minor grammar issues
+    /// This is called on-demand via "improve that" voice command, not inline
+    /// Returns the original text if improvement fails
+    func improve(_ text: String) async -> String {
+        guard !config.apiKey.isEmpty else {
+            NSLog("[AIFormatter] Cannot improve: no API key configured")
+            return text
+        }
+
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return text
+        }
+
+        let startTime = Date()
+        isProcessing = true
+        defer { isProcessing = false }
+
+        do {
+            let improved = try await callImproveAPI(text: text)
+            let latency = Int(Date().timeIntervalSince(startTime) * 1000)
+            lastLatencyMs = latency
+            NSLog("[AIFormatter] Improved in \(latency)ms: \"\(text.prefix(50))...\" → \"\(improved.prefix(50))...\"")
+            return improved
+        } catch {
+            NSLog("[AIFormatter] Improve error: \(error.localizedDescription)")
+            return text
+        }
+    }
+
+    private func callImproveAPI(text: String) async throws -> String {
+        let url = URL(string: "https://api.anthropic.com/v1/messages")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(config.apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.timeoutInterval = 10.0  // Allow more time for improvement
+
+        let prompt = """
+        Improve this voice-dictated text by fixing:
+        - Capitalization (sentence starts, proper nouns)
+        - Punctuation (periods, commas, question marks)
+        - Minor grammar issues
+        - Run-on sentences (add appropriate punctuation)
+
+        Do NOT:
+        - Change the meaning or wording
+        - Add or remove content
+        - Rewrite sentences
+        - Add markdown or formatting
+
+        Input text:
+        \(text)
+
+        Output ONLY the improved text, nothing else:
+        """
+
+        let body: [String: Any] = [
+            "model": config.model,
+            "max_tokens": 1024,
+            "messages": [
+                ["role": "user", "content": prompt]
+            ]
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw FormatterError.apiError(statusCode: statusCode)
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = json["content"] as? [[String: Any]],
+              let firstBlock = content.first,
+              let resultText = firstBlock["text"] as? String else {
+            throw FormatterError.parseError
+        }
+
+        return resultText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - Errors
 
     enum FormatterError: Error {

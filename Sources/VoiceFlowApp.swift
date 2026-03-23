@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AVFoundation
 import Combine
+import Carbon.HIToolbox
 
 /// Main entry point - handles CLI or launches GUI
 @main
@@ -41,11 +42,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var onMenuItem: NSMenuItem?
     var sleepMenuItem: NSMenuItem?
     var showHideMenuItem: NSMenuItem?
+    var commandPanelMenuItem: NSMenuItem?
+    var notesPanelMenuItem: NSMenuItem?
+    var transcriptsPanelMenuItem: NSMenuItem?
+    var vocabularyPanelMenuItem: NSMenuItem?
     private var settingsWindow: NSWindow?
     private var panelWindow: FloatingPanelWindow?
+    private var commandPanelWindow: CommandPanelWindow?
+    private var notesPanelWindow: NotesPanelWindow?
+    private var transcriptsPanelWindow: TranscriptsPanelWindow?
+    private var ticketsPanelWindow: TicketsPanelWindow?
+    private var vocabularyPanelWindow: VocabularyPanelWindow?
+    private var pttPreviewWindow: PTTPreviewWindow?
     private var cancellables = Set<AnyCancellable>()
     private var pttMonitor: Any?
-    private var pttActivatedOnMode: Bool = false  // Track if On mode was activated via PTT
+    private var isPTTKeyPhysicallyDown: Bool = false  // Track physical key state to ignore macOS key repeat events
+    private var pttActivatedOnMode: Bool = false  // Track if On mode was activated via PTT to handle auto-sleep on release
+
+    // CGEventTap for consuming PTT key events (prevents them from reaching apps)
+    private var pttEventTap: CFMachPort?
+    private var pttRunLoopSource: CFRunLoopSource?
+    // Shared state for PTT event tap callback (must be non-MainActor accessible)
+    nonisolated(unsafe) static var sharedPTTState: PTTEventTapState?
+    // Timer to poll for accessibility permission when not yet granted
+    private var accessibilityRetryTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -77,6 +97,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
+        // PTT preview bubble visibility
+        appState.$isPTTPreviewVisible
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] visible in
+                guard let self = self else { return }
+                if visible && self.appState.pttPreviewEnabled {
+                    self.showPTTPreviewWindow()
+                } else {
+                    self.hidePTTPreviewWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        appState.$pttPreviewEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard let self = self else { return }
+                if !enabled {
+                    self.hidePTTPreviewWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        // Handle panel minimal mode changes to resize window
+        appState.$isPanelMinimal
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updatePanelSize()
+            }
+            .store(in: &cancellables)
+
         // Create menu
         let menu = NSMenu()
         menu.delegate = self
@@ -103,6 +154,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showHideMenuItem = NSMenuItem(title: "Hide Panel", action: #selector(togglePanel), keyEquivalent: "")
         showHideMenuItem?.target = self
         menu.addItem(showHideMenuItem!)
+
+        commandPanelMenuItem = NSMenuItem(title: "Claude Code Panel", action: #selector(toggleCommandPanel), keyEquivalent: "c")
+        commandPanelMenuItem?.keyEquivalentModifierMask = [.control, .option]
+        commandPanelMenuItem?.target = self
+        menu.addItem(commandPanelMenuItem!)
+
+        notesPanelMenuItem = NSMenuItem(title: "Notes Panel", action: #selector(toggleNotesPanel), keyEquivalent: "")
+        notesPanelMenuItem?.target = self
+        menu.addItem(notesPanelMenuItem!)
+
+        transcriptsPanelMenuItem = NSMenuItem(title: "Transcripts Panel", action: #selector(toggleTranscriptsPanel), keyEquivalent: "")
+        transcriptsPanelMenuItem?.target = self
+        menu.addItem(transcriptsPanelMenuItem!)
+
+        vocabularyPanelMenuItem = NSMenuItem(title: "Custom Vocabulary", action: #selector(toggleVocabularyPanel), keyEquivalent: "")
+        vocabularyPanelMenuItem?.target = self
+        menu.addItem(vocabularyPanelMenuItem!)
+
+        menu.addItem(NSMenuItem.separator())
 
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
@@ -144,8 +214,82 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(openSettings),
+            selector: #selector(openHistoryTab),
             name: Notification.Name("openHistory"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(openCommandsTab),
+            name: Notification.Name("openCommands"),
+            object: nil
+        )
+
+        // Listen for command panel notifications
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showCommandPanel),
+            name: Notification.Name("CommandPanelShouldOpen"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideCommandPanel),
+            name: Notification.Name("CommandPanelShouldClose"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideCommandPanel),
+            name: Notification.Name("CommandPanelDidClose"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideNotesPanel),
+            name: Notification.Name("NotesPanelDidClose"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showNotesPanel),
+            name: Notification.Name("VoiceFlowShowNotesPanel"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideTranscriptsPanel),
+            name: Notification.Name("TranscriptsPanelDidClose"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showTranscriptsPanel),
+            name: Notification.Name("VoiceFlowShowTranscriptsPanel"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideTicketsPanel),
+            name: Notification.Name("TicketsPanelDidClose"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showTicketsPanel),
+            name: Notification.Name("VoiceFlowShowTicketsPanel"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideVocabularyPanel),
+            name: Notification.Name("VocabularyPanelDidClose"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showVocabularyPanel),
+            name: Notification.Name("VoiceFlowShowVocabularyPanel"),
             object: nil
         )
 
@@ -153,6 +297,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupCLINotifications()
 
         setupGlobalShortcuts()
+
+        // When accessibility permission is granted mid-session, auto-setup PTT event tap
+        appState.$isAccessibilityGranted
+            .removeDuplicates()
+            .dropFirst()
+            .filter { $0 }
+            .sink { [weak self] _ in
+                NSLog("[VoiceFlow] Accessibility permission granted - setting up PTT event tap")
+                self?.accessibilityRetryTimer?.invalidate()
+                self?.accessibilityRetryTimer = nil
+                self?.setupPTTEventTap()
+            }
+            .store(in: &cancellables)
+
+        // If not yet trusted, poll every 3s to detect when user grants permission
+        if !appState.isAccessibilityGranted {
+            NSLog("[VoiceFlow] Accessibility not granted - polling for permission changes")
+            accessibilityRetryTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] timer in
+                Task { @MainActor in
+                    guard let self = self else { timer.invalidate(); return }
+                    self.appState.recheckAccessibilityPermission()
+                    if self.appState.isAccessibilityGranted {
+                        timer.invalidate()
+                        self.accessibilityRetryTimer = nil
+                    }
+                }
+            }
+        }
     }
 
     private func setupCLINotifications() {
@@ -199,7 +371,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     "connected": self.appState.isConnected,
                     "provider": self.appState.dictationProvider.rawValue,
                     "transcript": self.appState.currentTranscript,
-                    "newerBuild": self.appState.isNewerBuildAvailable
+                    "newerBuild": self.appState.isNewerBuildAvailable,
+                    "isPanelMinimal": self.appState.isPanelMinimal,
+                    "isPanelVisible": self.panelWindow?.isVisible ?? false,
+                    "build": AppVersion.build,
+                    "utteranceMode": self.appState.utteranceMode.rawValue,
+                    "speedPreset": self.appState.speedPreset.rawValue,
+                    "effectiveConfidenceThreshold": self.appState.effectiveConfidenceThreshold,
+                    "effectiveSilenceThresholdMs": self.appState.effectiveSilenceThresholdMs,
+                    "effectiveMaxTurnSilenceMs": self.appState.effectiveMaxTurnSilenceMs,
+                    "customConfidenceThreshold": self.appState.customConfidenceThreshold,
+                    "customSilenceThresholdMs": self.appState.customSilenceThresholdMs,
+                    "customMaxTurnSilenceMs": self.appState.customMaxTurnSilenceMs,
+                    "terminalSubmitDelayMs": self.appState.terminalSubmitDelayMs,
+                    "terminalSimpleSubmitEnabled": self.appState.terminalSimpleSubmitEnabled,
+                    "terminalSimpleSubmitPauseMs": self.appState.terminalSimpleSubmitPauseMs
                 ]
                 
                 self.appState.logDebug("CLI Status Check: Level=\(self.appState.audioLevel)")
@@ -212,6 +398,88 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+
+        // Handle force-send from CLI
+        center.addObserver(
+            forName: NSNotification.Name(VoiceFlowCLI.forceSendNotification),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                self.appState.logDebug("CLI: Force send triggered")
+                self.appState.forceEndUtterance(contactServices: false)
+            }
+        }
+
+        // Handle restart from CLI
+        center.addObserver(
+            forName: NSNotification.Name(VoiceFlowCLI.restartNotification),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                self.appState.logDebug("CLI: Restart triggered")
+                self.appState.restartApp()
+            }
+        }
+
+        // Handle auto-submit toggle from CLI
+        center.addObserver(
+            forName: NSNotification.Name(VoiceFlowCLI.setAutoSubmitNotification),
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                let enabled = notification.userInfo?["enabled"] as? Bool ?? false
+                let delay = notification.userInfo?["delay"] as? Double ?? 2.0
+                self.appState.autoSubmitEnabled = enabled
+                self.appState.autoSubmitDelaySeconds = delay
+                self.appState.logDebug("CLI: Auto-submit \(enabled ? "enabled" : "disabled") (delay: \(delay)s)")
+            }
+        }
+
+        // Handle debug turn injection from CLI
+        center.addObserver(
+            forName: NSNotification.Name(VoiceFlowCLI.debugInjectTurnNotification),
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                guard let transcript = notification.userInfo?["transcript"] as? String else {
+                    self.appState.logDebug("CLI: Debug turn ignored (missing transcript)")
+                    return
+                }
+
+                let endOfTurn = notification.userInfo?["endOfTurn"] as? Bool ?? true
+                let isFormatted = notification.userInfo?["isFormatted"] as? Bool ?? true
+                let source = notification.userInfo?["source"] as? String ?? "cli-debug"
+
+                self.appState.logDebug("CLI: Debug turn injected (\(source))")
+                self.appState.injectDebugTurn(transcript, isFormatted: isFormatted, endOfTurn: endOfTurn, source: source)
+            }
+        }
+
+        // Handle vocabulary changes from CLI
+        center.addObserver(
+            forName: NSNotification.Name("com.jacobcole.voiceflow.vocabularyChanged"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                self.appState.reloadVocabulary()
+                self.appState.logDebug("CLI: Vocabulary reloaded")
+            }
+        }
     }
 
     func showPanelWindow() {
@@ -220,7 +488,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configurePanelWindow() {
         let panel = FloatingPanelWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 160),
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 140),
             styleMask: [.titled, .resizable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -268,7 +536,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
         
         // Set size constraints
-        panel.minSize = NSSize(width: 280, height: 100)
+        panel.minSize = NSSize(width: 400, height: 110)
         panel.maxSize = NSSize(width: 1000, height: 800)
 
         panelWindow = panel
@@ -281,22 +549,571 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if visible {
             positionPanelWindow(panelWindow)
-            panelWindow.makeKeyAndOrderFront(nil)
+            panelWindow.orderFront(nil)  // Don't steal focus from user's text fields
         } else {
             panelWindow.orderOut(nil)
         }
     }
 
+    private func preferredPanelScreen() -> NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        if let mouseScreen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) }) {
+            return mouseScreen
+        }
+        return NSScreen.main ?? NSScreen.screens.first
+    }
+
     private func positionPanelWindow(_ window: NSWindow) {
-        guard let screen = NSScreen.main else { return }
-        let panelWidth = window.frame.width
-        let x = (screen.frame.width - panelWidth) / 2 + screen.frame.origin.x
-        let y = screen.frame.maxY - 80
+        guard let screen = preferredPanelScreen() else { return }
+        let frame = screen.visibleFrame
+        let horizontalMargin: CGFloat = 24
+        let verticalTopOffset: CGFloat = 110
+
+        let x = max(frame.minX + 12, frame.maxX - window.frame.width - horizontalMargin)
+        let y = max(frame.minY + 24, frame.maxY - window.frame.height - verticalTopOffset)
+
         window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    // MARK: - PTT Preview
+
+    private func showPTTPreviewWindow() {
+        if pttPreviewWindow == nil {
+            configurePTTPreviewWindow()
+        }
+        guard let pttPreviewWindow else { return }
+        positionPTTPreviewWindow(pttPreviewWindow)
+        pttPreviewWindow.orderFrontRegardless()
+    }
+
+    private func hidePTTPreviewWindow() {
+        pttPreviewWindow?.orderOut(nil)
+    }
+
+    private func configurePTTPreviewWindow() {
+        // Start with compact size - SwiftUI will resize based on content
+        let panel = PTTPreviewWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 120),
+            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingView = NSHostingView(
+            rootView: PTTPreviewView()
+                .environmentObject(appState)
+        )
+
+        // Enable automatic sizing based on SwiftUI content
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+
+        panel.contentView = hostingView
+        panel.isReleasedWhenClosed = false
+        panel.isFloatingPanel = true
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hasShadow = false  // SwiftUI view has its own shadow
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isMovableByWindowBackground = true
+        panel.delegate = self
+
+        pttPreviewWindow = panel
+    }
+
+    private func positionPTTPreviewWindow(_ window: NSWindow) {
+        if let savedOrigin = loadPTTPopupOrigin() {
+            window.setFrameOrigin(savedOrigin)
+            return
+        }
+
+        guard let screen = NSScreen.main else { return }
+        let frame = screen.visibleFrame
+        let size = window.frame.size
+        let x = frame.midX - size.width / 2
+        let y = frame.minY + 24
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    private func savePTTPopupOrigin(_ origin: NSPoint) {
+        UserDefaults.standard.set(origin.x, forKey: "ptt_popup_origin_x")
+        UserDefaults.standard.set(origin.y, forKey: "ptt_popup_origin_y")
+    }
+
+    private func loadPTTPopupOrigin() -> NSPoint? {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "ptt_popup_origin_x") == nil {
+            return nil
+        }
+        let x = defaults.double(forKey: "ptt_popup_origin_x")
+        let y = defaults.double(forKey: "ptt_popup_origin_y")
+        return NSPoint(x: x, y: y)
     }
 
     @objc func togglePanel() {
         setPanelVisible(!appState.isPanelVisible)
+    }
+
+    private func updatePanelSize() {
+        guard let panelWindow = panelWindow,
+              let hostingView = panelWindow.contentView else { return }
+
+        // We need a short delay to allow SwiftUI to perform layout after state change
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self = self, let panelWindow = self.panelWindow else { return }
+            
+            let fittingSize = hostingView.fittingSize
+            if fittingSize.width > 0 && fittingSize.height > 0 {
+                panelWindow.setContentSize(fittingSize)
+                self.positionPanelWindow(panelWindow)
+            }
+        }
+    }
+
+    // MARK: - Command Panel
+
+    @objc func showCommandPanel() {
+        if commandPanelWindow == nil {
+            configureCommandPanelWindow()
+        }
+        guard let commandPanelWindow else { return }
+        positionCommandPanelWindow(commandPanelWindow)
+
+        // Activate the app briefly to allow keyboard focus
+        NSApp.activate(ignoringOtherApps: true)
+        commandPanelWindow.makeKeyAndOrderFront(nil)
+
+        // Post notification to focus the text field
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("CommandPanelShouldFocusInput"),
+                object: nil
+            )
+        }
+    }
+
+    @objc func hideCommandPanel() {
+        commandPanelWindow?.orderOut(nil)
+        appState.isCommandPanelVisible = false
+    }
+
+    @objc func toggleCommandPanel() {
+        if appState.isCommandPanelVisible {
+            hideCommandPanel()
+        } else {
+            showCommandPanel()
+        }
+    }
+
+    private func configureCommandPanelWindow() {
+        let panel = CommandPanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 600),
+            styleMask: [.titled, .resizable, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingController = NSHostingController(
+            rootView: CommandPanelView()
+                .environmentObject(appState)
+        )
+
+        let containerView = FirstMouseContainerView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(hostingController.view)
+
+        NSLayoutConstraint.activate([
+            hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor)
+        ])
+
+        panel.contentView = containerView
+
+        panel.identifier = NSUserInterfaceItemIdentifier("voiceflow.commandpanel")
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = false  // Can become key for text input
+        panel.isFloatingPanel = true
+        panel.title = "Claude Code"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+
+        // Set size constraints
+        panel.minSize = NSSize(width: 400, height: 400)
+        panel.maxSize = NSSize(width: 800, height: 1000)
+
+        commandPanelWindow = panel
+    }
+
+    private func positionCommandPanelWindow(_ window: NSWindow) {
+        guard let screen = NSScreen.main else { return }
+        // Position to the right of center, below the main panel
+        let panelWidth = window.frame.width
+        let panelHeight = window.frame.height
+        let x = (screen.frame.width - panelWidth) / 2 + 100 + screen.frame.origin.x
+        let y = screen.frame.maxY - panelHeight - 100
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    // MARK: - Notes Panel
+
+    @objc func showNotesPanel() {
+        if notesPanelWindow == nil {
+            configureNotesPanelWindow()
+        }
+        guard let notesPanelWindow else { return }
+        positionNotesPanelWindow(notesPanelWindow)
+
+        NSApp.activate(ignoringOtherApps: true)
+        notesPanelWindow.makeKeyAndOrderFront(nil)
+        appState.isNotesPanelVisible = true
+    }
+
+    @objc func hideNotesPanel() {
+        notesPanelWindow?.orderOut(nil)
+        appState.isNotesPanelVisible = false
+    }
+
+    @objc func toggleNotesPanel() {
+        if appState.isNotesPanelVisible {
+            hideNotesPanel()
+        } else {
+            showNotesPanel()
+        }
+    }
+
+    private func configureNotesPanelWindow() {
+        let panel = NotesPanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 500),
+            styleMask: [.titled, .resizable, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingController = NSHostingController(
+            rootView: NotesPanelView()
+                .environmentObject(appState)
+        )
+
+        let containerView = FirstMouseContainerView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(hostingController.view)
+
+        NSLayoutConstraint.activate([
+            hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor)
+        ])
+
+        panel.contentView = containerView
+
+        panel.identifier = NSUserInterfaceItemIdentifier("voiceflow.notespanel")
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.isFloatingPanel = true
+        panel.title = "Notes"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+
+        panel.minSize = NSSize(width: 300, height: 300)
+        panel.maxSize = NSSize(width: 600, height: 800)
+
+        notesPanelWindow = panel
+    }
+
+    private func positionNotesPanelWindow(_ window: NSWindow) {
+        guard let screen = NSScreen.main else { return }
+        let panelWidth = window.frame.width
+        let panelHeight = window.frame.height
+        // Position to the left of center
+        let x = (screen.frame.width - panelWidth) / 2 - 100 + screen.frame.origin.x
+        let y = screen.frame.maxY - panelHeight - 100
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    // MARK: - Transcripts Panel
+
+    @objc func showTranscriptsPanel() {
+        if transcriptsPanelWindow == nil {
+            configureTranscriptsPanelWindow()
+        }
+        guard let transcriptsPanelWindow else { return }
+        positionTranscriptsPanelWindow(transcriptsPanelWindow)
+
+        NSApp.activate(ignoringOtherApps: true)
+        transcriptsPanelWindow.makeKeyAndOrderFront(nil)
+        appState.isTranscriptsPanelVisible = true
+    }
+
+    @objc func hideTranscriptsPanel() {
+        transcriptsPanelWindow?.orderOut(nil)
+        appState.isTranscriptsPanelVisible = false
+    }
+
+    @objc func toggleTranscriptsPanel() {
+        if appState.isTranscriptsPanelVisible {
+            hideTranscriptsPanel()
+        } else {
+            showTranscriptsPanel()
+        }
+    }
+
+    private func configureTranscriptsPanelWindow() {
+        let panel = TranscriptsPanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 500),
+            styleMask: [.titled, .resizable, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingController = NSHostingController(
+            rootView: TranscriptsPanelView()
+                .environmentObject(appState)
+        )
+
+        let containerView = FirstMouseContainerView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(hostingController.view)
+
+        NSLayoutConstraint.activate([
+            hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor)
+        ])
+
+        panel.contentView = containerView
+
+        panel.identifier = NSUserInterfaceItemIdentifier("voiceflow.transcriptspanel")
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.isFloatingPanel = true
+        panel.title = "Transcripts"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+
+        panel.minSize = NSSize(width: 300, height: 300)
+        panel.maxSize = NSSize(width: 600, height: 800)
+
+        transcriptsPanelWindow = panel
+    }
+
+    private func positionTranscriptsPanelWindow(_ window: NSWindow) {
+        guard let screen = NSScreen.main else { return }
+        let panelWidth = window.frame.width
+        let panelHeight = window.frame.height
+        // Position to the left of center, below Notes panel position
+        let x = (screen.frame.width - panelWidth) / 2 - 200 + screen.frame.origin.x
+        let y = screen.frame.maxY - panelHeight - 150
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    // MARK: - Tickets Panel
+
+    @objc func showTicketsPanel() {
+        if ticketsPanelWindow == nil {
+            configureTicketsPanelWindow()
+        }
+        guard let ticketsPanelWindow else { return }
+        positionTicketsPanelWindow(ticketsPanelWindow)
+
+        NSApp.activate(ignoringOtherApps: true)
+        ticketsPanelWindow.makeKeyAndOrderFront(nil)
+        appState.isTicketsPanelVisible = true
+    }
+
+    @objc func hideTicketsPanel() {
+        ticketsPanelWindow?.orderOut(nil)
+        appState.isTicketsPanelVisible = false
+    }
+
+    @objc func toggleTicketsPanel() {
+        if appState.isTicketsPanelVisible {
+            hideTicketsPanel()
+        } else {
+            showTicketsPanel()
+        }
+    }
+
+    private func configureTicketsPanelWindow() {
+        let panel = TicketsPanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 500),
+            styleMask: [.titled, .resizable, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingController = NSHostingController(
+            rootView: TicketsPanelView()
+                .environmentObject(appState)
+        )
+
+        let containerView = FirstMouseContainerView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(hostingController.view)
+
+        NSLayoutConstraint.activate([
+            hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor)
+        ])
+
+        panel.contentView = containerView
+
+        panel.identifier = NSUserInterfaceItemIdentifier("voiceflow.ticketspanel")
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.isFloatingPanel = true
+        panel.title = "Tickets"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+
+        panel.minSize = NSSize(width: 350, height: 400)
+        panel.maxSize = NSSize(width: 600, height: 800)
+
+        ticketsPanelWindow = panel
+    }
+
+    private func positionTicketsPanelWindow(_ window: NSWindow) {
+        guard let screen = NSScreen.main else { return }
+        let panelWidth = window.frame.width
+        let panelHeight = window.frame.height
+        // Position centered horizontally, below top of screen
+        let x = (screen.frame.width - panelWidth) / 2 + screen.frame.origin.x
+        let y = screen.frame.maxY - panelHeight - 100
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    // MARK: - Vocabulary Panel
+
+    @objc func showVocabularyPanel() {
+        if vocabularyPanelWindow == nil {
+            configureVocabularyPanelWindow()
+        }
+        guard let vocabularyPanelWindow else { return }
+        positionVocabularyPanelWindow(vocabularyPanelWindow)
+
+        NSApp.activate(ignoringOtherApps: true)
+        vocabularyPanelWindow.makeKeyAndOrderFront(nil)
+        appState.isVocabularyPanelVisible = true
+    }
+
+    @objc func hideVocabularyPanel() {
+        vocabularyPanelWindow?.orderOut(nil)
+        appState.isVocabularyPanelVisible = false
+    }
+
+    @objc func toggleVocabularyPanel() {
+        if appState.isVocabularyPanelVisible {
+            hideVocabularyPanel()
+        } else {
+            showVocabularyPanel()
+        }
+    }
+
+    private func configureVocabularyPanelWindow() {
+        let panel = VocabularyPanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 450),
+            styleMask: [.titled, .resizable, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let hostingController = NSHostingController(
+            rootView: VocabularyPanelView()
+                .environmentObject(appState)
+        )
+
+        let containerView = FirstMouseContainerView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(hostingController.view)
+
+        NSLayoutConstraint.activate([
+            hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor)
+        ])
+
+        panel.contentView = containerView
+
+        panel.identifier = NSUserInterfaceItemIdentifier("voiceflow.vocabularypanel")
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.isFloatingPanel = true
+        panel.title = "Custom Vocabulary"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+
+        panel.minSize = NSSize(width: 350, height: 350)
+        panel.maxSize = NSSize(width: 600, height: 700)
+
+        vocabularyPanelWindow = panel
+    }
+
+    private func positionVocabularyPanelWindow(_ window: NSWindow) {
+        guard let screen = NSScreen.main else { return }
+        let panelWidth = window.frame.width
+        let panelHeight = window.frame.height
+        // Position centered horizontally, below top of screen
+        let x = (screen.frame.width - panelWidth) / 2 + screen.frame.origin.x
+        let y = screen.frame.maxY - panelHeight - 100
+        window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
     @objc func setModeOff() {
@@ -318,6 +1135,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             appState.setMode(.sleep)
         }
+    }
+
+    @objc func openCommandsTab() {
+        print("[VoiceFlow] openCommandsTab called")
+        // Set the tab BEFORE creating/showing the window so SettingsView picks it up
+        UserDefaults.standard.set(1, forKey: "settings_selected_tab")
+        openSettings()
+    }
+
+    @objc func openHistoryTab() {
+        print("[VoiceFlow] openHistoryTab called")
+        // Set the tab BEFORE creating/showing the window so SettingsView picks it up
+        UserDefaults.standard.set(2, forKey: "settings_selected_tab")
+        openSettings()
     }
 
     @objc func openSettings() {
@@ -381,6 +1212,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let searchItem = NSMenuItem(title: "Search Settings", action: #selector(focusSearch), keyEquivalent: "f")
         searchItem.keyEquivalentModifierMask = [.command, .shift]
         helpMenu.submenu?.addItem(searchItem)
+        helpMenu.submenu?.addItem(NSMenuItem.separator())
+        let featureRequestItem = NSMenuItem(title: "Submit Feature Request...", action: #selector(showFeatureRequestDialog), keyEquivalent: "")
+        helpMenu.submenu?.addItem(featureRequestItem)
+        let listTicketsItem = NSMenuItem(title: "View Open Tickets", action: #selector(listOpenTickets), keyEquivalent: "")
+        helpMenu.submenu?.addItem(listTicketsItem)
         mainMenu.addItem(helpMenu)
         
         NSApp.mainMenu = mainMenu
@@ -388,10 +1224,69 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func focusSearch() {
         appState.settingsSearchText = ""
-        // This is a bit of a hack to focus the search bar, 
-        // usually we'd use a focused binding or @FocusState, 
+        // This is a bit of a hack to focus the search bar,
+        // usually we'd use a focused binding or @FocusState,
         // but for now setting the text empty and opening the window is a good start.
         openSettings()
+    }
+
+    @objc func showFeatureRequestDialog() {
+        Task { @MainActor in
+            let alert = NSAlert()
+            alert.messageText = "Submit Feature Request"
+            alert.informativeText = "Enter a title for your feature request. It will be saved as a VoiceFlow ticket."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "Submit")
+            alert.addButton(withTitle: "Cancel")
+
+            let inputField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+            inputField.placeholderString = "e.g., Add dark mode support"
+            alert.accessoryView = inputField
+
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                let title = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !title.isEmpty {
+                    createBeadsTicket(title: title, type: "feature")
+                }
+            }
+        }
+    }
+
+    @objc func listOpenTickets() {
+        showTicketsPanel()
+    }
+
+    private func createBeadsTicket(title: String, type: String) {
+        Task {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", "cd /Users/jacobcole/code/VoiceFlow && bd create --title=\"\(title.replacingOccurrences(of: "\"", with: "\\\""))\" --type=\(type) --priority=2"]
+            process.currentDirectoryURL = URL(fileURLWithPath: "/Users/jacobcole/code/VoiceFlow")
+
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+
+                await MainActor.run {
+                    if process.terminationStatus == 0 {
+                        appState.triggerCommandFlash(name: "Ticket Created")
+                        NSLog("[VoiceFlow] Created ticket: \(output)")
+                    } else {
+                        NSLog("[VoiceFlow] Failed to create ticket: \(output)")
+                    }
+                }
+            } catch {
+                NSLog("[VoiceFlow] Failed to create ticket: \(error)")
+            }
+        }
     }
 
     @objc func pasteLastUtterance() {
@@ -410,21 +1305,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             offMenuItem?.state = mode == .off ? .on : .off
             onMenuItem?.state = mode == .on ? .on : .off
             sleepMenuItem?.state = mode == .sleep ? .on : .off
+            // Update panel menu items
+            commandPanelMenuItem?.title = appState.isCommandPanelVisible ? "Hide Claude Code Panel" : "Show Claude Code Panel"
+            notesPanelMenuItem?.title = appState.isNotesPanelVisible ? "Hide Notes Panel" : "Show Notes Panel"
+            transcriptsPanelMenuItem?.title = appState.isTranscriptsPanelVisible ? "Hide Transcripts Panel" : "Show Transcripts Panel"
+            vocabularyPanelMenuItem?.title = appState.isVocabularyPanelVisible ? "Hide Custom Vocabulary" : "Show Custom Vocabulary"
         }
     }
 
     private func setupGlobalShortcuts() {
-        // Remove existing monitor if any (though we only call this once usually)
+        // Remove existing monitors/taps if any
         if let monitor = pttMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        teardownPTTEventTap()
 
+        // Set up PTT event tap only if accessibility is granted (requires trusted process)
+        if appState.isAccessibilityGranted {
+            setupPTTEventTap()
+        } else {
+            NSLog("[VoiceFlow] Skipping PTT event tap setup - accessibility not granted")
+            appState.logDebug("PTT event tap deferred - waiting for accessibility permission")
+        }
+
+        // Set up NSEvent monitor for other shortcuts (mode toggle, etc.)
+        // Note: PTT is handled by CGEventTap above, not here
         pttMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
             guard let self = self else { return }
 
             let currentModifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let keyCode = UInt16(event.keyCode)
-            
+
             // DEBUG LOGGING
             if self.appState.isDebugMode {
                 // Log non-standard keys or modifiers for debugging
@@ -434,76 +1345,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             }
-            
+
             // Helper to check precise match (for toggles/commands)
             func matches(_ shortcut: KeyboardShortcut) -> Bool {
                 let requiredFlags = self.mapModifiers(shortcut.modifiers)
                 return currentModifiers == requiredFlags && keyCode == shortcut.keyCode
             }
 
-            // PTT Logic (Special handling for Hold)
-            if keyCode == self.appState.pttShortcut.keyCode {
-                let shortcut = self.appState.pttShortcut
-                let requiredFlags = self.mapModifiers(shortcut.modifiers)
-                
-                var isPTTPressed = false
-                let isModifierKey = (54...63).contains(keyCode)
-                
-                if isModifierKey {
-                    // For modifier PTT (e.g. Ctrl), check if the specific flag is present
-                    // Note: If shortcut is just "Ctrl", requiredFlags is [.control].
-                    // If user presses "Ctrl+Opt", flags are [.control, .option]. 
-                    // Strict equality (current == required) fails if other keys held.
-                    // For PTT, strict is safer to avoid accidental triggers, but lenient is often expected.
-                    // Let's use strict equality for PTT to avoid conflicts.
-                    isPTTPressed = (event.type == .flagsChanged) && (currentModifiers == requiredFlags)
-                } else {
-                    // Standard key: Must be KeyDown and modifiers match
-                    isPTTPressed = (event.type == .keyDown) && (currentModifiers == requiredFlags)
-                }
-                
-                // Determine Release
-                var isPTTReleased = false
-                if isModifierKey {
-                    // Released if flagsChanged AND flags NO LONGER match required
-                    // (Usually flags are empty or missing the bit)
-                    isPTTReleased = (event.type == .flagsChanged) && (currentModifiers != requiredFlags)
-                } else {
-                    isPTTReleased = (event.type == .keyUp)
-                    // Note: We don't check modifiers on KeyUp because users might release modifiers before key
-                }
+            // Skip PTT key - it's handled by CGEventTap
+            // (PTT events are consumed and won't reach here anyway for the PTT key)
 
-                Task { @MainActor in
-                    if isPTTPressed {
-                        // Cancel any pending sleep from previous PTT release
-                        self.appState.cancelPendingPTTSleep()
-                        if self.appState.microphoneMode != .on {
-                            self.appState.setMode(.on)
-                            self.pttActivatedOnMode = true  // Mark that PTT activated On mode
-                            self.appState.logDebug("PTT: ON")
-                        }
-                    } else if isPTTReleased {
-                        // Only trigger sleep if PTT was actually used to enter On mode
-                        if self.appState.microphoneMode == .on && self.pttActivatedOnMode {
-                            self.pttActivatedOnMode = false  // Reset flag
-                            // Wait for finalized text before switching to sleep
-                            self.appState.requestGracefulSleep()
-                        }
-                    }
-                }
-                // Don't return here, allow other checks? No, PTT consumes the logic for this key.
-                // But wait, if PTT is same as Toggle? Conflict. PTT wins.
-            }
-            
             // Mode Switching (Trigger on KeyDown or relevant FlagsChanged)
-            let isModifierKey = (54...63).contains(keyCode)
-            let isDown = event.type == .keyDown || (event.type == .flagsChanged && currentModifiers.contains(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 0)).union(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 1))).union(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 2))).union(self.mapModifiers(KeyboardModifiers(rawValue: 1 << 3)))))
-            
-            // Re-evaluating isDown for modifiers is hard without knowing which bit changed.
-            // But matches() already checks if the flags match the requirement.
-            // If matches() is true AND it's a keyDown -> Always a press.
-            // If matches() is true AND it's a flagsChanged -> It's a press (since flags now match).
-            
             if event.type == .keyDown || event.type == .flagsChanged {
                 if matches(self.appState.modeToggleShortcut) {
                     Task { @MainActor in
@@ -529,9 +1381,178 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         self.appState.logDebug("Shortcut: modeOff triggered")
                         self.appState.setMode(.off)
                     }
+                } else if matches(self.appState.commandPanelShortcut) {
+                    Task { @MainActor in
+                        self.appState.logDebug("Shortcut: commandPanel triggered")
+                        self.appState.toggleCommandPanel()
+                    }
                 }
             }
         }
+    }
+
+    private func setupPTTEventTap() {
+        // Create shared state for the event tap callback
+        let state = PTTEventTapState()
+        state.pttKeyCode = appState.pttShortcut.keyCode
+        state.pttModifiers = PTTEventTapState.mapModifiersToCGEventFlags(appState.pttShortcut.modifiers)
+
+        // Set up callbacks that dispatch to main actor
+        state.onPTTPressed = { [weak self] in
+            Task { @MainActor in
+                guard let self = self else { return }
+
+                // Ignore macOS key repeat events - only act on initial press
+                if self.isPTTKeyPhysicallyDown { return }
+                self.isPTTKeyPhysicallyDown = true
+
+                if !self.appState.pttPreviewEnabled {
+                    // Legacy PTT: double-tap toggles persistent On/Off
+                    let now = Date()
+                    if let lastTap = self.appState.lastPTTKeyDownTime,
+                       now.timeIntervalSince(lastTap) < 0.3 {
+                        self.appState.lastPTTKeyDownTime = nil
+                        if self.appState.microphoneMode == .on && !self.appState.isPTTProcessing {
+                            self.appState.logDebug("PTT: Double-tap → Sleep (legacy)")
+                            self.appState.setMode(.sleep)
+                        } else {
+                            self.appState.logDebug("PTT: Double-tap → On (legacy)")
+                            self.appState.cancelPendingPTTSleep()
+                            self.appState.setMode(.on)
+                        }
+                        return
+                    }
+                    self.appState.lastPTTKeyDownTime = now
+                }
+
+                if self.appState.pttPreviewEnabled {
+                    // If sticky mode is active, a single press ends the session
+                    if self.appState.isPTTSticky {
+                        self.appState.logDebug("PTT: Sticky end")
+                        self.appState.recordPTTRelease()
+                        self.appState.endPTTSession()
+                        return
+                    }
+
+                    // Double-tap detection (300ms window) → latch PTT
+                    let now = Date()
+                    if let lastTap = self.appState.lastPTTKeyDownTime,
+                       now.timeIntervalSince(lastTap) < 0.3 {
+                        self.appState.lastPTTKeyDownTime = nil  // Reset to avoid triple-tap
+                        if self.appState.microphoneMode != .on && !self.appState.isPTTSessionActive {
+                            self.appState.logDebug("PTT: Double-tap → On")
+                            self.appState.cancelPendingPTTSleep()
+                            self.appState.setMode(.on)
+                            return
+                        }
+                        self.appState.logDebug("PTT: Double-tap → Sticky")
+                        self.appState.cancelPendingPTTSleep()
+                        self.appState.recordPTTPress()
+                        let returnMode = self.appState.microphoneMode
+                        self.appState.startPTTSession(returnMode: returnMode, sticky: true)
+                        return
+                    }
+                    self.appState.lastPTTKeyDownTime = now
+                }
+
+                self.appState.cancelPendingPTTSleep()
+                // Record PTT press timestamp for filtering pre-press background speech
+                self.appState.recordPTTPress()
+
+                if self.appState.microphoneMode == .on && !self.appState.isPTTSessionActive {
+                    // Already in On mode → Push-to-Sleep (temporarily go to sleep)
+                    self.appState.isPTMMuted = true  // Reusing flag to track Push-to-Sleep state
+                    self.appState.setMode(.sleep)
+                    self.appState.logDebug("PTS: Temporarily switched to Sleep (key held)")
+                } else if self.appState.microphoneMode != .on {
+                    // Off or Sleep mode → Push-to-Talk
+                    let returnMode = self.appState.microphoneMode
+                    self.appState.startPTTSession(returnMode: returnMode, sticky: false)
+                    self.appState.logDebug("PTT: ON (key consumed)")
+                }
+            }
+        }
+
+        state.onPTTReleased = { [weak self] in
+            Task { @MainActor in
+                guard let self = self else { return }
+
+                // Reset physical key state to allow next press
+                self.isPTTKeyPhysicallyDown = false
+
+                // Handle Push-to-Sleep release (return to On mode)
+                if self.appState.isPTMMuted {
+                    self.appState.isPTMMuted = false
+                    self.appState.setMode(.on)
+                    self.appState.logDebug("PTS: Returned to On mode (key released)")
+                    return
+                }
+
+                // Sticky mode stays active until the next press
+                guard !self.appState.isPTTSticky else { return }
+
+                // Handle Push-to-Talk release
+                self.appState.recordPTTRelease()
+                if self.appState.microphoneMode == .on && self.appState.isPTTSessionActive {
+                    self.appState.endPTTSession()
+                }
+            }
+        }
+
+        AppDelegate.sharedPTTState = state
+
+        // Create CGEventTap
+        let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue) |
+                                      (1 << CGEventType.keyUp.rawValue) |
+                                      (1 << CGEventType.flagsChanged.rawValue)
+
+        guard let eventTap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: eventMask,
+            callback: pttEventTapCallback,
+            userInfo: nil
+        ) else {
+            NSLog("[VoiceFlow] Failed to create CGEventTap for PTT - this usually means accessibility permission was revoked")
+            appState.logDebug("PTT EventTap creation failed - permission may have been revoked")
+            return
+        }
+
+        pttEventTap = eventTap
+        state.eventTapMachPort = eventTap
+
+        // Create run loop source and add to current run loop
+        let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
+        pttRunLoopSource = runLoopSource
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+
+        // Enable the tap
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+
+        NSLog("[VoiceFlow] PTT CGEventTap created successfully - PTT key will be consumed")
+        appState.logDebug("PTT EventTap active - key: \(appState.pttShortcut.keyCode)")
+    }
+
+    private func teardownPTTEventTap() {
+        if let runLoopSource = pttRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+            pttRunLoopSource = nil
+        }
+        if let eventTap = pttEventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
+            pttEventTap = nil
+        }
+        AppDelegate.sharedPTTState = nil
+    }
+
+    /// Call this when PTT shortcut changes to update the event tap
+    func updatePTTShortcut() {
+        AppDelegate.sharedPTTState?.updateShortcut(
+            keyCode: appState.pttShortcut.keyCode,
+            modifiers: appState.pttShortcut.modifiers
+        )
+        appState.logDebug("PTT shortcut updated: keyCode=\(appState.pttShortcut.keyCode)")
     }
     
     nonisolated private func mapModifiers(_ modifiers: KeyboardModifiers) -> NSEvent.ModifierFlags {
@@ -558,4 +1579,121 @@ extension AppDelegate: NSMenuDelegate, NSWindowDelegate {
             NSApp.setActivationPolicy(.accessory)
         }
     }
+
+    func windowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window == pttPreviewWindow else { return }
+        savePTTPopupOrigin(window.frame.origin)
+    }
+}
+
+// MARK: - PTT Event Tap State
+
+/// Shared state for CGEventTap callback (must be accessible from non-MainActor context)
+final class PTTEventTapState: @unchecked Sendable {
+    var pttKeyCode: UInt16 = UInt16(kVK_Space)
+    var pttModifiers: CGEventFlags = [.maskControl, .maskAlternate]
+    var consumePTTKey: Bool = true  // Whether to consume the PTT key event
+    var eventTapMachPort: CFMachPort?  // Stored so callback can re-enable tap if disabled
+
+    // Callback to notify main actor of PTT events
+    var onPTTPressed: (() -> Void)?
+    var onPTTReleased: (() -> Void)?
+
+    func updateShortcut(keyCode: UInt16, modifiers: KeyboardModifiers) {
+        pttKeyCode = keyCode
+        pttModifiers = PTTEventTapState.mapModifiersToCGEventFlags(modifiers)
+    }
+
+    static func mapModifiersToCGEventFlags(_ modifiers: KeyboardModifiers) -> CGEventFlags {
+        var flags: CGEventFlags = []
+        if modifiers.contains(.command) { flags.insert(.maskCommand) }
+        if modifiers.contains(.option) { flags.insert(.maskAlternate) }
+        if modifiers.contains(.control) { flags.insert(.maskControl) }
+        if modifiers.contains(.shift) { flags.insert(.maskShift) }
+        return flags
+    }
+}
+
+/// CGEventTap callback function for consuming PTT key events
+/// Returns nil to consume the event, or the event to pass it through
+func pttEventTapCallback(
+    proxy: CGEventTapProxy,
+    type: CGEventType,
+    event: CGEvent,
+    refcon: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    // Handle special tap events (tap disabled, etc.)
+    guard type == .keyDown || type == .keyUp || type == .flagsChanged else {
+        // When macOS disables the tap (timeout or user input), re-enable it immediately.
+        // This happens when the callback takes too long or the system decides to disable it.
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            NSLog("[VoiceFlow] PTT EventTap was disabled (reason: %@) - re-enabling", type == .tapDisabledByTimeout ? "timeout" : "userInput")
+            if let machPort = AppDelegate.sharedPTTState?.eventTapMachPort {
+                CGEvent.tapEnable(tap: machPort, enable: true)
+            }
+        }
+        return Unmanaged.passRetained(event)
+    }
+
+    guard let state = AppDelegate.sharedPTTState else {
+        return Unmanaged.passRetained(event)
+    }
+
+    let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+    let eventFlags = event.flags
+
+    // Debug: log all key events to see what's happening
+    // NSLog("[PTT] Key event: code=\(keyCode), type=\(type.rawValue), flags=\(eventFlags.rawValue), expected=\(state.pttKeyCode)")
+
+    // Check if this is the PTT key
+    guard keyCode == state.pttKeyCode else {
+        return Unmanaged.passRetained(event)
+    }
+
+    // Debug: we matched the PTT key
+    NSLog("[PTT] Matched PTT key \(keyCode), type=\(type.rawValue)")
+
+    // Check if this is a modifier-only key (keycodes 54-63 are modifier keys)
+    let isModifierKey = (54...63).contains(keyCode)
+
+    // Get required flags without the key's own flag for comparison
+    let requiredFlags = state.pttModifiers
+    // Mask out non-modifier bits for comparison
+    let relevantFlags = eventFlags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift])
+
+    var shouldConsume = false
+
+    if isModifierKey {
+        // For modifier keys, check flagsChanged events
+        if type == .flagsChanged {
+            // PTT pressed if flags now match required
+            if relevantFlags == requiredFlags {
+                state.onPTTPressed?()
+                shouldConsume = state.consumePTTKey
+            } else {
+                // PTT released if flags no longer match
+                state.onPTTReleased?()
+                shouldConsume = state.consumePTTKey
+            }
+        }
+    } else {
+        // For regular keys, check keyDown/keyUp
+        NSLog("[PTT] Regular key: relevantFlags=\(relevantFlags.rawValue), requiredFlags=\(requiredFlags.rawValue)")
+        if type == .keyDown && relevantFlags == requiredFlags {
+            NSLog("[PTT] KeyDown matched - triggering PTT pressed")
+            state.onPTTPressed?()
+            shouldConsume = state.consumePTTKey
+        } else if type == .keyUp {
+            NSLog("[PTT] KeyUp - triggering PTT released")
+            state.onPTTReleased?()
+            shouldConsume = state.consumePTTKey
+        }
+    }
+
+    if shouldConsume {
+        return nil  // Consume the event - don't pass to apps
+    }
+
+    return Unmanaged.passRetained(event)
 }

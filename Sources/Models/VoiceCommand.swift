@@ -25,15 +25,14 @@ struct VoiceCommand: Codable, Identifiable, Equatable, Hashable {
         VoiceCommand(phrase: "paste that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_V), modifiers: [.command])),
         VoiceCommand(phrase: "cut that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_X), modifiers: [.command])),
         VoiceCommand(phrase: "select all", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command])),
-        VoiceCommand(phrase: "save that", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_ANSI_S), modifiers: [.command])),
-        VoiceCommand(phrase: "go back", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_LeftArrow), modifiers: [.command])),
-        VoiceCommand(phrase: "go forward", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_RightArrow), modifiers: [.command])),
+        // "save that", "go back", "go forward", "scroll up", "scroll down" removed - see docs/REMOVED_COMMANDS.md
+        VoiceCommand(phrase: "navigate back", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_LeftArrow), modifiers: [.command])),
+        VoiceCommand(phrase: "navigate forward", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_RightArrow), modifiers: [.command])),
         VoiceCommand(phrase: "page up", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_PageUp), modifiers: [])),
         VoiceCommand(phrase: "page down", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_PageDown), modifiers: [])),
-        VoiceCommand(phrase: "scroll up", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_UpArrow), modifiers: [])),
-        VoiceCommand(phrase: "scroll down", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_DownArrow), modifiers: [])),
         VoiceCommand(phrase: "press escape", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Escape), modifiers: [])),
-        VoiceCommand(phrase: "press enter", shortcut: KeyboardShortcut(keyCode: UInt16(kVK_Return), modifiers: [])),
+        // Note: "press enter" removed - handled as keyword in applyKeywordReplacementsFromWords
+        // which uses AppleScript for terminals (more reliable)
     ]
 }
 
@@ -48,10 +47,10 @@ struct KeyboardModifiers: OptionSet, Codable, Equatable, Hashable {
 
     var description: String {
         var parts: [String] = []
-        if contains(.control) { parts.append("^") }
-        if contains(.option) { parts.append("") }
-        if contains(.shift) { parts.append("") }
-        if contains(.command) { parts.append("") }
+        if contains(.control) { parts.append("⌃") }
+        if contains(.option) { parts.append("⌥") }
+        if contains(.shift) { parts.append("⇧") }
+        if contains(.command) { parts.append("⌘") }
         return parts.joined()
     }
 }
@@ -60,6 +59,10 @@ struct KeyboardModifiers: OptionSet, Codable, Equatable, Hashable {
 struct KeyboardShortcut: Codable, Equatable, Hashable {
     var keyCode: UInt16
     var modifiers: KeyboardModifiers
+    
+    var isEmpty: Bool {
+        keyCode == 0 && modifiers.isEmpty
+    }
 
     var description: String {
         let keyName = KeyboardShortcut.keyCodeToString(keyCode)
