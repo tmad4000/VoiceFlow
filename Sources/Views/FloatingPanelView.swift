@@ -182,20 +182,9 @@ struct FloatingPanelView: View {
     // MARK: - Subviews
 
     private var panelHeader: some View {
-        HStack(spacing: 14) {
-            // Left Group
+        HStack(spacing: 8) {
+            // Left Group - fixed size, never compresses
             HStack(spacing: 10) {
-                if isDevBuild {
-                    Text("DEV")
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundColor(.orange)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.2))
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
-                        .fixedSize()
-                }
-
                 if appState.isNewerBuildAvailable {
                     Button(action: { appState.restartApp() }) {
                         Image(systemName: "arrow.clockwise.circle.fill")
@@ -209,13 +198,24 @@ struct FloatingPanelView: View {
 
                 UnifiedModeButton()
                     .fixedSize()
+                    .overlay(alignment: .topLeading) {
+                        if isDevBuild {
+                            Text("D")
+                                .font(.system(size: 6, weight: .black, design: .monospaced))
+                                .foregroundColor(.white)
+                                .frame(width: 10, height: 10)
+                                .background(Color.orange)
+                                .clipShape(Circle())
+                                .offset(x: -4, y: -4)
+                        }
+                    }
             }
-            .layoutPriority(1)
+            .fixedSize()
 
-            Spacer()
-
-            // Center Group (Mic Meter & Action Buttons)
+            // Center Group (Mic Meter & Action Buttons) - flexible, absorbs extra space
             HStack(spacing: 8) {
+                Spacer(minLength: 0)
+
                 // Mic Selector (Always visible)
                 Button(action: { isMicSelectorPresented.toggle() }) {
                     HStack(spacing: 6) {
@@ -264,11 +264,13 @@ struct FloatingPanelView: View {
                     PTTProcessingWaveView()
                         .instantTooltip("Processing speech...")
                 }
-            }
-            .layoutPriority(1)
 
+                Spacer(minLength: 0)
+            }
+
+            // Right Group - fixed size, never compresses
             utilityButtons
-                .layoutPriority(1)
+                .fixedSize()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
